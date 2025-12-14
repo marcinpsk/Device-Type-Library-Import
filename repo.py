@@ -52,10 +52,10 @@ def validate_git_url(url):
 def parse_single_file(file):
     """
     Load a YAML device mapping, convert its `manufacturer` to a slug dictionary, and record the source path.
-    
+
     Parameters:
         file (str): Path to a YAML file containing a device mapping. The mapping must include a "manufacturer" field.
-    
+
     Returns:
         dict: Parsed mapping with `manufacturer` replaced by `{"slug": "<slugified-name>"}` and `src` set to the file path.
         str: Error string beginning with "Error:" describing YAML parsing or other failure.
@@ -88,9 +88,9 @@ class DTLRepo:
     def __init__(self, args, repo_path, exception_handler):
         """
         Initialize repository management and ensure a local clone exists by either updating an existing clone or cloning the remote.
-        
+
         If the target path already exists as a directory, the repository will be updated from its configured remote; otherwise the provided URL is validated and a new clone is created. The initializer sets instance attributes used by other methods (handler, supported YAML extensions, URL, repo path, branch, repo reference, and current working directory).
-        
+
         Parameters:
             args: An object with `url` (str) and `branch` (str) attributes specifying the remote repository URL and branch to use.
             repo_path (str): Filesystem path where the repository should be cloned or where an existing clone is located.
@@ -117,7 +117,7 @@ class DTLRepo:
     def get_relative_path(self):
         """
         Get the repository path configured for this instance relative to the current working directory.
-        
+
         Returns:
             The stored relative repository path (`repo_path`).
         """
@@ -126,7 +126,7 @@ class DTLRepo:
     def get_absolute_path(self):
         """
         Return the absolute filesystem path to the repository directory.
-        
+
         Returns:
             str: Absolute path combining the repository path with the repository object's current working directory.
         """
@@ -164,7 +164,7 @@ class DTLRepo:
     def clone_repo(self):
         """
         Clone the configured Git repository into the configured local path and record the cloned Repo instance.
-        
+
         Attempts to clone from the repository URL into the absolute repository path and set self.repo to the resulting Repo; on success logs the origin URL via the configured handler. If cloning or Git operations fail, the exception is reported to the configured exception handler.
         """
         try:
@@ -206,12 +206,12 @@ class DTLRepo:
     def parse_files(self, files: list, slugs: list = None, progress=None):
         """
         Parse YAML device files into device type dictionaries, optionally filtering by vendor slugs and advancing a progress iterable.
-        
+
         Parameters:
             files (Iterable[str]): Paths of YAML files to parse.
             slugs (list[str], optional): Vendor slug substrings used to filter results; an item is included if any provided slug is a case-insensitive substring of the item's `"slug"`. If omitted, no slug filtering is applied.
             progress (Iterable, optional): Iterable consumed in parallel with parsing to drive an external progress display; values are ignored but the iterable should yield once per file.
-        
+
         Returns:
             list: Parsed device type dictionaries. Files that fail parsing (returned as strings beginning with `"Error:"`) are logged via the instance handler and excluded. Parsed items that do not match the provided slug filters are also excluded.
         """

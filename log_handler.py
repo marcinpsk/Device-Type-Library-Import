@@ -6,7 +6,7 @@ class LogHandler:
     def __new__(cls, *args, **kwargs):
         """
         Create and return a new instance of the class.
-        
+
         Returns:
             LogHandler: A fresh, uninitialized instance of LogHandler.
         """
@@ -15,7 +15,7 @@ class LogHandler:
     def __init__(self, args):
         """
         Initialize the LogHandler with parsed arguments or a configuration object.
-        
+
         Parameters:
             args: Parsed command-line arguments or a configuration object; stored on the instance as `self.args`.
         """
