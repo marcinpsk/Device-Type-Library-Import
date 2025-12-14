@@ -27,5 +27,8 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Copy source code
 COPY *.py ./
 
+RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+USER appuser
+
 # Set the command
 CMD ["uv", "run", "nb-dt-import.py"]

@@ -739,8 +739,14 @@ class DeviceTypes:
         url = f"{baseurl}/api/dcim/device-types/{device_type}/"
         headers = {"Authorization": f"Token {token}"}
 
-        files = {i: (os.path.basename(f), open(f, "rb")) for i, f in images.items()}
-        response = requests.patch(url, headers=headers, files=files, verify=(not self.ignore_ssl))
-
-        self.handle.log(f"Images {images} updated at {url}: {response}")
-        self.counter["images"] += len(images)
+        # Open files with proper cleanup to avoid resource leaks
+        file_handles = {}
+        try:
+            file_handles = {i: (os.path.basename(f), open(f, "rb")) for i, f in images.items()}
+            response = requests.patch(url, headers=headers, files=file_handles, verify=(not self.ignore_ssl))
+            self.handle.log(f"Images {images} updated at {url}: {response}")
+            self.counter["images"] += len(images)
+        finally:
+            # Ensure all file handles are closed
+            for _, (_, fh) in file_handles.items():
+                fh.close()

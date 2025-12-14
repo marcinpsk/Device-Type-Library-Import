@@ -1,9 +1,36 @@
 import os
+import re
 from glob import glob
 from re import sub as re_sub
 from git import Repo, exc
 import yaml
 import concurrent.futures
+
+
+def validate_git_url(url):
+    """Validate git URL to prevent cloning from potentially dangerous sources.
+
+    Allows:
+    - HTTPS URLs (https://...)
+    - SSH URLs (git@... or ssh://...)
+
+    Blocks:
+    - file:// URLs (local file access)
+    - git:// URLs (unencrypted)
+    - Relative paths or other schemes
+    """
+    if not url:
+        return False, "Empty URL"
+
+    # Allow HTTPS
+    if re.match(r"^https://[\w.-]+/", url):
+        return True, None
+
+    # Allow SSH patterns
+    if re.match(r"^git@[\w.-]+:", url) or re.match(r"^ssh://", url):
+        return True, None
+
+    return False, f"URL must use HTTPS or SSH protocol, got: {url}"
 
 
 def parse_single_file(file):
@@ -34,6 +61,11 @@ class DTLRepo:
         self.branch = args.branch
         self.repo = None
         self.cwd = os.getcwd()
+
+        # Validate URL before cloning
+        is_valid, error_msg = validate_git_url(self.url)
+        if not is_valid:
+            self.handle.exception("InvalidGitURL", self.url, error_msg)
 
         if os.path.isdir(self.repo_path):
             self.pull_repo()
