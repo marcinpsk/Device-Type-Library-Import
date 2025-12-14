@@ -9,10 +9,14 @@ import concurrent.futures
 
 def validate_git_url(url):
     """
-    Validate that a git remote URL uses HTTPS or SSH and reject unsafe or local schemes.
-
+    Determine whether a Git remote URL is allowed (HTTPS or SSH).
+    
+    Parameters:
+        url (str): Git remote URL to validate. Accepted formats are HTTPS URLs with a hostname (e.g., https://host/...),
+            SSH scp-like form beginning with `git@host:` (e.g., git@host:org/repo.git), or ssh URLs starting with `ssh://`.
+    
     Returns:
-        tuple: (bool, str or None) — (True, None) if the URL is allowed; (False, error_message) otherwise.
+        (bool, str or None): `True, None` if the URL is allowed; otherwise `False` and a short error message explaining why.
     """
     if not url or not str(url).strip():
         return False, "Empty URL"
@@ -47,14 +51,14 @@ def validate_git_url(url):
 
 def parse_single_file(file):
     """
-    Load a YAML device file, replace its "manufacturer" value with a slug dictionary, add the source path, and return the parsed data or an error string.
-
+    Load a YAML device file, normalize its manufacturer into a slug dictionary, and add the source path.
+    
     Parameters:
-        file (str): Path to a YAML file containing device data. The file must include a "manufacturer" field.
-
+        file (str): Path to a YAML file containing a device mapping. The mapping must include a "manufacturer" field.
+    
     Returns:
-        dict: The parsed YAML mapping with "manufacturer" replaced by {"slug": "<slugified-name>"} and "src" set to the file path.
-        str: An error string beginning with "Error:" describing YAML parsing or other failures.
+        dict: Parsed YAML mapping with `manufacturer` replaced by `{"slug": "<slugified-name>"}` and `src` set to the file path.
+        str: Error string beginning with "Error:" describing YAML parsing or other failure.
     """
     with open(file, "r") as stream:
         try:
@@ -73,6 +77,12 @@ def parse_single_file(file):
 
 class DTLRepo:
     def __new__(cls, *args, **kwargs):
+        """
+        Allocate and return a new instance of the class using the default object allocator.
+        
+        Returns:
+            instance: A newly created instance of the class `cls`.
+        """
         return super().__new__(cls)
 
     def __init__(self, args, repo_path, exception_handler):
@@ -110,6 +120,12 @@ class DTLRepo:
             self.clone_repo()
 
     def get_relative_path(self):
+        """
+        Return the repository's configured relative path.
+        
+        Returns:
+            str: The instance's stored relative repository path (repo_path).
+        """
         return self.repo_path
 
     def get_absolute_path(self):
@@ -154,6 +170,22 @@ class DTLRepo:
             self.handle.exception("Exception", "Git Repository Error", git_error)
 
     def get_devices(self, base_path, vendors: list = None):
+        """
+        Discover device YAML files and vendor directories under a base path.
+        
+        Parameters:
+            base_path (str): Directory path containing vendor subdirectories (each vendor folder contains device YAML files).
+            vendors (list, optional): List of vendor names (case-insensitive) to include; if omitted, all vendors are considered.
+        
+        Returns:
+            tuple:
+                files (list): List of file paths to discovered YAML files (extensions from self.yaml_extensions) under matching vendor folders.
+                discovered_vendors (list): List of dicts for each discovered vendor with keys:
+                    - name (str): Vendor directory name.
+                    - slug (str): Slugified vendor name produced by self.slug_format.
+        Note:
+            The folder named "testing" (case-insensitive) is ignored.
+        """
         files = []
         discovered_vendors = []
         vendor_dirs = os.listdir(base_path)
