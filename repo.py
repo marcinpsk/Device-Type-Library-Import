@@ -100,7 +100,7 @@ class DTLRepo:
         deviceTypes = []
 
         # Use ProcessPoolExecutor for parallel parsing
-        with concurrent.futures.ProcessPoolExecutor() as executor:
+        with concurrent.futures.ThreadPoolExecutor() as executor:
             # Strategies for progress bar interop:
             # We iterate 'progress' if it's provided (which yields files and updates the bar)
             # AND we need to yield results from executor.
