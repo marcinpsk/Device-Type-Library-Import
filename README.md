@@ -10,22 +10,30 @@ This script will clone a copy of the `netbox-community/devicetype-library` repos
 
 ## 🚀 Getting Started
 
-1. This script is written in Python, so lets setup a virtual environment.
+3. This script uses `uv` for dependency management.
 
 ```
-git clone https://github.com/netbox-community/Device-Type-Library-Import.git
-cd Device-Type-Library-Import
-python3 -m venv venv
-source venv/bin/activate
+uv sync
 ```
 
-2. Now that we have the basics setup, we'll need to install the requirements.
+4. There are two variables that are required when using this script to import device types into your NetBox installation. (1) Your Netbox instance URL and (2) a token with **write rights**.
+
+Copy the existing `.env.example` to your own `.env` file, and fill in the variables.
 
 ```
-pip install -r requirements.txt
+cp .env.example .env
+vim .env
 ```
 
-3. There are two variables that are required when using this script to import device types into your Netbox installation. (1) Your Netbox instance URL and (2) a token with **write rights**.
+Finally, we are able to execute the script and import some device templates!
+
+## 🔌 Usage
+
+To use the script, simply execute the script as follows. `uv` will handle the virtual environment.
+
+```
+uv run nb-dt-import.py
+```
 
 Copy the existing `.env.example` to your own `.env` file, and fill in the variables.
 

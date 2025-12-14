@@ -1,0 +1,28 @@
+[project]
+name = "device-type-library-import"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "gitpython>=3.1.45",
+    "pynetbox>=7.5.0",
+    "python-dotenv>=1.2.1",
+    "pyyaml>=6.0.3",
+    "tqdm>=4.67.1",
+]
+
+[dependency-groups]
+dev = [
+    "black>=25.12.0",
+    "pre-commit>=4.5.0",
+    "pytest>=9.0.2",
+    "pytest-mock>=3.15.1",
+    "ruff>=0.14.9",
+]
+
+[tool.black]
+line-length = 120
+
+[tool.ruff]
+line-length = 120

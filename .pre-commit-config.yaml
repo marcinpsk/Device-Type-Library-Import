@@ -1,0 +1,22 @@
+repos:
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff
+        entry: uv run ruff check --fix
+        language: system
+        types: [python]
+        require_serial: true
+      - id: black
+        name: black
+        entry: uv run black
+        language: system
+        types: [python]
+        require_serial: true
+      - id: pytest
+        name: pytest
+        entry: uv run pytest
+        language: system
+        types: [python]
+        pass_filenames: false
+        always_run: true

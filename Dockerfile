@@ -1,16 +1,31 @@
-FROM python:3.9-alpine
+FROM python:3.12-slim
 
-ENV REPO_URL=https://github.com/netbox-community/devicetype-library.git
+# Install system dependencies
+# git is required for GitPython/cloning the repo
+RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/*
+
+# Install uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
 WORKDIR /app
-COPY requirements.txt .
+
+# Enable bytecode compilation
+ENV UV_COMPILE_BYTECODE=1
+
+# Copy dependency files
+COPY pyproject.toml uv.lock ./
 
 # Install dependencies
-RUN apk add --no-cache git ca-certificates && \
-    python3 -m pip install --upgrade pip && \
-    pip3 install -r requirements.txt
+# --frozen: use uv.lock
+# --no-dev: do not install dev dependencies (tests)
+# --no-install-project: we are not installing this as a package, just scripts
+RUN uv sync --frozen --no-dev --no-install-project
 
-# Copy over src code
+# Add virtual environment to PATH
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Copy source code
 COPY *.py ./
 
-# -u to avoid stdout buffering
-CMD ["python3","-u","nb-dt-import.py"]
+# Set the command
+CMD ["uv", "run", "nb-dt-import.py"]
