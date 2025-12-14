@@ -99,7 +99,7 @@ class DTLRepo:
     def parse_files(self, files: list, slugs: list = None, progress=None):
         deviceTypes = []
 
-        # Use ProcessPoolExecutor for parallel parsing
+        # Use ThreadPoolExecutor for parallel parsing
         with concurrent.futures.ThreadPoolExecutor() as executor:
             # Strategies for progress bar interop:
             # We iterate 'progress' if it's provided (which yields files and updates the bar)
