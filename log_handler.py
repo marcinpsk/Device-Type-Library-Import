@@ -4,14 +4,20 @@ from sys import exit as system_exit
 
 class LogHandler:
     def __new__(cls, *args, **kwargs):
+        """
+        Create and return a new instance of the class.
+        
+        Returns:
+            LogHandler: A fresh, uninitialized instance of LogHandler.
+        """
         return super().__new__(cls)
 
     def __init__(self, args):
         """
-        Initialize the LogHandler and store the provided arguments.
-
+        Initialize the LogHandler with parsed arguments or a configuration object.
+        
         Parameters:
-            args: Parsed arguments or configuration object to be kept on the instance as `self.args`.
+            args: Parsed command-line arguments or a configuration object; stored on the instance as `self.args`.
         """
         self.args = args
 
