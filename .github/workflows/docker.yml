@@ -27,7 +27,7 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: |
-            ghcr.io/marcinpsk/Device-Type-Library-Import
+            ghcr.io/marcinpsk/device-type-library-import
           tags: |
             type=raw,value=latest,enable=${{ endsWith(github.ref, github.event.repository.default_branch) }}
             type=ref,event=branch
