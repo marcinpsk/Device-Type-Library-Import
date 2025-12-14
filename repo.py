@@ -219,15 +219,14 @@ class DTLRepo:
 
         # Use ThreadPoolExecutor for parallel parsing
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            # Strategies for progress bar interop:
-            # We iterate 'progress' if it's provided (which yields files and updates the bar)
-            # AND we need to yield results from executor.
-            # executor.map preserves order.
+            # executor.map preserves order and processes the same files list
+            # progress (if provided) is a tqdm wrapper over the same files list
+            # Use strict=True to catch any length mismatch instead of silent truncation
+            files_list = list(files)  # Ensure we have a concrete list
+            items_iterator = progress if progress is not None else files_list
+            results = executor.map(parse_single_file, files_list)
 
-            items_iterator = progress if progress is not None else files
-            results = executor.map(parse_single_file, files)
-
-            for _, data in zip(items_iterator, results):
+            for _, data in zip(items_iterator, results, strict=True):
                 if isinstance(data, str) and data.startswith("Error:"):
                     self.handle.verbose_log(data)
                     continue
