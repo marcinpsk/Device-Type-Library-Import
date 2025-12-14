@@ -10,11 +10,11 @@ import concurrent.futures
 def validate_git_url(url):
     """
     Determine whether a Git remote URL is allowed (HTTPS or SSH).
-    
+
     Parameters:
         url (str): Git remote URL to validate. Accepted formats are HTTPS URLs with a hostname (e.g., https://host/...),
             SSH scp-like form beginning with `git@host:` (e.g., git@host:org/repo.git), or ssh URLs starting with `ssh://`.
-    
+
     Returns:
         (bool, str or None): `True, None` if the URL is allowed; otherwise `False` and a short error message explaining why.
     """
@@ -52,10 +52,10 @@ def validate_git_url(url):
 def parse_single_file(file):
     """
     Load a YAML device file, normalize its manufacturer into a slug dictionary, and add the source path.
-    
+
     Parameters:
         file (str): Path to a YAML file containing a device mapping. The mapping must include a "manufacturer" field.
-    
+
     Returns:
         dict: Parsed YAML mapping with `manufacturer` replaced by `{"slug": "<slugified-name>"}` and `src` set to the file path.
         str: Error string beginning with "Error:" describing YAML parsing or other failure.
@@ -79,7 +79,7 @@ class DTLRepo:
     def __new__(cls, *args, **kwargs):
         """
         Allocate and return a new instance of the class using the default object allocator.
-        
+
         Returns:
             instance: A newly created instance of the class `cls`.
         """
@@ -122,7 +122,7 @@ class DTLRepo:
     def get_relative_path(self):
         """
         Return the repository's configured relative path.
-        
+
         Returns:
             str: The instance's stored relative repository path (repo_path).
         """
@@ -172,11 +172,11 @@ class DTLRepo:
     def get_devices(self, base_path, vendors: list = None):
         """
         Discover device YAML files and vendor directories under a base path.
-        
+
         Parameters:
             base_path (str): Directory path containing vendor subdirectories (each vendor folder contains device YAML files).
             vendors (list, optional): List of vendor names (case-insensitive) to include; if omitted, all vendors are considered.
-        
+
         Returns:
             tuple:
                 files (list): List of file paths to discovered YAML files (extensions from self.yaml_extensions) under matching vendor folders.

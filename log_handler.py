@@ -9,7 +9,7 @@ class LogHandler:
     def __init__(self, args):
         """
         Initialize the LogHandler and store the provided arguments.
-        
+
         Parameters:
             args: Parsed arguments or configuration object to be kept on the instance as `self.args`.
         """

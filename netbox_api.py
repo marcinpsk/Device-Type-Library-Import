@@ -569,6 +569,13 @@ class DeviceTypes:
             for port in ports_to_remove:
                 items.remove(port)
 
+            if ports_to_remove:
+                skipped_names = [p["name"] for p in ports_to_remove]
+                ctx = f" (Context: {context})" if context else ""
+                self.handle.log(
+                    f"Skipped {len(ports_to_remove)} front port(s) with invalid rear port refs: {skipped_names}{ctx}"
+                )
+
         self._create_generic(
             front_ports,
             device_type,
@@ -687,14 +694,15 @@ class DeviceTypes:
     def create_module_front_ports(self, front_ports, module_type, context=None):
         """
         Create front-port templates for a module-type and link them to their rear ports.
-        
+
         Creates any missing module front-port templates under the given module_type. If a front port references a rear port by name, the rear port name is resolved to the rear-port ID; front ports with unresolved rear-port names are removed from creation and a log message is emitted (includes `context` if provided).
-        
+
         Parameters:
             front_ports (list[dict]): List of front-port template definitions. Each dict must include at least "name"; items may reference a rear port by the "rear_port" key (name).
             module_type (int | object): Module type identifier or object to associate the created front ports with.
             context (str | None): Optional context string appended to log messages for easier debugging.
         """
+
         def link_rear_ports(items, pid):
             # Use cached rear ports if available, otherwise fetch from API
             cache_key = ("module", pid)
@@ -723,6 +731,13 @@ class DeviceTypes:
             for port in ports_to_remove:
                 items.remove(port)
 
+            if ports_to_remove:
+                skipped_names = [p["name"] for p in ports_to_remove]
+                ctx = f" (Context: {context})" if context else ""
+                self.handle.log(
+                    f"Skipped {len(ports_to_remove)} module front port(s) with invalid rear port refs: {skipped_names}{ctx}"
+                )
+
         self._create_generic(
             front_ports,
             module_type,
@@ -737,9 +752,9 @@ class DeviceTypes:
     def upload_images(self, baseurl, token, images, device_type):
         """
         Upload front and/or rear images to a NetBox device type.
-        
+
         Sends a PATCH request to the device-type endpoint attaching the provided image files, increments self.counter["images"] by the number of files sent, and ensures all opened file handles are closed. The request's SSL verification is controlled by self.ignore_ssl.
-        
+
         Parameters:
             baseurl (str): Base URL of the NetBox instance (e.g. "https://netbox.example.com").
             token (str): API token used for the Authorization header.
