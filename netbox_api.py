@@ -725,16 +725,18 @@ class DeviceTypes:
         )
 
     def upload_images(self, baseurl, token, images, device_type):
-        """Upload front_image and/or rear_image for the given device type
-
-        Args:
-        baseurl: URL for Netbox instance
-        token: Token to access Netbox instance
-        images: map of front_image and/or rear_image filename
-        device_type: id for the device-type to update
-
-        Returns:
-        None
+        """
+        Upload front and/or rear images for a NetBox device type and update the internal image counter.
+        
+        Parameters:
+            baseurl (str): Base URL of the NetBox instance (e.g. "https://netbox.example.com").
+            token (str): API token used for Authorization.
+            images (dict): Mapping of field name to local file path, e.g. {"front_image": "/path/front.jpg", "rear_image": "/path/rear.jpg"}.
+            device_type (int | str): Identifier of the device type to update in NetBox.
+        
+        Notes:
+            - Increments self.counter["images"] by the number of files successfully sent.
+            - Ensures file descriptors are closed after the request to avoid resource leaks.
         """
         url = f"{baseurl}/api/dcim/device-types/{device_type}/"
         headers = {"Authorization": f"Token {token}"}

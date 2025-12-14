@@ -10,6 +10,17 @@ class LogHandler:
         self.args = args
 
     def exception(self, exception_type, exception, stack_trace=None):
+        """
+        Handle an error by formatting a user-facing message and terminating the program.
+        
+        Parameters:
+            exception_type (str): Key identifying the error category (expected keys include "EnvironmentError", "SSLError", "GitCommandError", "GitInvalidRepositoryError", "InvalidGitURL", "Exception").
+            exception (str): Value used to populate the chosen error message (e.g., environment variable name, repo name, or raw error text).
+            stack_trace (str | None): Optional stack trace or additional context. If provided and the instance was constructed with verbose enabled, the stack trace is printed.
+        
+        Raises:
+            SystemExit: Exits the process with a formatted message corresponding to `exception_type`.
+        """
         exception_dict = {
             "EnvironmentError": f'Environment variable "{exception}" is not set.',
             "SSLError": f"SSL verification failed. IGNORE_SSL_ERRORS is {exception}. Set IGNORE_SSL_ERRORS to True if you want to ignore this error. EXITING.",

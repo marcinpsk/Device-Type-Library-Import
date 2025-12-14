@@ -8,16 +8,11 @@ import concurrent.futures
 
 
 def validate_git_url(url):
-    """Validate git URL to prevent cloning from potentially dangerous sources.
-
-    Allows:
-    - HTTPS URLs (https://...)
-    - SSH URLs (git@... or ssh://...)
-
-    Blocks:
-    - file:// URLs (local file access)
-    - git:// URLs (unencrypted)
-    - Relative paths or other schemes
+    """
+    Validate that a git remote URL uses HTTPS or SSH and reject unsafe or local schemes.
+    
+    Returns:
+        tuple: (bool, str or None) — (True, None) if the URL is allowed; (False, error_message) otherwise.
     """
     if not url:
         return False, "Empty URL"
@@ -34,6 +29,16 @@ def validate_git_url(url):
 
 
 def parse_single_file(file):
+    """
+    Load a YAML device file, replace its "manufacturer" value with a slug dictionary, add the source path, and return the parsed data or an error string.
+    
+    Parameters:
+        file (str): Path to a YAML file containing device data. The file must include a "manufacturer" field.
+    
+    Returns:
+        dict: The parsed YAML mapping with "manufacturer" replaced by {"slug": "<slugified-name>"} and "src" set to the file path.
+        str: An error string beginning with "Error:" describing YAML parsing or other failures.
+    """
     with open(file, "r") as stream:
         try:
             data = yaml.safe_load(stream)
@@ -54,6 +59,16 @@ class DTLRepo:
         return super().__new__(cls)
 
     def __init__(self, args, repo_path, exception_handler):
+        """
+        Initialize the repository manager, validate the repository URL, and ensure a local clone is present by cloning or pulling.
+        
+        Sets instance attributes (handler, yaml extensions, URL, repo path, branch, repo reference, and current working directory). Validates `args.url` using `validate_git_url` and, if invalid, reports the problem via `exception_handler.exception("InvalidGitURL", url, message)`. If `repo_path` exists as a directory, updates the repository by calling `pull_repo`; otherwise creates a local clone by calling `clone_repo`.
+        
+        Parameters:
+            args: An object with `url` (str) and `branch` (str) attributes providing the remote repository URL and branch to use.
+            repo_path (str): Filesystem path where the repository should be cloned or exists.
+            exception_handler: An object exposing `exception(name, context, message)` used to report validation and Git errors as side effects.
+        """
         self.handle = exception_handler
         self.yaml_extensions = ["yaml", "yml"]
         self.url = args.url
@@ -129,6 +144,17 @@ class DTLRepo:
         return files, discovered_vendors
 
     def parse_files(self, files: list, slugs: list = None, progress=None):
+        """
+        Parse multiple YAML device files into device type dictionaries, optionally filtering by vendor slugs and integrating with a progress iterator.
+        
+        Parameters:
+            files (list): Iterable of file paths to parse.
+            slugs (list, optional): List of vendor slug substrings to filter results. A parsed item's "slug" is included if any slug from this list is a case-insensitive substring of the item's "slug". If omitted, no slug filtering is applied.
+            progress (iterable, optional): Optional iterable used to drive a progress display (must yield one item per file). The function iterates this in parallel with parsing so the progress display can be advanced; the values from this iterable are ignored.
+        
+        Returns:
+            list: A list of parsed device type dictionaries. Files that fail to parse (returned as strings beginning with "Error:") are logged via the instance handler and omitted from the returned list. Files whose parsed data do not match the provided slug filters are also omitted.
+        """
         deviceTypes = []
 
         # Use ThreadPoolExecutor for parallel parsing
