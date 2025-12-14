@@ -727,13 +727,13 @@ class DeviceTypes:
     def upload_images(self, baseurl, token, images, device_type):
         """
         Upload front and/or rear images for a NetBox device type and update the internal image counter.
-        
+
         Parameters:
             baseurl (str): Base URL of the NetBox instance (e.g. "https://netbox.example.com").
             token (str): API token used for Authorization.
             images (dict): Mapping of field name to local file path, e.g. {"front_image": "/path/front.jpg", "rear_image": "/path/rear.jpg"}.
             device_type (int | str): Identifier of the device type to update in NetBox.
-        
+
         Notes:
             - Increments self.counter["images"] by the number of files successfully sent.
             - Ensures file descriptors are closed after the request to avoid resource leaks.
@@ -741,10 +741,20 @@ class DeviceTypes:
         url = f"{baseurl}/api/dcim/device-types/{device_type}/"
         headers = {"Authorization": f"Token {token}"}
 
-        # Open files with proper cleanup to avoid resource leaks
+        # Open files one by one with proper cleanup to avoid resource leaks
         file_handles = {}
         try:
-            file_handles = {i: (os.path.basename(f), open(f, "rb")) for i, f in images.items()}
+            # Open each file individually; if one fails, close already-opened handles
+            for field_name, file_path in images.items():
+                try:
+                    fh = open(file_path, "rb")
+                    file_handles[field_name] = (os.path.basename(file_path), fh)
+                except Exception:
+                    # Close any already-opened files before re-raising
+                    for _, (_, opened_fh) in file_handles.items():
+                        opened_fh.close()
+                    raise
+
             response = requests.patch(url, headers=headers, files=file_handles, verify=(not self.ignore_ssl))
             self.handle.log(f"Images {images} updated at {url}: {response}")
             self.counter["images"] += len(images)

@@ -22,7 +22,7 @@ def get_progress_wrapper(iterable, desc=None, **kwargs):
 def main():
     """
     Orchestrate importing device- and module-types from a Git repository into NetBox.
-    
+
     Parses CLI arguments, validates environment variables, clones/pulls the DTL repo,
     parses YAML files, and creates manufacturers, device types, and module types in NetBox.
     Reports progress and summary counters.
