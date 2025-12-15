@@ -15,7 +15,8 @@ class LogHandler:
         Initialize the LogHandler with parsed arguments or a configuration object.
 
         Parameters:
-            args: Parsed command-line arguments or a configuration object; stored on the instance as `self.args`.
+            args: Parsed command-line arguments or a configuration object with at least a `verbose` attribute (bool);
+                  stored on the instance as `self.args`.
         """
         self.args = args
 
