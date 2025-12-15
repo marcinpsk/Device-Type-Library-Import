@@ -9,7 +9,7 @@ jobs:
   stale:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/stale@v5
+      - uses: actions/stale@v10
         with:
           close-pr-message: >
             This PR has been automatically closed due to lack of activity.
