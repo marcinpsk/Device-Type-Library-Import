@@ -541,6 +541,17 @@ class DeviceTypes:
         )
 
     def create_front_ports(self, front_ports, device_type, context=None):
+        """
+        Create front port templates for a device type, resolving rear-port references before creation.
+
+        For each front-port entry, attempts to resolve its `rear_port` name to the corresponding rear-port ID; front ports whose `rear_port` cannot be resolved are removed and a log entry is emitted (including the optional context). After resolving and pruning entries, the function creates the remaining front-port templates in NetBox and records created items via the shared counters/handlers.
+
+        Parameters:
+            front_ports (list[dict]): List of front-port template definitions. Each item is expected to include a "name" and a "rear_port" (the rear-port name to resolve).
+            device_type (int): ID of the device type (device_type) to which the front ports belong.
+            context (str | None): Optional context string appended to log messages for disambiguation.
+        """
+
         def link_rear_ports(items, pid):
             # Use cached rear ports if available, otherwise fetch from API
             cache_key = ("device", pid)
@@ -568,6 +579,13 @@ class DeviceTypes:
             # Remove front ports with invalid rear port references
             for port in ports_to_remove:
                 items.remove(port)
+
+            if ports_to_remove:
+                skipped_names = [p["name"] for p in ports_to_remove]
+                ctx = f" (Context: {context})" if context else ""
+                self.handle.log(
+                    f"Skipped {len(ports_to_remove)} front port(s) with invalid rear port refs: {skipped_names}{ctx}"
+                )
 
         self._create_generic(
             front_ports,
@@ -674,6 +692,15 @@ class DeviceTypes:
         )
 
     def create_module_rear_ports(self, rear_ports, module_type, context=None):
+        """
+        Create rear-port templates for a module type in NetBox.
+
+        Adds any rear port templates from `rear_ports` that do not already exist for the specified `module_type`.
+        Parameters:
+            rear_ports (list[dict]): List of rear-port template definitions to create; each item must include a `name` and any other template fields required by NetBox.
+            module_type (int|object): The module type identifier or object used to associate created templates with the parent module type.
+            context (str, optional): Optional context string used for logging to identify the source of these templates.
+        """
         self._create_generic(
             rear_ports,
             module_type,
@@ -685,8 +712,28 @@ class DeviceTypes:
         )
 
     def create_module_front_ports(self, front_ports, module_type, context=None):
+        """
+        Create front-port templates for a module-type and link them to their rear ports.
+
+        Creates any missing module front-port templates under the given module_type. If a front port references a rear port by name, the rear port name is resolved to the rear-port ID; front ports with unresolved rear-port names are removed from creation and a log message is emitted (includes `context` if provided).
+
+        Parameters:
+            front_ports (list[dict]): List of front-port template definitions. Each dict must include at least "name"; items may reference a rear port by the "rear_port" key (name).
+            module_type (int | object): Module type identifier or object to associate the created front ports with.
+            context (str | None): Optional context string appended to log messages for easier debugging.
+        """
+
         def link_rear_ports(items, pid):
             # Use cached rear ports if available, otherwise fetch from API
+            """
+            Resolve each front-port's `rear_port` name to the corresponding rear-port ID for a module and remove any front-ports whose `rear_port` cannot be resolved.
+
+            This function mutates `items` in place: for each port dict it replaces the string `rear_port` value with the matching rear-port `.id` when found, logs a message for each missing rear-port (including the available rear-port names), and removes ports with unresolved `rear_port` references. After processing it logs a summary of how many module front ports were skipped. The logs may include the outer-scope `context` value if present.
+
+            Parameters:
+                items (list[dict]): List of front-port dictionaries; each must contain at least `"name"` and `"rear_port"` (the latter initially a name string).
+                pid (int): The module type ID used to scope the rear-port lookup.
+            """
             cache_key = ("module", pid)
             if "rear_port_templates" in self.cached_components:
                 existing_rp = self.cached_components["rear_port_templates"].get(cache_key, {})
@@ -713,6 +760,13 @@ class DeviceTypes:
             for port in ports_to_remove:
                 items.remove(port)
 
+            if ports_to_remove:
+                skipped_names = [p["name"] for p in ports_to_remove]
+                ctx = f" (Context: {context})" if context else ""
+                self.handle.log(
+                    f"Skipped {len(ports_to_remove)} module front port(s) with invalid rear port refs: {skipped_names}{ctx}"
+                )
+
         self._create_generic(
             front_ports,
             module_type,
@@ -725,22 +779,34 @@ class DeviceTypes:
         )
 
     def upload_images(self, baseurl, token, images, device_type):
-        """Upload front_image and/or rear_image for the given device type
+        """
+        Upload front and/or rear image files to the specified NetBox device type.
 
-        Args:
-        baseurl: URL for Netbox instance
-        token: Token to access Netbox instance
-        images: map of front_image and/or rear_image filename
-        device_type: id for the device-type to update
+        Sends a PATCH request to the device-type endpoint attaching the provided image files, increments self.counter["images"] by the number of files sent, and ensures all opened file handles are closed. Respects self.ignore_ssl to determine SSL verification behavior.
 
-        Returns:
-        None
+        Parameters:
+            baseurl (str): Base URL of the NetBox instance (e.g. "https://netbox.example.com").
+            token (str): API token used for the Authorization header.
+            images (dict): Mapping of form field name to local file path (e.g. {"front_image": "/path/front.jpg", "rear_image": "/path/rear.jpg"}).
+            device_type (int | str): Identifier of the device type to update in NetBox (used in the endpoint URL).
         """
         url = f"{baseurl}/api/dcim/device-types/{device_type}/"
         headers = {"Authorization": f"Token {token}"}
 
-        files = {i: (os.path.basename(f), open(f, "rb")) for i, f in images.items()}
-        response = requests.patch(url, headers=headers, files=files, verify=(not self.ignore_ssl))
-
-        self.handle.log(f"Images {images} updated at {url}: {response}")
-        self.counter["images"] += len(images)
+        # Open files with proper cleanup to avoid resource leaks
+        file_handles = {}
+        try:
+            for field, path in images.items():
+                file_handles[field] = (os.path.basename(path), open(path, "rb"))
+            response = requests.patch(
+                url, headers=headers, files=file_handles, verify=(not self.ignore_ssl), timeout=60
+            )
+            response.raise_for_status()
+            self.handle.log(f"Images {images} updated at {url}: {response.status_code}")
+            self.counter["images"] += len(images)
+        finally:
+            for _, (_, fh) in file_handles.items():
+                try:
+                    fh.close()
+                except Exception:
+                    pass

@@ -1,6 +1,10 @@
 ---
 name: ci
 
+permissions:
+  contents: read
+  packages: write
+
 on:
   push:
     branches:
@@ -22,12 +26,15 @@ jobs:
         name: Checkout
         uses: actions/checkout@v4
       -
+        name: Set lowercase repo name
+        run: echo "REPO_LOWER=$(echo '${{ github.event.repository.name }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+      -
         name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
         with:
           images: |
-            ghcr.io/minitriga/Netbox-Device-Type-Library-Import
+            ghcr.io/${{ github.repository_owner }}/${{ env.REPO_LOWER }}
           tags: |
             type=raw,value=latest,enable=${{ endsWith(github.ref, github.event.repository.default_branch) }}
             type=ref,event=branch

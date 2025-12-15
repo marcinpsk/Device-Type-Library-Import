@@ -1,13 +1,11 @@
 ---
 version: 2
 updates:
-  - package-ecosystem: pip
-    directory: /
+  - package-ecosystem: "pip"
+    directory: "/"
     schedule:
-      interval: monthly
-      time: '02:00'
-      timezone: America/New_York
-    labels:
-      - dependencies
-    assignees:
-        - "danner26"
+      interval: "weekly"
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

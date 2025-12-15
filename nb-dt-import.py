@@ -20,6 +20,13 @@ def get_progress_wrapper(iterable, desc=None, **kwargs):
 
 
 def main():
+    """
+    Orchestrate importing device- and module-types from a Git repository into NetBox.
+
+    Parses CLI arguments, validates environment variables, clones/pulls the DTL repo,
+    parses YAML files, and creates manufacturers, device types, and module types in NetBox.
+    Reports progress and summary counters.
+    """
     startTime = datetime.now()
 
     parser = ArgumentParser(description="Import Netbox Device Types")
@@ -53,7 +60,7 @@ def main():
             handle.exception(
                 "EnvironmentError",
                 var,
-                f'Environment variable "{var}" is not set.\n\nMANDATORY_ENV_VARS: {str(settings.MANDATORY_ENV_VARS)}.\n\nCURRENT_ENV_VARS: {str(os.environ)}',
+                f'Environment variable "{var}" is not set.\n\nMANDATORY_ENV_VARS: {str(settings.MANDATORY_ENV_VARS)}\n',
             )
 
     dtl_repo = DTLRepo(args, settings.REPO_PATH, handle)
