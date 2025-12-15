@@ -807,8 +807,11 @@ class DeviceTypes:
                         opened_fh.close()
                     raise
 
-            response = requests.patch(url, headers=headers, files=file_handles, verify=(not self.ignore_ssl))
-            self.handle.log(f"Images {images} updated at {url}: {response}")
+            response = requests.patch(
+                url, headers=headers, files=file_handles, verify=(not self.ignore_ssl), timeout=60
+            )
+            response.raise_for_status()
+            self.handle.log(f"Images {images} updated at {url}: {response.status_code}")
             self.counter["images"] += len(images)
         finally:
             # Ensure all file handles are closed

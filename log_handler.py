@@ -3,14 +3,12 @@ from sys import exit as system_exit
 
 
 class LogHandler:
-    def __new__(cls, *args, **kwargs):
-        """
-        Create and return a new instance of the class.
+    """
+    Handles logging and exception reporting for the device type import process.
 
-        Returns:
-            LogHandler: A fresh, uninitialized instance of LogHandler.
-        """
-        return super().__new__(cls)
+    Provides timestamped logging methods, verbose mode support, and formatted
+    error messages that terminate the program on critical failures.
+    """
 
     def __init__(self, args):
         """
