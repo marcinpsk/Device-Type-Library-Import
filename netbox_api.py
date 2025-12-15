@@ -793,20 +793,11 @@ class DeviceTypes:
         url = f"{baseurl}/api/dcim/device-types/{device_type}/"
         headers = {"Authorization": f"Token {token}"}
 
-        # Open files one by one with proper cleanup to avoid resource leaks
+        # Open files with proper cleanup to avoid resource leaks
         file_handles = {}
         try:
-            # Open each file individually; if one fails, close already-opened handles
-            for field_name, file_path in images.items():
-                try:
-                    fh = open(file_path, "rb")
-                    file_handles[field_name] = (os.path.basename(file_path), fh)
-                except Exception:
-                    # Close any already-opened files before re-raising
-                    for _, (_, opened_fh) in file_handles.items():
-                        opened_fh.close()
-                    raise
-
+            for field, path in images.items():
+                file_handles[field] = (os.path.basename(path), open(path, "rb"))
             response = requests.patch(
                 url, headers=headers, files=file_handles, verify=(not self.ignore_ssl), timeout=60
             )
@@ -814,6 +805,8 @@ class DeviceTypes:
             self.handle.log(f"Images {images} updated at {url}: {response.status_code}")
             self.counter["images"] += len(images)
         finally:
-            # Ensure all file handles are closed
             for _, (_, fh) in file_handles.items():
-                fh.close()
+                try:
+                    fh.close()
+                except Exception:
+                    pass
