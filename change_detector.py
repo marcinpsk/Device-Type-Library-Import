@@ -188,6 +188,12 @@ class ChangeDetector:
             if netbox_value == "":
                 netbox_value = None
 
+            # Normalize trailing whitespace for string comparisons (YAML often has trailing newlines)
+            if isinstance(yaml_value, str):
+                yaml_value = yaml_value.rstrip()
+            if isinstance(netbox_value, str):
+                netbox_value = netbox_value.rstrip()
+
             # Compare values - only flag if YAML has a value that differs
             if yaml_value is not None and yaml_value != netbox_value:
                 changes.append(
@@ -286,6 +292,12 @@ class ChangeDetector:
                 yaml_value = None
             if netbox_value == "":
                 netbox_value = None
+
+            # Normalize trailing whitespace for string comparisons
+            if isinstance(yaml_value, str):
+                yaml_value = yaml_value.rstrip()
+            if isinstance(netbox_value, str):
+                netbox_value = netbox_value.rstrip()
 
             # Only flag if YAML has a value that differs
             if yaml_value is not None and yaml_value != netbox_value:
