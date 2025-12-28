@@ -178,9 +178,9 @@ class ChangeDetector:
             if yaml_value is None and netbox_value is None:
                 continue
 
-            # Handle NetBox choice fields that return dicts with 'value' key
-            if isinstance(netbox_value, dict) and "value" in netbox_value:
-                netbox_value = netbox_value["value"]
+            # Handle NetBox choice fields (pynetbox Record objects with .value attribute)
+            if hasattr(netbox_value, "value"):
+                netbox_value = netbox_value.value
 
             # Normalize empty string to None for comparison
             if yaml_value == "":
@@ -277,9 +277,9 @@ class ChangeDetector:
             yaml_value = yaml_comp.get(prop)
             netbox_value = getattr(netbox_comp, prop, None)
 
-            # Handle NetBox choice fields
-            if isinstance(netbox_value, dict) and "value" in netbox_value:
-                netbox_value = netbox_value["value"]
+            # Handle NetBox choice fields (pynetbox Record objects with .value attribute)
+            if hasattr(netbox_value, "value"):
+                netbox_value = netbox_value.value
 
             # Normalize empty/None
             if yaml_value == "":
