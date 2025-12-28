@@ -7,6 +7,7 @@ import settings
 from netbox_api import NetBox
 from log_handler import LogHandler
 from repo import DTLRepo
+from change_detector import ChangeDetector
 
 
 import sys
@@ -45,6 +46,12 @@ def main():
     parser.add_argument(
         "--only-new", action="store_true", default=False, help="Only create new devices, skip existing ones"
     )
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        default=False,
+        help="Update existing device types with changes from repository (add missing components, modify changed properties)",
+    )
 
     args = parser.parse_args()
 
@@ -79,12 +86,48 @@ def main():
     handle.log(f"{len(device_types)} Device-Types Found")
 
     netbox.create_manufacturers(vendors)
-    netbox.create_device_types(
-        device_types,
-        progress=get_progress_wrapper(device_types, desc="Creating Device Types"),
-        only_new=args.only_new,
-        progress_wrapper=get_progress_wrapper,
-    )
+
+    # Determine processing mode
+    change_report = None
+
+    if args.only_new:
+        # Skip caching and change detection - just create new devices
+        handle.log("Mode: Only creating new device types (--only-new)")
+        netbox.create_device_types(
+            device_types,
+            progress=get_progress_wrapper(device_types, desc="Creating Device Types"),
+            only_new=True,
+        )
+    else:
+        # Cache NetBox data for comparison (separate step with visible progress)
+        handle.log("Caching NetBox data for comparison...")
+        netbox.device_types.preload_all_components(progress_wrapper=get_progress_wrapper)
+
+        # Detect changes between YAML and NetBox
+        detector = ChangeDetector(netbox.device_types, handle)
+        change_report = detector.detect_changes(device_types)
+        detector.log_change_report(change_report)
+
+        if args.update:
+            # Update mode: create new + update existing
+            handle.log("Mode: Creating new and updating existing device types (--update)")
+            netbox.create_device_types(
+                device_types,
+                progress=get_progress_wrapper(device_types, desc="Processing Device Types"),
+                only_new=False,
+                update=True,
+                change_report=change_report,
+            )
+        else:
+            # Default mode: only create new, log what would change
+            handle.log("Mode: Creating new device types only (use --update to apply modifications)")
+            netbox.create_device_types(
+                device_types,
+                progress=get_progress_wrapper(device_types, desc="Creating Device Types"),
+                only_new=True,  # Skip existing devices in default mode
+                update=False,
+                change_report=change_report,
+            )
 
     if netbox.modules:
         handle.log("Modules Enabled. Creating Modules...")
@@ -103,9 +146,11 @@ def main():
 
     handle.log("---")
     handle.verbose_log(f"Script took {(datetime.now() - startTime)} to run")
-    handle.log(f'{netbox.counter["added"]} devices created')
+    handle.log(f'{netbox.counter["added"]} device types created')
+    handle.log(f'{netbox.counter["properties_updated"]} device types updated')
+    handle.log(f'{netbox.counter["components_updated"]} components updated')
+    handle.log(f'{netbox.counter["updated"]} components added')
     handle.log(f'{netbox.counter["images"]} images uploaded')
-    handle.log(f'{netbox.counter["updated"]} interfaces/ports updated')
     handle.log(f'{netbox.counter["manufacturer"]} manufacturers created')
     if settings.NETBOX_FEATURES["modules"]:
         handle.log(f'{netbox.counter["module_added"]} modules created')

@@ -19,6 +19,8 @@ class NetBox:
             module_added=0,
             module_port_added=0,
             images=0,
+            properties_updated=0,
+            components_updated=0,
         )
         self.url = settings.NETBOX_URL
         self.token = settings.NETBOX_TOKEN
@@ -98,10 +100,8 @@ class NetBox:
         else:
             self.handle.log("No new manufacturers to create.")
 
-    def create_device_types(self, device_types_to_add, progress=None, only_new=False, progress_wrapper=None):
-        # If we are updating existing devices (only_new=False), we should preload components for speed
-        if not only_new:
-            self.device_types.preload_all_components(progress_wrapper=progress_wrapper)
+    def create_device_types(self, device_types_to_add, progress=None, only_new=False, update=False, change_report=None):
+        # Note: Caching is now done externally before this method via preload_all_components()
 
         iterator = progress if progress is not None else device_types_to_add
         for device_type in iterator:
@@ -150,6 +150,20 @@ class NetBox:
                         f"Device Type Exists: {dt.manufacturer.name} - {dt.model} - {dt.id}. Skipping updates."
                     )
                     continue
+
+                # If update mode is enabled, update device type properties and components
+                if update and change_report:
+                    self._update_device_type_if_changed(dt, device_type, change_report)
+                    # Also update changed components
+                    manufacturer_slug = device_type["manufacturer"]["slug"]
+                    for dt_change in change_report.modified_device_types:
+                        if dt_change.manufacturer_slug == manufacturer_slug and dt_change.model == device_type["model"]:
+                            if dt_change.component_changes:
+                                self.device_types.update_components(
+                                    device_type, dt.id, dt_change.component_changes, parent_type="device"
+                                )
+                            break
+
                 self.handle.verbose_log(f"Device Type Exists: {dt.manufacturer.name} - " + f"{dt.model} - {dt.id}")
             except KeyError:
                 try:
@@ -202,6 +216,41 @@ class NetBox:
 
                 if saved_images:
                     self.device_types.upload_images(self.url, self.token, saved_images, dt.id)
+
+    def _update_device_type_if_changed(self, netbox_dt, yaml_data, change_report):
+        """
+        Update device type properties if changes were detected.
+
+        Args:
+            netbox_dt: The existing NetBox device type object
+            yaml_data: The YAML data for this device type
+            change_report: ChangeReport object with detected changes
+        """
+        manufacturer_slug = yaml_data["manufacturer"]["slug"]
+        model = yaml_data["model"]
+
+        # Find the change entry for this device type
+        dt_change = None
+        for change in change_report.modified_device_types:
+            if change.manufacturer_slug == manufacturer_slug and change.model == model:
+                dt_change = change
+                break
+
+        if not dt_change or not dt_change.property_changes:
+            return
+
+        # Build update payload from property changes
+        updates = {}
+        for pc in dt_change.property_changes:
+            updates[pc.property_name] = pc.new_value
+
+        if updates:
+            try:
+                netbox_dt.update(updates)
+                self.counter.update({"properties_updated": 1})
+                self.handle.verbose_log(f"Updated device type {netbox_dt.model} properties: {list(updates.keys())}")
+            except pynetbox.RequestError as e:
+                self.handle.log(f"Error updating device type {netbox_dt.model}: {e.error}")
 
     def create_module_types(self, module_types, progress=None, only_new=False):
         all_module_types = {}
@@ -424,6 +473,80 @@ class DeviceTypes:
                     self.handle.log(
                         f"Error '{excep.error}' creating {component_name}. Items: {failed_items}{context_str}"
                     )
+
+    def update_components(self, yaml_data, device_type_id, component_changes, parent_type="device"):
+        """
+        Update existing components based on detected changes.
+
+        Args:
+            yaml_data: YAML device type data containing component definitions
+            device_type_id: ID of the device type in NetBox
+            component_changes: List of ComponentChange objects with detected changes
+            parent_type: "device" or "module"
+        """
+        from change_detector import ChangeType
+
+        # Group changes by component type
+        changes_by_type = {}
+        for change in component_changes:
+            if change.change_type == ChangeType.COMPONENT_CHANGED:
+                if change.component_type not in changes_by_type:
+                    changes_by_type[change.component_type] = []
+                changes_by_type[change.component_type].append(change)
+
+        # Map component types to endpoints
+        endpoint_map = {
+            "interfaces": self.netbox.dcim.interface_templates,
+            "power-ports": self.netbox.dcim.power_port_templates,
+            "power-port": self.netbox.dcim.power_port_templates,
+            "console-ports": self.netbox.dcim.console_port_templates,
+            "power-outlets": self.netbox.dcim.power_outlet_templates,
+            "console-server-ports": self.netbox.dcim.console_server_port_templates,
+            "rear-ports": self.netbox.dcim.rear_port_templates,
+            "front-ports": self.netbox.dcim.front_port_templates,
+            "device-bays": self.netbox.dcim.device_bay_templates,
+            "module-bays": self.netbox.dcim.module_bay_templates,
+        }
+
+        cache_map = {
+            "interfaces": "interface_templates",
+            "power-ports": "power_port_templates",
+            "power-port": "power_port_templates",
+            "console-ports": "console_port_templates",
+            "power-outlets": "power_outlet_templates",
+            "console-server-ports": "console_server_port_templates",
+            "rear-ports": "rear_port_templates",
+            "front-ports": "front_port_templates",
+            "device-bays": "device_bay_templates",
+            "module-bays": "module_bay_templates",
+        }
+
+        for comp_type, changes in changes_by_type.items():
+            endpoint = endpoint_map.get(comp_type)
+            cache_name = cache_map.get(comp_type)
+            if not endpoint or not cache_name:
+                continue
+
+            # Get existing components from cache
+            cache_key = (parent_type, device_type_id)
+            existing = self.cached_components.get(cache_name, {}).get(cache_key, {})
+
+            updates = []
+            for change in changes:
+                if change.component_name in existing:
+                    comp = existing[change.component_name]
+                    update_data = {"id": comp.id}
+                    for pc in change.property_changes:
+                        update_data[pc.property_name] = pc.new_value
+                    updates.append(update_data)
+
+            if updates:
+                try:
+                    endpoint.update(updates)
+                    self.counter.update({"components_updated": len(updates)})
+                    self.handle.verbose_log(f"Updated {len(updates)} {comp_type}")
+                except pynetbox.RequestError as e:
+                    self.handle.log(f"Error updating {comp_type}: {e.error}")
 
     def create_interfaces(self, interfaces, device_type, context=None):
         bridged_interfaces = {}
