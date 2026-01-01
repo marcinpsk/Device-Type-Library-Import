@@ -77,6 +77,18 @@ def main():
     # For now, we will update NetBox to verify compatibility with this new setup
     netbox = NetBox(settings, handle)  # handle passed explicitly
 
+    # Print what will be imported based on CLI arguments
+    if args.vendors:
+        handle.log(f"Importing vendors: {', '.join(args.vendors)}")
+    if args.slugs:
+        handle.log(f"Filtering by slugs: {', '.join(args.slugs)}")
+    if args.update:
+        handle.log("Mode: Will create new and update existing device types (--update)")
+    elif args.only_new:
+        handle.log("Mode: Will only create new device types, skipping existing (--only-new)")
+    else:
+        handle.log("Mode: Will create new device types only (use --update to modify existing)")
+
     files, vendors = dtl_repo.get_devices(f"{dtl_repo.repo_path}/device-types/", args.vendors)
 
     handle.log(f"{len(vendors)} Vendors Found")
