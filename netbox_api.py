@@ -21,6 +21,7 @@ class NetBox:
             images=0,
             properties_updated=0,
             components_updated=0,
+            components_removed=0,
         )
         self.url = settings.NETBOX_URL
         self.token = settings.NETBOX_TOKEN
@@ -100,7 +101,15 @@ class NetBox:
         else:
             self.handle.log("No new manufacturers to create.")
 
-    def create_device_types(self, device_types_to_add, progress=None, only_new=False, update=False, change_report=None):
+    def create_device_types(
+        self,
+        device_types_to_add,
+        progress=None,
+        only_new=False,
+        update=False,
+        change_report=None,
+        remove_components=False,
+    ):
         # Note: Caching is now done externally before this method via preload_all_components()
 
         iterator = progress if progress is not None else device_types_to_add
@@ -162,6 +171,11 @@ class NetBox:
                                 self.device_types.update_components(
                                     device_type, dt.id, dt_change.component_changes, parent_type="device"
                                 )
+                                # Handle component removal if enabled
+                                if remove_components:
+                                    self.device_types.remove_components(
+                                        dt.id, dt_change.component_changes, parent_type="device"
+                                    )
                             break
 
                 self.handle.verbose_log(f"Device Type Exists: {dt.manufacturer.name} - " + f"{dt.model} - {dt.id}")
@@ -589,6 +603,82 @@ class DeviceTypes:
                 self.create_device_bays(components_to_add, device_type_id)
             elif comp_type == "module-bays":
                 self.create_module_bays(components_to_add, device_type_id)
+
+    def remove_components(self, device_type_id, component_changes, parent_type="device"):
+        """
+        Remove components that exist in NetBox but not in YAML.
+
+        Args:
+            device_type_id: ID of the device type in NetBox
+            component_changes: List of ComponentChange objects with detected changes
+            parent_type: "device" or "module"
+        """
+        from change_detector import ChangeType
+
+        # Map component types to endpoints
+        endpoint_map = {
+            "interfaces": self.netbox.dcim.interface_templates,
+            "power-ports": self.netbox.dcim.power_port_templates,
+            "power-port": self.netbox.dcim.power_port_templates,
+            "console-ports": self.netbox.dcim.console_port_templates,
+            "power-outlets": self.netbox.dcim.power_outlet_templates,
+            "console-server-ports": self.netbox.dcim.console_server_port_templates,
+            "rear-ports": self.netbox.dcim.rear_port_templates,
+            "front-ports": self.netbox.dcim.front_port_templates,
+            "device-bays": self.netbox.dcim.device_bay_templates,
+            "module-bays": self.netbox.dcim.module_bay_templates,
+        }
+
+        cache_map = {
+            "interfaces": "interface_templates",
+            "power-ports": "power_port_templates",
+            "power-port": "power_port_templates",
+            "console-ports": "console_port_templates",
+            "power-outlets": "power_outlet_templates",
+            "console-server-ports": "console_server_port_templates",
+            "rear-ports": "rear_port_templates",
+            "front-ports": "front_port_templates",
+            "device-bays": "device_bay_templates",
+            "module-bays": "module_bay_templates",
+        }
+
+        # Filter for removal changes only
+        removals = [c for c in component_changes if c.change_type == ChangeType.COMPONENT_REMOVED]
+
+        # Group removals by component type
+        removals_by_type = {}
+        for removal in removals:
+            if removal.component_type not in removals_by_type:
+                removals_by_type[removal.component_type] = []
+            removals_by_type[removal.component_type].append(removal)
+
+        # Process removals for each component type
+        for comp_type, changes in removals_by_type.items():
+            endpoint = endpoint_map.get(comp_type)
+            cache_name = cache_map.get(comp_type)
+            if not endpoint or not cache_name:
+                continue
+
+            # Get existing components from cache
+            cache_key = (parent_type, device_type_id)
+            existing = self.cached_components.get(cache_name, {}).get(cache_key, {})
+
+            ids_to_delete = []
+            for change in changes:
+                if change.component_name in existing:
+                    comp = existing[change.component_name]
+                    ids_to_delete.append(comp.id)
+                    self.handle.verbose_log(f"Removing {comp_type}: {change.component_name} (ID: {comp.id})")
+
+            # Delete components
+            if ids_to_delete:
+                try:
+                    for comp_id in ids_to_delete:
+                        endpoint.delete(comp_id)
+                    self.counter.update({"components_removed": len(ids_to_delete)})
+                    self.handle.log(f"Removed {len(ids_to_delete)} {comp_type}")
+                except pynetbox.RequestError as e:
+                    self.handle.log(f"Error removing {comp_type}: {e.error}")
 
     def create_interfaces(self, interfaces, device_type, context=None):
         bridged_interfaces = {}

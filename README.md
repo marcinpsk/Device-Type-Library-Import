@@ -72,6 +72,42 @@ To import only device by APC, for example:
 ./nb-dt-import.py --vendors apc,juniper
 ```
 
+#### Update Mode
+
+By default, the script only creates new device types and skips existing ones. To update existing device types:
+
+```
+./nb-dt-import.py --update
+```
+
+This will:
+- Add new components (interfaces, power ports, etc.) that are in YAML but missing from NetBox
+- Update properties of existing components if they've changed
+- Update device type properties (u_height, part_number, etc.) if they've changed
+- **Report** components that exist in NetBox but are missing from YAML (won't delete by default)
+
+#### Component Removal (Use with Caution)
+
+⚠️ **WARNING**: Removing components can affect existing device instances in NetBox.
+
+If you've changed a device type definition (for example, converting interfaces to module-bays to support SFP modules), you can remove obsolete components with:
+
+```
+./nb-dt-import.py --update --remove-components
+```
+
+This will delete any components (interfaces, ports, bays, etc.) that exist in NetBox but are no longer present in the YAML definition.
+
+**Use cases**:
+- Converting fixed interfaces to module-bays for modular devices
+- Removing incorrectly defined components from device templates
+- Cleaning up after major device type definition changes
+
+**Important considerations**:
+- Components attached to actual device instances may prevent deletion
+- Review the change detection report before enabling component removal
+- Test on a staging NetBox instance first if possible
+
 ## Docker build
 
 It's possible to use this project as a docker container.

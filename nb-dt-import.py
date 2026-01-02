@@ -52,6 +52,12 @@ def main():
         default=False,
         help="Update existing device types with changes from repository (add missing components, modify changed properties)",
     )
+    parser.add_argument(
+        "--remove-components",
+        action="store_true",
+        default=False,
+        help="Remove components from NetBox that no longer exist in YAML (use with --update). WARNING: May affect existing device instances.",
+    )
 
     args = parser.parse_args()
 
@@ -84,6 +90,8 @@ def main():
         handle.log(f"Filtering by slugs: {', '.join(args.slugs)}")
     if args.update:
         handle.log("Mode: Will create new and update existing device types (--update)")
+        if args.remove_components:
+            handle.log("  Component removal enabled: Will delete components missing from YAML (--remove-components)")
     elif args.only_new:
         handle.log("Mode: Will only create new device types, skipping existing (--only-new)")
     else:
@@ -129,6 +137,7 @@ def main():
                 only_new=False,
                 update=True,
                 change_report=change_report,
+                remove_components=args.remove_components,
             )
         else:
             # Default mode: only create new, log what would change
@@ -162,6 +171,7 @@ def main():
     handle.log(f'{netbox.counter["properties_updated"]} device types updated')
     handle.log(f'{netbox.counter["components_updated"]} components updated')
     handle.log(f'{netbox.counter["updated"]} components added')
+    handle.log(f'{netbox.counter["components_removed"]} components removed')
     handle.log(f'{netbox.counter["images"]} images uploaded')
     handle.log(f'{netbox.counter["manufacturer"]} manufacturers created')
     if settings.NETBOX_FEATURES["modules"]:

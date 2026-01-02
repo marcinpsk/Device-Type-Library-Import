@@ -17,6 +17,7 @@ class ChangeType(Enum):
     PROPERTY_CHANGED = "property_changed"
     COMPONENT_ADDED = "component_added"
     COMPONENT_CHANGED = "component_changed"
+    COMPONENT_REMOVED = "component_removed"
 
 
 @dataclass
@@ -228,14 +229,26 @@ class ChangeDetector:
 
         for yaml_key, (cache_name, properties) in COMPONENT_TYPES.items():
             yaml_components = yaml_data.get(yaml_key, [])
-            if not yaml_components:
-                continue
 
             # Get cached components for this device type
             cached = self.device_types.cached_components.get(cache_name, {})
             existing_components = cached.get(cache_key, {})
 
-            # Check each YAML component
+            # Build set of YAML component names for this type
+            yaml_component_names = {comp.get("name") for comp in yaml_components if comp.get("name")}
+
+            # Check for removed components (exist in NetBox but not in YAML)
+            for existing_name in existing_components.keys():
+                if existing_name not in yaml_component_names:
+                    changes.append(
+                        ComponentChange(
+                            component_type=yaml_key,
+                            component_name=existing_name,
+                            change_type=ChangeType.COMPONENT_REMOVED,
+                        )
+                    )
+
+            # Check each YAML component for additions or modifications
             for yaml_comp in yaml_components:
                 comp_name = yaml_comp.get("name")
                 if not comp_name:
@@ -338,11 +351,18 @@ class ChangeDetector:
                 # Component changes
                 added = [c for c in dt.component_changes if c.change_type == ChangeType.COMPONENT_ADDED]
                 changed = [c for c in dt.component_changes if c.change_type == ChangeType.COMPONENT_CHANGED]
+                removed = [c for c in dt.component_changes if c.change_type == ChangeType.COMPONENT_REMOVED]
 
                 if added:
                     self.handle.verbose_log(f"      + {len(added)} new component(s)")
                 if changed:
                     self.handle.verbose_log(f"      ~ {len(changed)} changed component(s)")
+                if removed:
+                    self.handle.log(
+                        f"      - {len(removed)} removed component(s) (not deleted without --remove-components)"
+                    )
+                    for comp in removed:
+                        self.handle.verbose_log(f"        - {comp.component_type}: {comp.component_name}")
 
         self.handle.log("=" * 60)
 
