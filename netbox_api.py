@@ -540,9 +540,7 @@ class DeviceTypes:
             if not endpoint:
                 continue
 
-            # Get existing components from cache
-            cache_key = (parent_type, device_type_id)
-            existing = self.cached_components.get(cache_name, {}).get(cache_key, {})
+            existing = self._get_cached_or_fetch(cache_name, device_type_id, parent_type, endpoint)
 
             updates = []
             for change in changes:
@@ -637,9 +635,7 @@ class DeviceTypes:
             if not endpoint:
                 continue
 
-            # Get existing components from cache
-            cache_key = (parent_type, device_type_id)
-            existing = self.cached_components.get(cache_name, {}).get(cache_key, {})
+            existing = self._get_cached_or_fetch(cache_name, device_type_id, parent_type, endpoint)
 
             ids_to_delete = []
             for change in changes:
@@ -652,7 +648,7 @@ class DeviceTypes:
             success_count = 0
             for comp_id in ids_to_delete:
                 try:
-                    endpoint.delete(comp_id)
+                    endpoint.delete([comp_id])
                     success_count += 1
                 except pynetbox.RequestError as e:
                     self.handle.log(f"Error removing {comp_type} (ID: {comp_id}): {e.error}")
