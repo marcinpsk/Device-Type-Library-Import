@@ -440,12 +440,13 @@ class DeviceTypes:
         """
         cache_key = (parent_type, parent_id)
         if cache_name in self.cached_components:
-            cached = self.cached_components[cache_name].get(cache_key, {})
-            if cached:
-                return cached
+            if cache_key in self.cached_components[cache_name]:
+                return self.cached_components[cache_name][cache_key]
 
         filter_kwargs = self._get_filter_kwargs(parent_id, parent_type)
-        return {str(item): item for item in endpoint.filter(**filter_kwargs)}
+        result = {str(item): item for item in endpoint.filter(**filter_kwargs)}
+        self.cached_components.setdefault(cache_name, {})[cache_key] = result
+        return result
 
     def _create_generic(
         self,

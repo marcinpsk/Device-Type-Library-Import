@@ -1,4 +1,4 @@
-# Netbox Device Type Import
+# NetBox Device Type Import
 
 This library is intended to be your friend and help you import all the device-types defined within
 the [NetBox Device Type Library Repository](https://github.com/netbox-community/devicetype-library).
@@ -9,7 +9,7 @@ the [NetBox Device Type Library Repository](https://github.com/netbox-community/
 
 This script will clone a copy of the `netbox-community/devicetype-library` repository to your
 machine to allow it to import the device types you would like without copy and pasting them
-into the Netbox UI.
+into the NetBox UI.
 
 ## Getting Started
 
@@ -20,7 +20,7 @@ into the Netbox UI.
    ```
 
 1. There are two variables that are required when using this script to import device types
-   into your NetBox installation. (1) Your Netbox instance URL and (2) a token with
+   into your NetBox installation. (1) Your NetBox instance URL and (2) a token with
    **write rights**.
 
 Copy the existing `.env.example` to your own `.env` file, and fill in the variables.
@@ -46,9 +46,9 @@ from GitHub and install it into the `repo` subdirectory. If this directory alrea
 it will perform a `git pull` to update the repository instead.
 
 Next, it will loop over every manufacturer and every device of every manufacturer and begin
-checking if your Netbox install already has them, and if not, creates them. It will skip
+checking if your NetBox install already has them, and if not, creates them. It will skip
 preexisting manufacturers, devices, interfaces, etc. so as to not end up with duplicate
-entries in your Netbox instance.
+entries in your NetBox instance.
 
 ### Arguments
 
