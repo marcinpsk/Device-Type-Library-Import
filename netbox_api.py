@@ -82,7 +82,7 @@ class NetBox:
 
             # Check existence by name or slug
             if vendor["name"] in existing_names or vendor["slug"] in existing_slugs:
-                self.handle.verbose_log(f'Manufacturer Exists: {vendor["name"]} (slug: {vendor["slug"]})')
+                self.handle.verbose_log(f"Manufacturer Exists: {vendor['name']} (slug: {vendor['slug']})")
             else:
                 to_create.append(vendor)
                 self.handle.verbose_log(f"Manufacturer queued for addition: {vendor['name']} (slug: {vendor['slug']})")
@@ -114,7 +114,6 @@ class NetBox:
 
         iterator = progress if progress is not None else device_types_to_add
         for device_type in iterator:
-
             # Remove file base path
             src_file = device_type["src"]
             del device_type["src"]
@@ -191,7 +190,7 @@ class NetBox:
                 except pynetbox.RequestError as e:
                     self.handle.log(
                         f"Error {e.error} creating device type:"
-                        f' {device_type["manufacturer"]["slug"]} {device_type["model"]}'
+                        f" {device_type['manufacturer']['slug']} {device_type['model']}"
                     )
                     continue
 

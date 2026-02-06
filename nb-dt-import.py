@@ -167,16 +167,16 @@ def main():
 
     handle.log("---")
     handle.verbose_log(f"Script took {(datetime.now() - startTime)} to run")
-    handle.log(f'{netbox.counter["added"]} device types created')
-    handle.log(f'{netbox.counter["properties_updated"]} device types updated')
-    handle.log(f'{netbox.counter["components_updated"]} components updated')
-    handle.log(f'{netbox.counter["updated"]} components added')
-    handle.log(f'{netbox.counter["components_removed"]} components removed')
-    handle.log(f'{netbox.counter["images"]} images uploaded')
-    handle.log(f'{netbox.counter["manufacturer"]} manufacturers created')
+    handle.log(f"{netbox.counter['added']} device types created")
+    handle.log(f"{netbox.counter['properties_updated']} device types updated")
+    handle.log(f"{netbox.counter['components_updated']} components updated")
+    handle.log(f"{netbox.counter['updated']} components added")
+    handle.log(f"{netbox.counter['components_removed']} components removed")
+    handle.log(f"{netbox.counter['images']} images uploaded")
+    handle.log(f"{netbox.counter['manufacturer']} manufacturers created")
     if settings.NETBOX_FEATURES["modules"]:
-        handle.log(f'{netbox.counter["module_added"]} modules created')
-        handle.log(f'{netbox.counter["module_port_added"]} module interface / ports created')
+        handle.log(f"{netbox.counter['module_added']} modules created")
+        handle.log(f"{netbox.counter['module_port_added']} module interface / ports created")
 
 
 if __name__ == "__main__":

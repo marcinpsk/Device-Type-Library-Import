@@ -39,4 +39,4 @@ jobs:
         run: uv run ruff check .
 
       - name: Check formatting
-        run: uv run black --check .
+        run: uv run ruff format --check .

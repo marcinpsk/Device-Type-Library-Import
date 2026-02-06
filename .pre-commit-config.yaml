@@ -9,7 +9,7 @@ repos:
         require_serial: true
       - id: black
         name: black
-        entry: uv run black
+        entry: uv run ruff format 
         language: system
         types: [python]
         require_serial: true

@@ -345,7 +345,7 @@ class ChangeDetector:
                 # Property changes
                 for pc in dt.property_changes:
                     self.handle.verbose_log(
-                        f"      Property '{pc.property_name}': " f"'{pc.old_value}' -> '{pc.new_value}'"
+                        f"      Property '{pc.property_name}': '{pc.old_value}' -> '{pc.new_value}'"
                     )
 
                 # Component changes
