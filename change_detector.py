@@ -86,7 +86,6 @@ DEVICE_TYPE_PROPERTIES = [
 COMPONENT_TYPES = {
     "interfaces": ("interface_templates", ["name", "type", "mgmt_only", "label", "enabled", "poe_mode", "poe_type"]),
     "power-ports": ("power_port_templates", ["name", "type", "maximum_draw", "allocated_draw", "label"]),
-    "power-port": ("power_port_templates", ["name", "type", "maximum_draw", "allocated_draw", "label"]),
     "console-ports": ("console_port_templates", ["name", "type", "label"]),
     "power-outlets": ("power_outlet_templates", ["name", "type", "feed_leg", "label"]),
     "console-server-ports": ("console_server_port_templates", ["name", "type", "label"]),
@@ -94,6 +93,12 @@ COMPONENT_TYPES = {
     "front-ports": ("front_port_templates", ["name", "type", "rear_port_position", "label"]),
     "device-bays": ("device_bay_templates", ["name", "label"]),
     "module-bays": ("module_bay_templates", ["name", "position", "label"]),
+}
+
+# Aliases for YAML keys that map to the same component type.
+# alias -> canonical key
+COMPONENT_ALIASES = {
+    "power-port": "power-ports",
 }
 
 
@@ -158,6 +163,40 @@ class ChangeDetector:
 
         return report
 
+    @staticmethod
+    def _normalize_values(yaml_value, netbox_value):
+        """
+        Normalize a pair of values for comparison.
+
+        Converts NetBox choice objects by reading .value, normalizes empty
+        strings to None on both sides, and strips trailing whitespace from
+        strings.
+
+        Args:
+            yaml_value: Value from parsed YAML data
+            netbox_value: Value from NetBox (pynetbox attribute)
+
+        Returns:
+            Tuple of (normalized_yaml_value, normalized_netbox_value)
+        """
+        # Handle NetBox choice fields (pynetbox Record objects with .value attribute)
+        if hasattr(netbox_value, "value"):
+            netbox_value = netbox_value.value
+
+        # Normalize empty string to None for comparison
+        if yaml_value == "":
+            yaml_value = None
+        if netbox_value == "":
+            netbox_value = None
+
+        # Normalize trailing whitespace for string comparisons (YAML often has trailing newlines)
+        if isinstance(yaml_value, str):
+            yaml_value = yaml_value.rstrip()
+        if isinstance(netbox_value, str):
+            netbox_value = netbox_value.rstrip()
+
+        return yaml_value, netbox_value
+
     def _compare_device_type_properties(self, yaml_data: dict, netbox_dt) -> List[PropertyChange]:
         """
         Compare YAML device type properties against NetBox device type.
@@ -179,21 +218,7 @@ class ChangeDetector:
             if yaml_value is None and netbox_value is None:
                 continue
 
-            # Handle NetBox choice fields (pynetbox Record objects with .value attribute)
-            if hasattr(netbox_value, "value"):
-                netbox_value = netbox_value.value
-
-            # Normalize empty string to None for comparison
-            if yaml_value == "":
-                yaml_value = None
-            if netbox_value == "":
-                netbox_value = None
-
-            # Normalize trailing whitespace for string comparisons (YAML often has trailing newlines)
-            if isinstance(yaml_value, str):
-                yaml_value = yaml_value.rstrip()
-            if isinstance(netbox_value, str):
-                netbox_value = netbox_value.rstrip()
+            yaml_value, netbox_value = self._normalize_values(yaml_value, netbox_value)
 
             # Compare values - only flag if YAML has a value that differs
             if yaml_value is not None and yaml_value != netbox_value:
@@ -228,7 +253,12 @@ class ChangeDetector:
         cache_key = (parent_type, device_type_id)
 
         for yaml_key, (cache_name, properties) in COMPONENT_TYPES.items():
-            yaml_components = yaml_data.get(yaml_key, [])
+            yaml_components = list(yaml_data.get(yaml_key) or [])
+
+            # Merge components from any aliases that map to this canonical key
+            for alias, canonical in COMPONENT_ALIASES.items():
+                if canonical == yaml_key:
+                    yaml_components.extend(yaml_data.get(alias) or [])
 
             # Get cached components for this device type
             cached = self.device_types.cached_components.get(cache_name, {})
@@ -296,21 +326,7 @@ class ChangeDetector:
             yaml_value = yaml_comp.get(prop)
             netbox_value = getattr(netbox_comp, prop, None)
 
-            # Handle NetBox choice fields (pynetbox Record objects with .value attribute)
-            if hasattr(netbox_value, "value"):
-                netbox_value = netbox_value.value
-
-            # Normalize empty/None
-            if yaml_value == "":
-                yaml_value = None
-            if netbox_value == "":
-                netbox_value = None
-
-            # Normalize trailing whitespace for string comparisons
-            if isinstance(yaml_value, str):
-                yaml_value = yaml_value.rstrip()
-            if isinstance(netbox_value, str):
-                netbox_value = netbox_value.rstrip()
+            yaml_value, netbox_value = self._normalize_values(yaml_value, netbox_value)
 
             # Only flag if YAML has a value that differs
             if yaml_value is not None and yaml_value != netbox_value:
@@ -340,18 +356,22 @@ class ChangeDetector:
             self.handle.log("-" * 60)
             self.handle.log("MODIFIED DEVICE TYPES:")
             for dt in report.modified_device_types:
-                self.handle.verbose_log(f"  ~ {dt.manufacturer_slug}/{dt.model}")
+                # Component changes
+                added = [c for c in dt.component_changes if c.change_type == ChangeType.COMPONENT_ADDED]
+                changed = [c for c in dt.component_changes if c.change_type == ChangeType.COMPONENT_CHANGED]
+                removed = [c for c in dt.component_changes if c.change_type == ChangeType.COMPONENT_REMOVED]
+
+                # Log device identity: always when there are removals, verbose-only otherwise
+                if removed:
+                    self.handle.log(f"  ~ {dt.manufacturer_slug}/{dt.model}")
+                else:
+                    self.handle.verbose_log(f"  ~ {dt.manufacturer_slug}/{dt.model}")
 
                 # Property changes
                 for pc in dt.property_changes:
                     self.handle.verbose_log(
                         f"      Property '{pc.property_name}': '{pc.old_value}' -> '{pc.new_value}'"
                     )
-
-                # Component changes
-                added = [c for c in dt.component_changes if c.change_type == ChangeType.COMPONENT_ADDED]
-                changed = [c for c in dt.component_changes if c.change_type == ChangeType.COMPONENT_CHANGED]
-                removed = [c for c in dt.component_changes if c.change_type == ChangeType.COMPONENT_REMOVED]
 
                 if added:
                     self.handle.verbose_log(f"      + {len(added)} new component(s)")
@@ -366,13 +386,12 @@ class ChangeDetector:
 
         self.handle.log("=" * 60)
 
-    def get_update_data(self, dt_change: DeviceTypeChange, yaml_data: dict) -> Dict[str, Any]:
+    def get_update_data(self, dt_change: DeviceTypeChange) -> Dict[str, Any]:
         """
         Get the update payload for a device type based on detected changes.
 
         Args:
             dt_change: The DeviceTypeChange object with detected changes
-            yaml_data: Original YAML data for the device type
 
         Returns:
             Dictionary with update data for device type properties

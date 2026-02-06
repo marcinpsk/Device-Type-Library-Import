@@ -4,6 +4,8 @@ import requests
 import os
 import glob
 
+from change_detector import ChangeType
+
 # from pynetbox import RequestError as APIRequestError
 
 
@@ -14,7 +16,7 @@ class NetBox:
     def __init__(self, settings, handle):
         self.counter = Counter(
             added=0,
-            updated=0,
+            components_added=0,
             manufacturer=0,
             module_added=0,
             module_port_added=0,
@@ -161,21 +163,35 @@ class NetBox:
 
                 # If update mode is enabled, update device type properties and components
                 if update and change_report:
-                    self._update_device_type_if_changed(dt, device_type, change_report)
-                    # Also update changed components
-                    manufacturer_slug = device_type["manufacturer"]["slug"]
-                    for dt_change in change_report.modified_device_types:
-                        if dt_change.manufacturer_slug == manufacturer_slug and dt_change.model == device_type["model"]:
-                            if dt_change.component_changes:
-                                self.device_types.update_components(
-                                    device_type, dt.id, dt_change.component_changes, parent_type="device"
-                                )
-                                # Handle component removal if enabled
-                                if remove_components:
-                                    self.device_types.remove_components(
-                                        dt.id, dt_change.component_changes, parent_type="device"
-                                    )
+                    # Find the matching change entry once
+                    dt_change = None
+                    for change in change_report.modified_device_types:
+                        if change.manufacturer_slug == manufacturer_slug and change.model == device_type["model"]:
+                            dt_change = change
                             break
+
+                    if dt_change:
+                        # Apply property changes
+                        if dt_change.property_changes:
+                            updates = {pc.property_name: pc.new_value for pc in dt_change.property_changes}
+                            try:
+                                dt.update(updates)
+                                self.counter.update({"properties_updated": 1})
+                                self.handle.verbose_log(
+                                    f"Updated device type {dt.model} properties: {list(updates.keys())}"
+                                )
+                            except pynetbox.RequestError as e:
+                                self.handle.log(f"Error updating device type {dt.model}: {e.error}")
+
+                        # Apply component changes
+                        if dt_change.component_changes:
+                            self.device_types.update_components(
+                                device_type, dt.id, dt_change.component_changes, parent_type="device"
+                            )
+                            if remove_components:
+                                self.device_types.remove_components(
+                                    dt.id, dt_change.component_changes, parent_type="device"
+                                )
 
                 self.handle.verbose_log(f"Device Type Exists: {dt.manufacturer.name} - " + f"{dt.model} - {dt.id}")
                 # Device type already exists - skip component creation
@@ -234,41 +250,6 @@ class NetBox:
 
                 if saved_images:
                     self.device_types.upload_images(self.url, self.token, saved_images, dt.id)
-
-    def _update_device_type_if_changed(self, netbox_dt, yaml_data, change_report):
-        """
-        Update device type properties if changes were detected.
-
-        Args:
-            netbox_dt: The existing NetBox device type object
-            yaml_data: The YAML data for this device type
-            change_report: ChangeReport object with detected changes
-        """
-        manufacturer_slug = yaml_data["manufacturer"]["slug"]
-        model = yaml_data["model"]
-
-        # Find the change entry for this device type
-        dt_change = None
-        for change in change_report.modified_device_types:
-            if change.manufacturer_slug == manufacturer_slug and change.model == model:
-                dt_change = change
-                break
-
-        if not dt_change or not dt_change.property_changes:
-            return
-
-        # Build update payload from property changes
-        updates = {}
-        for pc in dt_change.property_changes:
-            updates[pc.property_name] = pc.new_value
-
-        if updates:
-            try:
-                netbox_dt.update(updates)
-                self.counter.update({"properties_updated": 1})
-                self.handle.verbose_log(f"Updated device type {netbox_dt.model} properties: {list(updates.keys())}")
-            except pynetbox.RequestError as e:
-                self.handle.log(f"Error updating device type {netbox_dt.model}: {e.error}")
 
     def create_module_types(self, module_types, progress=None, only_new=False):
         all_module_types = {}
@@ -333,6 +314,21 @@ class NetBox:
                 self.device_types.create_module_front_ports(
                     curr_mt["front-ports"], module_type_res.id, context=src_file
                 )
+
+
+# Component type -> (dcim endpoint attribute name, cache key name)
+ENDPOINT_CACHE_MAP = {
+    "interfaces": ("interface_templates", "interface_templates"),
+    "power-ports": ("power_port_templates", "power_port_templates"),
+    "power-port": ("power_port_templates", "power_port_templates"),
+    "console-ports": ("console_port_templates", "console_port_templates"),
+    "power-outlets": ("power_outlet_templates", "power_outlet_templates"),
+    "console-server-ports": ("console_server_port_templates", "console_server_port_templates"),
+    "rear-ports": ("rear_port_templates", "rear_port_templates"),
+    "front-ports": ("front_port_templates", "front_port_templates"),
+    "device-bays": ("device_bay_templates", "device_bay_templates"),
+    "module-bays": ("module_bay_templates", "module_bay_templates"),
+}
 
 
 class DeviceTypes:
@@ -431,6 +427,27 @@ class DeviceTypes:
             key = "module_type_id" if self.new_filters else "moduletype_id"
             return {key: parent_id}
 
+    def _get_cached_or_fetch(self, cache_name, parent_id, parent_type, endpoint):
+        """Return cached components or fall back to fetching from the API.
+
+        Args:
+            cache_name: Key in self.cached_components (e.g. "rear_port_templates")
+            parent_id: Device type or module type ID
+            parent_type: "device" or "module"
+            endpoint: pynetbox endpoint proxy to filter against on cache miss
+
+        Returns:
+            Dict mapping component name -> pynetbox Record
+        """
+        cache_key = (parent_type, parent_id)
+        if cache_name in self.cached_components:
+            cached = self.cached_components[cache_name].get(cache_key, {})
+            if cached:
+                return cached
+
+        filter_kwargs = self._get_filter_kwargs(parent_id, parent_type)
+        return {str(item): item for item in endpoint.filter(**filter_kwargs)}
+
     def _create_generic(
         self,
         items,
@@ -473,10 +490,10 @@ class DeviceTypes:
                 # Use appropriate logger
                 if parent_type == "device":
                     count = self.handle.log_device_ports_created(created, component_name)
-                    self.counter.update({"updated": count})
+                    self.counter.update({"components_added": count})
                 else:
                     count = self.handle.log_module_ports_created(created, component_name)
-                    self.counter.update({"updated": count})
+                    self.counter.update({"components_added": count})
             except pynetbox.RequestError as excep:
                 context_str = f" (Context: {context})" if context else ""
                 if isinstance(excep.error, list):
@@ -500,8 +517,6 @@ class DeviceTypes:
             component_changes: List of ComponentChange objects with detected changes
             parent_type: "device" or "module"
         """
-        from change_detector import ChangeType
-
         # Group changes by component type and change type
         changes_to_update = {}
         changes_to_add = {}
@@ -515,38 +530,14 @@ class DeviceTypes:
                     changes_to_add[change.component_type] = []
                 changes_to_add[change.component_type].append(change)
 
-        # Map component types to endpoints
-        endpoint_map = {
-            "interfaces": self.netbox.dcim.interface_templates,
-            "power-ports": self.netbox.dcim.power_port_templates,
-            "power-port": self.netbox.dcim.power_port_templates,
-            "console-ports": self.netbox.dcim.console_port_templates,
-            "power-outlets": self.netbox.dcim.power_outlet_templates,
-            "console-server-ports": self.netbox.dcim.console_server_port_templates,
-            "rear-ports": self.netbox.dcim.rear_port_templates,
-            "front-ports": self.netbox.dcim.front_port_templates,
-            "device-bays": self.netbox.dcim.device_bay_templates,
-            "module-bays": self.netbox.dcim.module_bay_templates,
-        }
-
-        cache_map = {
-            "interfaces": "interface_templates",
-            "power-ports": "power_port_templates",
-            "power-port": "power_port_templates",
-            "console-ports": "console_port_templates",
-            "power-outlets": "power_outlet_templates",
-            "console-server-ports": "console_server_port_templates",
-            "rear-ports": "rear_port_templates",
-            "front-ports": "front_port_templates",
-            "device-bays": "device_bay_templates",
-            "module-bays": "module_bay_templates",
-        }
-
         # Handle component updates
         for comp_type, changes in changes_to_update.items():
-            endpoint = endpoint_map.get(comp_type)
-            cache_name = cache_map.get(comp_type)
-            if not endpoint or not cache_name:
+            mapping = ENDPOINT_CACHE_MAP.get(comp_type)
+            if not mapping:
+                continue
+            endpoint_attr, cache_name = mapping
+            endpoint = getattr(self.netbox.dcim, endpoint_attr, None)
+            if not endpoint:
                 continue
 
             # Get existing components from cache
@@ -575,6 +566,14 @@ class DeviceTypes:
             if comp_type not in yaml_data:
                 continue
 
+            mapping = ENDPOINT_CACHE_MAP.get(comp_type)
+            if not mapping:
+                continue
+            endpoint_attr, cache_name = mapping
+            endpoint = getattr(self.netbox.dcim, endpoint_attr, None)
+            if not endpoint:
+                continue
+
             # Find the new components in the YAML data
             yaml_components = yaml_data[comp_type]
             new_component_names = {change.component_name for change in changes}
@@ -583,25 +582,17 @@ class DeviceTypes:
             if not components_to_add:
                 continue
 
-            # Use the existing create methods for each component type
-            if comp_type == "interfaces":
-                self.create_interfaces(components_to_add, device_type_id)
-            elif comp_type in ("power-ports", "power-port"):
-                self.create_power_ports(components_to_add, device_type_id)
-            elif comp_type == "console-ports":
-                self.create_console_ports(components_to_add, device_type_id)
-            elif comp_type == "power-outlets":
-                self.create_power_outlets(components_to_add, device_type_id)
-            elif comp_type == "console-server-ports":
-                self.create_console_server_ports(components_to_add, device_type_id)
-            elif comp_type == "rear-ports":
-                self.create_rear_ports(components_to_add, device_type_id)
-            elif comp_type == "front-ports":
-                self.create_front_ports(components_to_add, device_type_id)
-            elif comp_type == "device-bays":
-                self.create_device_bays(components_to_add, device_type_id)
-            elif comp_type == "module-bays":
-                self.create_module_bays(components_to_add, device_type_id)
+            # Format component name for logging (e.g. "power_port_templates" -> "Power Port")
+            component_name = endpoint_attr.replace("_templates", "").replace("_", " ").title()
+
+            self._create_generic(
+                components_to_add,
+                device_type_id,
+                endpoint,
+                component_name,
+                parent_type=parent_type,
+                cache_name=cache_name,
+            )
 
     def remove_components(self, device_type_id, component_changes, parent_type="device"):
         """
@@ -612,35 +603,6 @@ class DeviceTypes:
             component_changes: List of ComponentChange objects with detected changes
             parent_type: "device" or "module"
         """
-        from change_detector import ChangeType
-
-        # Map component types to endpoints
-        endpoint_map = {
-            "interfaces": self.netbox.dcim.interface_templates,
-            "power-ports": self.netbox.dcim.power_port_templates,
-            "power-port": self.netbox.dcim.power_port_templates,
-            "console-ports": self.netbox.dcim.console_port_templates,
-            "power-outlets": self.netbox.dcim.power_outlet_templates,
-            "console-server-ports": self.netbox.dcim.console_server_port_templates,
-            "rear-ports": self.netbox.dcim.rear_port_templates,
-            "front-ports": self.netbox.dcim.front_port_templates,
-            "device-bays": self.netbox.dcim.device_bay_templates,
-            "module-bays": self.netbox.dcim.module_bay_templates,
-        }
-
-        cache_map = {
-            "interfaces": "interface_templates",
-            "power-ports": "power_port_templates",
-            "power-port": "power_port_templates",
-            "console-ports": "console_port_templates",
-            "power-outlets": "power_outlet_templates",
-            "console-server-ports": "console_server_port_templates",
-            "rear-ports": "rear_port_templates",
-            "front-ports": "front_port_templates",
-            "device-bays": "device_bay_templates",
-            "module-bays": "module_bay_templates",
-        }
-
         # Filter for removal changes only
         removals = [c for c in component_changes if c.change_type == ChangeType.COMPONENT_REMOVED]
 
@@ -653,9 +615,12 @@ class DeviceTypes:
 
         # Process removals for each component type
         for comp_type, changes in removals_by_type.items():
-            endpoint = endpoint_map.get(comp_type)
-            cache_name = cache_map.get(comp_type)
-            if not endpoint or not cache_name:
+            mapping = ENDPOINT_CACHE_MAP.get(comp_type)
+            if not mapping:
+                continue
+            endpoint_attr, cache_name = mapping
+            endpoint = getattr(self.netbox.dcim, endpoint_attr, None)
+            if not endpoint:
                 continue
 
             # Get existing components from cache
@@ -669,15 +634,18 @@ class DeviceTypes:
                     ids_to_delete.append(comp.id)
                     self.handle.verbose_log(f"Removing {comp_type}: {change.component_name} (ID: {comp.id})")
 
-            # Delete components
-            if ids_to_delete:
+            # Delete components one at a time so a single failure doesn't skip the rest
+            success_count = 0
+            for comp_id in ids_to_delete:
                 try:
-                    for comp_id in ids_to_delete:
-                        endpoint.delete(comp_id)
-                    self.counter.update({"components_removed": len(ids_to_delete)})
-                    self.handle.log(f"Removed {len(ids_to_delete)} {comp_type}")
+                    endpoint.delete(comp_id)
+                    success_count += 1
                 except pynetbox.RequestError as e:
-                    self.handle.log(f"Error removing {comp_type}: {e.error}")
+                    self.handle.log(f"Error removing {comp_type} (ID: {comp_id}): {e.error}")
+
+            if success_count:
+                self.counter.update({"components_removed": success_count})
+                self.handle.log(f"Removed {success_count} {comp_type}")
 
     def create_interfaces(self, interfaces, device_type, context=None):
         bridged_interfaces = {}
@@ -697,21 +665,9 @@ class DeviceTypes:
         )
 
         if bridged_interfaces:
-            # Use cached interfaces if available, otherwise fetch from API
-            cache_key = ("device", device_type)
-            if "interface_templates" in self.cached_components:
-                all_interfaces = self.cached_components["interface_templates"].get(cache_key, {})
-                # If cache exists but is empty for this device type, fetch from API (e.g., newly created device type)
-                if not all_interfaces:
-                    filter_kwargs = self._get_filter_kwargs(device_type, "device")
-                    all_interfaces = {
-                        str(item): item for item in self.netbox.dcim.interface_templates.filter(**filter_kwargs)
-                    }
-            else:
-                filter_kwargs = self._get_filter_kwargs(device_type, "device")
-                all_interfaces = {
-                    str(item): item for item in self.netbox.dcim.interface_templates.filter(**filter_kwargs)
-                }
+            all_interfaces = self._get_cached_or_fetch(
+                "interface_templates", device_type, "device", self.netbox.dcim.interface_templates
+            )
 
             to_update = []
             for name, bridge_name in bridged_interfaces.items():
@@ -751,19 +707,9 @@ class DeviceTypes:
 
     def create_power_outlets(self, power_outlets, device_type, context=None):
         def link_ports(items, pid):
-            # Use cached power ports if available, otherwise fetch from API
-            cache_key = ("device", pid)
-            if "power_port_templates" in self.cached_components:
-                existing_pp = self.cached_components["power_port_templates"].get(cache_key, {})
-                # If cache exists but is empty for this device type, fetch from API (e.g., newly created device type)
-                if not existing_pp:
-                    pp_endpoint = self.netbox.dcim.power_port_templates
-                    pp_kwargs = self._get_filter_kwargs(pid, "device")
-                    existing_pp = {str(item): item for item in pp_endpoint.filter(**pp_kwargs)}
-            else:
-                pp_endpoint = self.netbox.dcim.power_port_templates
-                pp_kwargs = self._get_filter_kwargs(pid, "device")
-                existing_pp = {str(item): item for item in pp_endpoint.filter(**pp_kwargs)}
+            existing_pp = self._get_cached_or_fetch(
+                "power_port_templates", pid, "device", self.netbox.dcim.power_port_templates
+            )
 
             outlets_to_remove = []
             for outlet in items:
@@ -835,19 +781,9 @@ class DeviceTypes:
         """
 
         def link_rear_ports(items, pid):
-            # Use cached rear ports if available, otherwise fetch from API
-            cache_key = ("device", pid)
-            if "rear_port_templates" in self.cached_components:
-                existing_rp = self.cached_components["rear_port_templates"].get(cache_key, {})
-                # If cache exists but is empty for this device type, fetch from API (e.g., newly created device type)
-                if not existing_rp:
-                    rp_endpoint = self.netbox.dcim.rear_port_templates
-                    rp_kwargs = self._get_filter_kwargs(pid, "device")
-                    existing_rp = {str(item): item for item in rp_endpoint.filter(**rp_kwargs)}
-            else:
-                rp_endpoint = self.netbox.dcim.rear_port_templates
-                rp_kwargs = self._get_filter_kwargs(pid, "device")
-                existing_rp = {str(item): item for item in rp_endpoint.filter(**rp_kwargs)}
+            existing_rp = self._get_cached_or_fetch(
+                "rear_port_templates", pid, "device", self.netbox.dcim.rear_port_templates
+            )
 
             ports_to_remove = []
             for port in items:
@@ -940,19 +876,9 @@ class DeviceTypes:
 
     def create_module_power_outlets(self, power_outlets, module_type, context=None):
         def link_ports(items, pid):
-            # Use cached power ports if available, otherwise fetch from API
-            cache_key = ("module", pid)
-            if "power_port_templates" in self.cached_components:
-                existing_pp = self.cached_components["power_port_templates"].get(cache_key, {})
-                # If cache exists but is empty for this module type, fetch from API (e.g., newly created module type)
-                if not existing_pp:
-                    pp_endpoint = self.netbox.dcim.power_port_templates
-                    pp_kwargs = self._get_filter_kwargs(pid, "module")
-                    existing_pp = {str(item): item for item in pp_endpoint.filter(**pp_kwargs)}
-            else:
-                pp_endpoint = self.netbox.dcim.power_port_templates
-                pp_kwargs = self._get_filter_kwargs(pid, "module")
-                existing_pp = {str(item): item for item in pp_endpoint.filter(**pp_kwargs)}
+            existing_pp = self._get_cached_or_fetch(
+                "power_port_templates", pid, "module", self.netbox.dcim.power_port_templates
+            )
 
             for outlet in items:
                 try:
@@ -1016,28 +942,10 @@ class DeviceTypes:
         """
 
         def link_rear_ports(items, pid):
-            # Use cached rear ports if available, otherwise fetch from API
-            """
-            Resolve each front-port's `rear_port` name to the corresponding rear-port ID for a module and remove any front-ports whose `rear_port` cannot be resolved.
-
-            This function mutates `items` in place: for each port dict it replaces the string `rear_port` value with the matching rear-port `.id` when found, logs a message for each missing rear-port (including the available rear-port names), and removes ports with unresolved `rear_port` references. After processing it logs a summary of how many module front ports were skipped. The logs may include the outer-scope `context` value if present.
-
-            Parameters:
-                items (list[dict]): List of front-port dictionaries; each must contain at least `"name"` and `"rear_port"` (the latter initially a name string).
-                pid (int): The module type ID used to scope the rear-port lookup.
-            """
-            cache_key = ("module", pid)
-            if "rear_port_templates" in self.cached_components:
-                existing_rp = self.cached_components["rear_port_templates"].get(cache_key, {})
-                # If cache exists but is empty for this module type, fetch from API (e.g., newly created module type)
-                if not existing_rp:
-                    rp_endpoint = self.netbox.dcim.rear_port_templates
-                    rp_kwargs = self._get_filter_kwargs(pid, "module")
-                    existing_rp = {str(item): item for item in rp_endpoint.filter(**rp_kwargs)}
-            else:
-                rp_endpoint = self.netbox.dcim.rear_port_templates
-                rp_kwargs = self._get_filter_kwargs(pid, "module")
-                existing_rp = {str(item): item for item in rp_endpoint.filter(**rp_kwargs)}
+            """Resolve each front-port's rear_port name to the corresponding rear-port ID for a module."""
+            existing_rp = self._get_cached_or_fetch(
+                "rear_port_templates", pid, "module", self.netbox.dcim.rear_port_templates
+            )
 
             ports_to_remove = []
             for port in items:

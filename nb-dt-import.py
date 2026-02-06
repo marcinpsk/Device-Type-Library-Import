@@ -43,10 +43,12 @@ def main():
     )
     parser.add_argument("--branch", default=settings.REPO_BRANCH, help="Git branch to use from repo")
     parser.add_argument("--verbose", action="store_true", default=False, help="Print verbose output")
-    parser.add_argument(
+
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
         "--only-new", action="store_true", default=False, help="Only create new devices, skip existing ones"
     )
-    parser.add_argument(
+    mode_group.add_argument(
         "--update",
         action="store_true",
         default=False,
@@ -60,6 +62,9 @@ def main():
     )
 
     args = parser.parse_args()
+
+    if args.remove_components and not args.update:
+        parser.error("--remove-components requires --update")
 
     # Normalize arguments
     args.vendors = [v.casefold() for vendor in args.vendors for v in vendor.split(",") if v.strip()]
@@ -88,14 +93,6 @@ def main():
         handle.log(f"Importing vendors: {', '.join(args.vendors)}")
     if args.slugs:
         handle.log(f"Filtering by slugs: {', '.join(args.slugs)}")
-    if args.update:
-        handle.log("Mode: Will create new and update existing device types (--update)")
-        if args.remove_components:
-            handle.log("  Component removal enabled: Will delete components missing from YAML (--remove-components)")
-    elif args.only_new:
-        handle.log("Mode: Will only create new device types, skipping existing (--only-new)")
-    else:
-        handle.log("Mode: Will create new device types only (use --update to modify existing)")
 
     files, vendors = dtl_repo.get_devices(f"{dtl_repo.repo_path}/device-types/", args.vendors)
 
@@ -131,6 +128,10 @@ def main():
         if args.update:
             # Update mode: create new + update existing
             handle.log("Mode: Creating new and updating existing device types (--update)")
+            if args.remove_components:
+                handle.log(
+                    "  Component removal enabled: Will delete components missing from YAML (--remove-components)"
+                )
             netbox.create_device_types(
                 device_types,
                 progress=get_progress_wrapper(device_types, desc="Processing Device Types"),
@@ -170,7 +171,7 @@ def main():
     handle.log(f"{netbox.counter['added']} device types created")
     handle.log(f"{netbox.counter['properties_updated']} device types updated")
     handle.log(f"{netbox.counter['components_updated']} components updated")
-    handle.log(f"{netbox.counter['updated']} components added")
+    handle.log(f"{netbox.counter['components_added']} components added")
     handle.log(f"{netbox.counter['components_removed']} components removed")
     handle.log(f"{netbox.counter['images']} images uploaded")
     handle.log(f"{netbox.counter['manufacturer']} manufacturers created")
