@@ -42,7 +42,7 @@ uv run nb-dt-import.py
 ```
 
 This will clone the latest master branch from the `netbox-community/devicetype-library`
-from Github and install it into the `repo` subdirectory. If this directory already exists,
+from GitHub and install it into the `repo` subdirectory. If this directory already exists,
 it will perform a `git pull` to update the repository instead.
 
 Next, it will loop over every manufacturer and every device of every manufacturer and begin
@@ -61,7 +61,7 @@ To import only device by APC, for example:
 ./nb-dt-import.py --vendors apc
 ```
 
-`--vendors` can also accept a comma separated list of vendors if you want to import multiple.
+`--vendors` can also accept a comma-separated list of vendors if you want to import multiple.
 
 ```shell
 ./nb-dt-import.py --vendors apc,juniper
@@ -119,7 +119,7 @@ To build:
 docker build -t netbox-devicetype-import-library .
 ```
 
-Alternatively you can pull a pre-built image from Github Container Registry (ghcr.io):
+Alternatively you can pull a pre-built image from GitHub Container Registry (ghcr.io):
 
 ```shell
 docker pull ghcr.io/minitriga/netbox-device-type-library-import

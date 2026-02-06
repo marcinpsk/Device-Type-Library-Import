@@ -177,7 +177,6 @@ def main():
     handle.log(f"{netbox.counter['manufacturer']} manufacturers created")
     if settings.NETBOX_FEATURES["modules"]:
         handle.log(f"{netbox.counter['module_added']} modules created")
-        handle.log(f"{netbox.counter['module_port_added']} module interface / ports created")
 
 
 if __name__ == "__main__":

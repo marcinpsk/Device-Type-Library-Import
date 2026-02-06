@@ -4,7 +4,7 @@ import requests
 import os
 import glob
 
-from change_detector import ChangeType
+from change_detector import COMPONENT_ALIASES, ChangeType
 
 # from pynetbox import RequestError as APIRequestError
 
@@ -19,7 +19,6 @@ class NetBox:
             components_added=0,
             manufacturer=0,
             module_added=0,
-            module_port_added=0,
             images=0,
             properties_updated=0,
             components_updated=0,
@@ -280,7 +279,7 @@ class NetBox:
             except KeyError:
                 try:
                     module_type_res = self.netbox.dcim.module_types.create(curr_mt)
-                    self.counter["created"] += 1
+                    self.counter["module_added"] += 1
                     self.handle.verbose_log(
                         f"Module Type Created: {module_type_res.manufacturer.name} - "
                         + f"{module_type_res.model} - {module_type_res.id}"
@@ -553,17 +552,31 @@ class DeviceTypes:
                         update_data[pc.property_name] = pc.new_value
                     updates.append(update_data)
 
-            if updates:
+            success_count = 0
+            for update_data in updates:
                 try:
-                    endpoint.update(updates)
-                    self.counter.update({"components_updated": len(updates)})
-                    self.handle.verbose_log(f"Updated {len(updates)} {comp_type}")
+                    endpoint.update([update_data])
+                    success_count += 1
+                    self.handle.verbose_log(f"Updated {comp_type} (ID: {update_data['id']})")
                 except pynetbox.RequestError as e:
-                    self.handle.log(f"Error updating {comp_type}: {e.error}")
+                    self.handle.log(f"Error updating {comp_type} (ID: {update_data['id']}): {e.error}")
+
+            if success_count:
+                self.counter.update({"components_updated": success_count})
+                self.handle.verbose_log(f"Updated {success_count} {comp_type}")
 
         # Handle component additions
         for comp_type, changes in changes_to_add.items():
-            if comp_type not in yaml_data:
+            # Resolve YAML key: check canonical key first, then aliases
+            yaml_key = None
+            if comp_type in yaml_data:
+                yaml_key = comp_type
+            else:
+                for alias, canonical in COMPONENT_ALIASES.items():
+                    if canonical == comp_type and alias in yaml_data:
+                        yaml_key = alias
+                        break
+            if yaml_key is None:
                 continue
 
             mapping = ENDPOINT_CACHE_MAP.get(comp_type)
@@ -575,7 +588,7 @@ class DeviceTypes:
                 continue
 
             # Find the new components in the YAML data
-            yaml_components = yaml_data[comp_type]
+            yaml_components = yaml_data[yaml_key]
             new_component_names = {change.component_name for change in changes}
             components_to_add = [c for c in yaml_components if c.get("name") in new_component_names]
 

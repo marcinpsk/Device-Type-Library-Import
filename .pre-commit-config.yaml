@@ -1,6 +1,6 @@
 repos:
   - repo: https://github.com/igorshubovych/markdownlint-cli
-    rev: v0.43.0
+    rev: v0.47.0
     hooks:
       - id: markdownlint
   - repo: local
@@ -13,7 +13,7 @@ repos:
         require_serial: true
       - id: ruff-format
         name: ruff-format
-        entry: uv run ruff format 
+        entry: uv run ruff format
         language: system
         types: [python]
         require_serial: true
