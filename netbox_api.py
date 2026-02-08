@@ -487,17 +487,8 @@ class DeviceTypes:
         context=None,
         cache_name=None,
     ):
-        # cache_name represents the endpoint name, e.g., 'interface_templates'
-        existing = {}
-        if cache_name and cache_name in self.cached_components:
-            # Use cache
-            key = (parent_type, parent_id)
-            existing = self.cached_components[cache_name].get(key, {})
-            # existing is already in format {name: item} from preload
-        else:
-            # Fallback to API filter
-            filter_kwargs = self._get_filter_kwargs(parent_id, parent_type)
-            existing = {item.name: item for item in endpoint.filter(**filter_kwargs)}
+        # Look up existing components via cache or API fallback
+        existing = self._get_cached_or_fetch(cache_name, parent_id, parent_type, endpoint)
 
         to_create = [x for x in items if x["name"] not in existing]
         parent_key = "device_type" if parent_type == "device" else "module_type"
