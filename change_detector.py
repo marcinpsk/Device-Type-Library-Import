@@ -6,7 +6,7 @@ in the repository and existing data in NetBox, supporting the --update workflow.
 """
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, List, Optional
 from enum import Enum
 
 
@@ -213,16 +213,17 @@ class ChangeDetector:
         changes = []
 
         for prop in DEVICE_TYPE_PROPERTIES:
+            # Only compare properties explicitly present in YAML;
+            # an omitted property means the YAML doesn't manage it,
+            # matching the component semantics (absent key != removal).
+            if prop not in yaml_data:
+                continue
+
             yaml_value = yaml_data.get(prop)
             netbox_value = getattr(netbox_dt, prop, None)
 
-            # Skip if both are None/missing
-            if yaml_value is None and netbox_value is None:
-                continue
-
             yaml_value, netbox_value = self._normalize_values(yaml_value, netbox_value)
 
-            # Flag if values differ (including YAML removing a value NetBox has)
             if yaml_value != netbox_value:
                 changes.append(
                     PropertyChange(
@@ -331,12 +332,16 @@ class ChangeDetector:
                 # Name is the key, skip comparison
                 continue
 
+            # Only compare properties explicitly present in the YAML component;
+            # an omitted property means the YAML doesn't manage it (absent key != removal).
+            if prop not in yaml_comp:
+                continue
+
             yaml_value = yaml_comp.get(prop)
             netbox_value = getattr(netbox_comp, prop, None)
 
             yaml_value, netbox_value = self._normalize_values(yaml_value, netbox_value)
 
-            # Flag if values differ (including YAML removing a value NetBox has)
             if yaml_value != netbox_value:
                 changes.append(
                     PropertyChange(
@@ -393,18 +398,3 @@ class ChangeDetector:
                         self.handle.verbose_log(f"        - {comp.component_type}: {comp.component_name}")
 
         self.handle.log("=" * 60)
-
-    def get_update_data(self, dt_change: DeviceTypeChange) -> Dict[str, Any]:
-        """
-        Get the update payload for a device type based on detected changes.
-
-        Args:
-            dt_change: The DeviceTypeChange object with detected changes
-
-        Returns:
-            Dictionary with update data for device type properties
-        """
-        updates = {}
-        for pc in dt_change.property_changes:
-            updates[pc.property_name] = pc.new_value
-        return updates

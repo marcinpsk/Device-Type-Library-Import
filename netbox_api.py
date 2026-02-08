@@ -315,7 +315,9 @@ class NetBox:
                 )
 
 
-# Component type -> (dcim endpoint attribute name, cache key name)
+# Component type -> (dcim endpoint attribute name, cache key name).
+# The two tuple elements are intentionally identical today (endpoint attribute == cache name)
+# but are kept separate to allow them to diverge independently in the future.
 ENDPOINT_CACHE_MAP = {
     "interfaces": ("interface_templates", "interface_templates"),
     "power-ports": ("power_port_templates", "power_port_templates"),
@@ -587,6 +589,11 @@ class DeviceTypes:
             if success_count:
                 self.counter.update({"components_updated": success_count})
                 self.handle.verbose_log(f"Updated {success_count} {comp_type}")
+
+                # Invalidate cache so subsequent lookups re-fetch with updated records
+                if cache_name in self.cached_components:
+                    cache_key = (parent_type, device_type_id)
+                    self.cached_components[cache_name].pop(cache_key, None)
 
         # Handle component additions
         for comp_type, changes in changes_to_add.items():
