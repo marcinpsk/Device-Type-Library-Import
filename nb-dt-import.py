@@ -125,7 +125,10 @@ def main():
 
         # Detect changes between YAML and NetBox
         detector = ChangeDetector(netbox.device_types, handle)
-        change_report = detector.detect_changes(device_types)
+        change_report = detector.detect_changes(
+            device_types,
+            progress=get_progress_wrapper(device_types, desc="Detecting Changes"),
+        )
         detector.log_change_report(change_report)
 
         if args.update:

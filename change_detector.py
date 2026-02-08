@@ -116,19 +116,21 @@ class ChangeDetector:
         self.device_types = device_types_instance
         self.handle = handle
 
-    def detect_changes(self, device_types: List[dict]) -> ChangeReport:
+    def detect_changes(self, device_types: List[dict], progress=None) -> ChangeReport:
         """
         Analyze all device types and generate a change report.
 
         Args:
             device_types: List of parsed YAML device type dictionaries
+            progress: Optional iterable wrapper (e.g. tqdm) for progress display
 
         Returns:
             ChangeReport with categorized changes
         """
         report = ChangeReport()
+        iterable = progress if progress is not None else device_types
 
-        for dt_data in device_types:
+        for dt_data in iterable:
             manufacturer_slug = dt_data["manufacturer"]["slug"]
             model = dt_data["model"]
             slug = dt_data.get("slug", "")
