@@ -685,6 +685,11 @@ class DeviceTypes:
                 self.counter.update({"components_removed": success_count})
                 self.handle.log(f"Removed {success_count} {comp_type}")
 
+                # Invalidate cache so subsequent lookups re-fetch without deleted records
+                if cache_name in self.cached_components:
+                    cache_key = (parent_type, device_type_id)
+                    self.cached_components[cache_name].pop(cache_key, None)
+
     def create_interfaces(self, interfaces, device_type, context=None):
         bridged_interfaces = {}
         # Pre-process to separate bridge config
