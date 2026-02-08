@@ -611,7 +611,7 @@ class DeviceTypes:
                 continue
 
             # Find the new components in the YAML data
-            yaml_components = yaml_data[yaml_key]
+            yaml_components = yaml_data.get(yaml_key) or []
             new_component_names = {change.component_name for change in changes}
             components_to_add = [c for c in yaml_components if c.get("name") in new_component_names]
 

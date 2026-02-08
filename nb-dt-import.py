@@ -153,8 +153,6 @@ def main():
                 device_types,
                 progress=get_progress_wrapper(device_types, desc="Creating Device Types"),
                 only_new=True,  # Skip existing devices in default mode
-                update=False,
-                change_report=change_report,
             )
 
     if netbox.modules:

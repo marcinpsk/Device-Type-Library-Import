@@ -222,8 +222,8 @@ class ChangeDetector:
 
             yaml_value, netbox_value = self._normalize_values(yaml_value, netbox_value)
 
-            # Compare values - only flag if YAML has a value that differs
-            if yaml_value is not None and yaml_value != netbox_value:
+            # Flag if values differ (including YAML removing a value NetBox has)
+            if yaml_value != netbox_value:
                 changes.append(
                     PropertyChange(
                         property_name=prop,
@@ -257,10 +257,13 @@ class ChangeDetector:
         for yaml_key, (cache_name, properties) in COMPONENT_TYPES.items():
             yaml_components = list(yaml_data.get(yaml_key) or [])
 
+            # Check whether the canonical key or any alias is actually present in YAML
+            aliases_for_key = [a for a, canonical in COMPONENT_ALIASES.items() if canonical == yaml_key]
+            key_present = yaml_key in yaml_data or any(alias in yaml_data for alias in aliases_for_key)
+
             # Merge components from any aliases that map to this canonical key
-            for alias, canonical in COMPONENT_ALIASES.items():
-                if canonical == yaml_key:
-                    yaml_components.extend(yaml_data.get(alias) or [])
+            for alias in aliases_for_key:
+                yaml_components.extend(yaml_data.get(alias) or [])
 
             # Get cached components for this device type
             cached = self.device_types.cached_components.get(cache_name, {})
@@ -270,15 +273,18 @@ class ChangeDetector:
             yaml_component_names = {comp.get("name") for comp in yaml_components if comp.get("name")}
 
             # Check for removed components (exist in NetBox but not in YAML)
-            for existing_name in existing_components.keys():
-                if existing_name not in yaml_component_names:
-                    changes.append(
-                        ComponentChange(
-                            component_type=yaml_key,
-                            component_name=existing_name,
-                            change_type=ChangeType.COMPONENT_REMOVED,
+            # Only flag removals when the YAML explicitly defines this component type;
+            # a missing key means the YAML doesn't manage this type at all.
+            if key_present:
+                for existing_name in existing_components.keys():
+                    if existing_name not in yaml_component_names:
+                        changes.append(
+                            ComponentChange(
+                                component_type=yaml_key,
+                                component_name=existing_name,
+                                change_type=ChangeType.COMPONENT_REMOVED,
+                            )
                         )
-                    )
 
             # Check each YAML component for additions or modifications
             for yaml_comp in yaml_components:
@@ -330,8 +336,8 @@ class ChangeDetector:
 
             yaml_value, netbox_value = self._normalize_values(yaml_value, netbox_value)
 
-            # Only flag if YAML has a value that differs
-            if yaml_value is not None and yaml_value != netbox_value:
+            # Flag if values differ (including YAML removing a value NetBox has)
+            if yaml_value != netbox_value:
                 changes.append(
                     PropertyChange(
                         property_name=prop,
