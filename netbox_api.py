@@ -444,7 +444,7 @@ class DeviceTypes:
                 return self.cached_components[cache_name][cache_key]
 
         filter_kwargs = self._get_filter_kwargs(parent_id, parent_type)
-        result = {str(item): item for item in endpoint.filter(**filter_kwargs)}
+        result = {item.name: item for item in endpoint.filter(**filter_kwargs)}
         self.cached_components.setdefault(cache_name, {})[cache_key] = result
         return result
 
@@ -469,7 +469,7 @@ class DeviceTypes:
         else:
             # Fallback to API filter
             filter_kwargs = self._get_filter_kwargs(parent_id, parent_type)
-            existing = {str(item): item for item in endpoint.filter(**filter_kwargs)}
+            existing = {item.name: item for item in endpoint.filter(**filter_kwargs)}
 
         to_create = [x for x in items if x["name"] not in existing]
         parent_key = "device_type" if parent_type == "device" else "module_type"
