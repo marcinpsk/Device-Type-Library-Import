@@ -483,17 +483,17 @@ class DeviceTypes:
         if to_create:
             try:
                 created = endpoint.create(to_create)
-                # Log logic is slightly different for device/module in original code just by name
-                # "Interface" vs "Module Interface"
-                # We can reuse log_device_ports_created for both if we pass the right strings
-                # Actually log_module_ports_created looks for port.module_type.id, log_device_ports_created for port.device_type.id
-                # Use appropriate logger
                 if parent_type == "device":
                     count = self.handle.log_device_ports_created(created, component_name)
                     self.counter.update({"components_added": count})
                 else:
                     count = self.handle.log_module_ports_created(created, component_name)
                     self.counter.update({"components_added": count})
+
+                # Invalidate cache so subsequent lookups re-fetch with new records
+                if cache_name and cache_name in self.cached_components:
+                    cache_key = (parent_type, parent_id)
+                    self.cached_components[cache_name].pop(cache_key, None)
             except pynetbox.RequestError as excep:
                 context_str = f" (Context: {context})" if context else ""
                 if isinstance(excep.error, list):
