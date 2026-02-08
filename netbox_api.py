@@ -354,8 +354,15 @@ class DeviceTypes:
             by_slug[(item.manufacturer.slug, item.slug)] = item
         return by_model, by_slug
 
-    def preload_all_components(self, progress_wrapper=None):
-        """Pre-fetch all component templates to avoid N+1 queries during updates."""
+    def preload_all_components(self, progress_wrapper=None, device_type_ids=None):
+        """Pre-fetch component templates to avoid N+1 queries during updates.
+
+        Args:
+            progress_wrapper: Optional callable to wrap iterables with progress bars
+            device_type_ids: Optional set of device type IDs to scope the preload.
+                When provided, fetches components per device type instead of globally.
+                When None, fetches all components (full preload).
+        """
         components = [
             ("interface_templates", "Interfaces"),
             ("power_port_templates", "Power Ports"),
@@ -368,27 +375,22 @@ class DeviceTypes:
             ("module_bay_templates", "Module Bays"),
         ]
 
+        if device_type_ids is not None:
+            self._preload_scoped(components, device_type_ids, progress_wrapper)
+        else:
+            self._preload_global(components, progress_wrapper)
+
+    def _preload_global(self, components, progress_wrapper=None):
+        """Fetch all component templates globally (no vendor/device filter)."""
         for endpoint, label in components:
-            # Only print log message if not using progress wrapper (tqdm shows its own description)
             if not progress_wrapper:
                 self.handle.log(f"Pre-fetching {label}...")
-            # We need to map parent_id -> {component_name: component_obj}
-            # parent can be device_type or module_type.
-            # Ideally we split by type, but the API endpoints are distinct for devicetype components vs module components?
-            # NetBox < 3.2: shared. NetBox >= 3.2: still shared endpoints usually, but filtered by device_type_id or module_type_id.
-            # Actually, in pynetbox: dcim.interface_templates handles both.
-            # Objects have 'device_type' OR 'module_type' attribute.
 
             cache = {}
-            # Count to provide feedback
             count = 0
-
-            # Fetch all items from endpoint - this returns a generator/iterator
             all_items = getattr(self.netbox.dcim, endpoint).all()
 
-            # Wrap with progress bar if available
             if progress_wrapper:
-                # Get total count for progress bar (triggers an extra API call per endpoint)
                 total = len(all_items)
                 items_iter = progress_wrapper(all_items, desc=f"Caching {label}", total=total)
             else:
@@ -409,12 +411,38 @@ class DeviceTypes:
                     key = (parent_type, parent_id)
                     if key not in cache:
                         cache[key] = {}
-
-                    # Store by name for easy lookup
                     cache[key][item.name] = item
                     count += 1
 
             self.cached_components[endpoint] = cache
+            self.handle.verbose_log(f"Cached {count} {label}.")
+
+    def _preload_scoped(self, components, device_type_ids, progress_wrapper=None):
+        """Fetch component templates only for the given device type IDs."""
+        dt_ids = set(device_type_ids)
+        self.handle.log(f"Scoped preload for {len(dt_ids)} device type(s)...")
+
+        for endpoint_name, label in components:
+            if not progress_wrapper:
+                self.handle.log(f"Pre-fetching {label}...")
+
+            cache = {}
+            count = 0
+            ep = getattr(self.netbox.dcim, endpoint_name)
+
+            ids_iter = dt_ids
+            if progress_wrapper:
+                ids_iter = progress_wrapper(dt_ids, desc=f"Caching {label}", total=len(dt_ids))
+
+            for dt_id in ids_iter:
+                filter_kwargs = self._get_filter_kwargs(dt_id, "device")
+                key = ("device", dt_id)
+                cache[key] = {}
+                for item in ep.filter(**filter_kwargs):
+                    cache[key][item.name] = item
+                    count += 1
+
+            self.cached_components[endpoint_name] = cache
             self.handle.verbose_log(f"Cached {count} {label}.")
 
     def _get_filter_kwargs(self, parent_id, parent_type="device"):
