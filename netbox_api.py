@@ -354,14 +354,15 @@ class DeviceTypes:
             by_slug[(item.manufacturer.slug, item.slug)] = item
         return by_model, by_slug
 
-    def preload_all_components(self, progress_wrapper=None, device_type_ids=None):
+    def preload_all_components(self, progress_wrapper=None, vendor_slugs=None):
         """Pre-fetch component templates to avoid N+1 queries during updates.
 
         Args:
             progress_wrapper: Optional callable to wrap iterables with progress bars
-            device_type_ids: Optional set of device type IDs to scope the preload.
-                When provided, fetches components per device type instead of globally.
-                When None, fetches all components (full preload).
+            vendor_slugs: Optional list of vendor slugs to scope the preload.
+                When provided, only caches components for device types belonging
+                to these vendors (per-device-type API calls).
+                When None, fetches all components globally (bulk .all()).
         """
         components = [
             ("interface_templates", "Interfaces"),
@@ -375,8 +376,12 @@ class DeviceTypes:
             ("module_bay_templates", "Module Bays"),
         ]
 
-        if device_type_ids is not None:
-            self._preload_scoped(components, device_type_ids, progress_wrapper)
+        if vendor_slugs:
+            # Collect device type IDs for the specified vendors
+            dt_ids = {
+                dt.id for (mfr_slug, _model), dt in self.existing_device_types.items() if mfr_slug in vendor_slugs
+            }
+            self._preload_scoped(components, dt_ids, progress_wrapper)
         else:
             self._preload_global(components, progress_wrapper)
 
@@ -418,7 +423,7 @@ class DeviceTypes:
             self.handle.verbose_log(f"Cached {count} {label}.")
 
     def _preload_scoped(self, components, device_type_ids, progress_wrapper=None):
-        """Fetch component templates only for the given device type IDs."""
+        """Fetch component templates for the given device type IDs via per-device-type API calls."""
         dt_ids = set(device_type_ids)
         self.handle.log(f"Scoped preload for {len(dt_ids)} device type(s)...")
 

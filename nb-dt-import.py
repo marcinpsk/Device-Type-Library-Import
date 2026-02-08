@@ -118,27 +118,10 @@ def main():
     else:
         # Cache NetBox data for comparison (separate step with visible progress)
         handle.log("Caching NetBox data for comparison...")
-
-        # Collect IDs of existing device types that match the YAML being processed
-        # so we can scope the preload instead of fetching all components globally
-        relevant_dt_ids = set()
-        for dt_data in device_types:
-            mfr_slug = dt_data["manufacturer"]["slug"]
-            model = dt_data["model"]
-            slug = dt_data.get("slug", "")
-            existing = netbox.device_types.existing_device_types.get((mfr_slug, model))
-            if existing is None and slug:
-                existing = netbox.device_types.existing_device_types_by_slug.get((mfr_slug, slug))
-            if existing is not None:
-                relevant_dt_ids.add(existing.id)
-
-        # Use scoped preload when filtering narrows the set, otherwise fetch globally
-        scoped_ids = (
-            relevant_dt_ids
-            if relevant_dt_ids and len(relevant_dt_ids) < len(netbox.device_types.existing_device_types)
-            else None
+        netbox.device_types.preload_all_components(
+            progress_wrapper=get_progress_wrapper,
+            vendor_slugs=args.vendors if args.vendors else None,
         )
-        netbox.device_types.preload_all_components(progress_wrapper=get_progress_wrapper, device_type_ids=scoped_ids)
 
         # Detect changes between YAML and NetBox
         detector = ChangeDetector(netbox.device_types, handle)
