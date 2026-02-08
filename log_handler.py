@@ -61,7 +61,7 @@ class LogHandler:
         for port in created_ports:
             self.verbose_log(
                 f"{port_type} Template Created: {port.name} - "
-                + f'{port.type if hasattr(port, "type") else ""} - {port.device_type.id} - '
+                + f"{port.type if hasattr(port, 'type') else ''} - {port.device_type.id} - "
                 + f"{port.id}"
             )
         return len(created_ports)
@@ -70,7 +70,7 @@ class LogHandler:
         for port in created_ports:
             self.verbose_log(
                 f"{port_type} Template Created: {port.name} - "
-                + f'{port.type if hasattr(port, "type") else ""} - {port.module_type.id} - '
+                + f"{port.type if hasattr(port, 'type') else ''} - {port.module_type.id} - "
                 + f"{port.id}"
             )
         return len(created_ports)

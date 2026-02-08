@@ -15,7 +15,6 @@ def test_slug_format():
 
     # We mock 'os.path.isdir' to avoid git operations in __init__
     with patch("os.path.isdir", return_value=True), patch("repo.Repo"):
-
         repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
 
         assert repo.slug_format("Cisco Systems") == "cisco-systems"
@@ -30,7 +29,6 @@ def test_parse_files():
     mock_handle = MagicMock()
 
     with patch("os.path.isdir", return_value=True), patch("repo.Repo"):
-
         repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
 
         # Mock file content

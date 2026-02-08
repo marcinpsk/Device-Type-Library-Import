@@ -7,6 +7,7 @@ import settings
 from netbox_api import NetBox
 from log_handler import LogHandler
 from repo import DTLRepo
+from change_detector import ChangeDetector
 
 
 import sys
@@ -42,11 +43,28 @@ def main():
     )
     parser.add_argument("--branch", default=settings.REPO_BRANCH, help="Git branch to use from repo")
     parser.add_argument("--verbose", action="store_true", default=False, help="Print verbose output")
-    parser.add_argument(
+
+    mode_group = parser.add_mutually_exclusive_group()
+    mode_group.add_argument(
         "--only-new", action="store_true", default=False, help="Only create new devices, skip existing ones"
+    )
+    mode_group.add_argument(
+        "--update",
+        action="store_true",
+        default=False,
+        help="Update existing device types with changes from repository (add missing components, modify changed properties)",
+    )
+    parser.add_argument(
+        "--remove-components",
+        action="store_true",
+        default=False,
+        help="Remove components from NetBox that no longer exist in YAML (use with --update). WARNING: May affect existing device instances.",
     )
 
     args = parser.parse_args()
+
+    if args.remove_components and not args.update:
+        parser.error("--remove-components requires --update")
 
     # Normalize arguments
     args.vendors = [v.casefold() for vendor in args.vendors for v in vendor.split(",") if v.strip()]
@@ -70,6 +88,12 @@ def main():
     # For now, we will update NetBox to verify compatibility with this new setup
     netbox = NetBox(settings, handle)  # handle passed explicitly
 
+    # Print what will be imported based on CLI arguments
+    if args.vendors:
+        handle.log(f"Importing vendors: {', '.join(args.vendors)}")
+    if args.slugs:
+        handle.log(f"Filtering by slugs: {', '.join(args.slugs)}")
+
     files, vendors = dtl_repo.get_devices(f"{dtl_repo.repo_path}/device-types/", args.vendors)
 
     handle.log(f"{len(vendors)} Vendors Found")
@@ -79,12 +103,57 @@ def main():
     handle.log(f"{len(device_types)} Device-Types Found")
 
     netbox.create_manufacturers(vendors)
-    netbox.create_device_types(
-        device_types,
-        progress=get_progress_wrapper(device_types, desc="Creating Device Types"),
-        only_new=args.only_new,
-        progress_wrapper=get_progress_wrapper,
-    )
+
+    # Determine processing mode
+    change_report = None
+
+    if args.only_new:
+        # Skip caching and change detection - just create new devices
+        handle.log("Mode: Only creating new device types (--only-new)")
+        netbox.create_device_types(
+            device_types,
+            progress=get_progress_wrapper(device_types, desc="Creating Device Types"),
+            only_new=True,
+        )
+    else:
+        # Cache NetBox data for comparison (separate step with visible progress)
+        handle.log("Caching NetBox data for comparison...")
+        netbox.device_types.preload_all_components(
+            progress_wrapper=get_progress_wrapper,
+            vendor_slugs=args.vendors if args.vendors else None,
+        )
+
+        # Detect changes between YAML and NetBox
+        detector = ChangeDetector(netbox.device_types, handle)
+        change_report = detector.detect_changes(
+            device_types,
+            progress=get_progress_wrapper(device_types, desc="Detecting Changes"),
+        )
+        detector.log_change_report(change_report)
+
+        if args.update:
+            # Update mode: create new + update existing
+            handle.log("Mode: Creating new and updating existing device types (--update)")
+            if args.remove_components:
+                handle.log(
+                    "  Component removal enabled: Will delete components missing from YAML (--remove-components)"
+                )
+            netbox.create_device_types(
+                device_types,
+                progress=get_progress_wrapper(device_types, desc="Processing Device Types"),
+                only_new=False,
+                update=True,
+                change_report=change_report,
+                remove_components=args.remove_components,
+            )
+        else:
+            # Default mode: only create new, log what would change
+            handle.log("Mode: Creating new device types only (use --update to apply modifications)")
+            netbox.create_device_types(
+                device_types,
+                progress=get_progress_wrapper(device_types, desc="Creating Device Types"),
+                only_new=True,  # Skip existing devices in default mode
+            )
 
     if netbox.modules:
         handle.log("Modules Enabled. Creating Modules...")
@@ -103,13 +172,15 @@ def main():
 
     handle.log("---")
     handle.verbose_log(f"Script took {(datetime.now() - startTime)} to run")
-    handle.log(f'{netbox.counter["added"]} devices created')
-    handle.log(f'{netbox.counter["images"]} images uploaded')
-    handle.log(f'{netbox.counter["updated"]} interfaces/ports updated')
-    handle.log(f'{netbox.counter["manufacturer"]} manufacturers created')
+    handle.log(f"{netbox.counter['added']} device types created")
+    handle.log(f"{netbox.counter['properties_updated']} device types updated")
+    handle.log(f"{netbox.counter['components_updated']} components updated")
+    handle.log(f"{netbox.counter['components_added']} components added")
+    handle.log(f"{netbox.counter['components_removed']} components removed")
+    handle.log(f"{netbox.counter['images']} images uploaded")
+    handle.log(f"{netbox.counter['manufacturer']} manufacturers created")
     if settings.NETBOX_FEATURES["modules"]:
-        handle.log(f'{netbox.counter["module_added"]} modules created')
-        handle.log(f'{netbox.counter["module_port_added"]} module interface / ports created')
+        handle.log(f"{netbox.counter['module_added']} modules created")
 
 
 if __name__ == "__main__":

@@ -31,3 +31,6 @@ line-length = 120
 [tool.pytest.ini_options]
 timeout = 20
 timeout_method = "thread"
+testpaths = [
+  "tests"
+]
