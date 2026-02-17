@@ -3,6 +3,7 @@ import pynetbox
 import requests
 import os
 import glob
+from pathlib import Path
 
 from change_detector import COMPONENT_ALIASES, ChangeType
 
@@ -266,12 +267,12 @@ class NetBox:
             all_module_types[curr_nb_mt.manufacturer.slug][curr_nb_mt.model] = curr_nb_mt
 
         # Pre-fetch all existing image attachments for module types in one API call
-        # Map module_type_id -> set of attachment filenames for per-file deduplication
+        # Map module_type_id -> set of attachment names for per-file deduplication
         module_type_existing_images = {}
         for att in self.netbox.extras.image_attachments.filter(object_type="dcim.moduletype"):
-            filenames = module_type_existing_images.setdefault(att.object_id, set())
-            if att.image:
-                filenames.add(os.path.basename(att.image))
+            names = module_type_existing_images.setdefault(att.object_id, set())
+            if att.name:
+                names.add(att.name)
         self.handle.verbose_log(
             f"Found {len(module_type_existing_images)} module type(s) with existing image attachments."
         )
@@ -282,14 +283,9 @@ class NetBox:
             if "src" in curr_mt:
                 del curr_mt["src"]
 
+            is_new = False
             try:
                 module_type_res = all_module_types[curr_mt["manufacturer"]["slug"]][curr_mt["model"]]
-                if only_new:
-                    self.handle.verbose_log(
-                        f"Module Type Cached: {module_type_res.manufacturer.name} - "
-                        + f"{module_type_res.model} - {module_type_res.id}. Skipping."
-                    )
-                    continue
                 self.handle.verbose_log(
                     f"Module Type Cached: {module_type_res.manufacturer.name} - "
                     + f"{module_type_res.model} - {module_type_res.id}"
@@ -298,6 +294,7 @@ class NetBox:
                 try:
                     module_type_res = self.netbox.dcim.module_types.create(curr_mt)
                     self.counter["module_added"] += 1
+                    is_new = True
                     self.handle.verbose_log(
                         f"Module Type Created: {module_type_res.manufacturer.name} - "
                         + f"{module_type_res.model} - {module_type_res.id}"
@@ -306,34 +303,11 @@ class NetBox:
                     self.handle.log(f"Error creating Module Type: {excep} (Context: {src_file})")
                     continue
 
-            # Discover and upload module-type images
-            # Derive image directory: replace "module-types" with "module-images" and append model name
-            if src_file and src_file != "Unknown":
-                module_name = os.path.splitext(os.path.basename(src_file))[0]
-                image_dir = os.path.join(
-                    os.path.dirname(src_file).replace("module-types", "module-images"),
-                    module_name,
-                )
-                image_files = glob.glob(os.path.join(image_dir, "*"))
-                image_files = [f for f in image_files if os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS]
+            # Upload images for both cached and newly created module types
+            self._upload_module_type_images(module_type_res, src_file, module_type_existing_images)
 
-                if image_files:
-                    # Module types don't have built-in image fields — use Image Attachments API
-                    existing = module_type_existing_images.setdefault(module_type_res.id, set())
-                    for img_path in image_files:
-                        if os.path.basename(img_path) in existing:
-                            self.handle.verbose_log(
-                                f"Image '{os.path.basename(img_path)}' already exists for {module_type_res.model}, skipping."
-                            )
-                            continue
-                        self.device_types.upload_image_attachment(
-                            self.url,
-                            self.token,
-                            img_path,
-                            "dcim.moduletype",
-                            module_type_res.id,
-                        )
-                        existing.add(os.path.basename(img_path))
+            if only_new and not is_new:
+                continue
 
             # Module component keys often use hyphens in YAML
             if "interfaces" in curr_mt:
@@ -360,6 +334,50 @@ class NetBox:
                 self.device_types.create_module_front_ports(
                     curr_mt["front-ports"], module_type_res.id, context=src_file
                 )
+
+    def _upload_module_type_images(self, module_type_res, src_file, module_type_existing_images):
+        """Discover and upload images for a module type, skipping duplicates.
+
+        Derives an image directory by replacing the 'module-types' path component
+        with 'module-images' and appending the module filename (without extension).
+        Only uploads images whose name (basename without extension) is not already
+        present in module_type_existing_images for this module type.
+
+        Parameters:
+            module_type_res: pynetbox Record for the module type.
+            src_file (str): Source YAML file path used to derive the image directory.
+            module_type_existing_images (dict): module_type_id -> set of attachment names.
+        """
+        if not src_file or src_file == "Unknown":
+            return
+
+        src_path = Path(src_file)
+        parts = list(src_path.parent.parts)
+        try:
+            idx = parts.index("module-types")
+        except ValueError:
+            return
+        parts[idx] = "module-images"
+        module_name = src_path.stem
+        image_dir = Path(*parts) / module_name
+
+        image_files = glob.glob(str(image_dir / "*"))
+        image_files = [f for f in image_files if os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS]
+        if not image_files:
+            return
+
+        existing = module_type_existing_images.setdefault(module_type_res.id, set())
+        for img_path in image_files:
+            img_name = os.path.splitext(os.path.basename(img_path))[0]
+            if img_name in existing:
+                self.handle.verbose_log(
+                    f"Image '{os.path.basename(img_path)}' already exists for {module_type_res.model}, skipping."
+                )
+                continue
+            if self.device_types.upload_image_attachment(
+                self.url, self.token, img_path, "dcim.moduletype", module_type_res.id
+            ):
+                existing.add(img_name)
 
 
 # Component type -> (dcim endpoint attribute name, cache key name).
@@ -1125,6 +1143,9 @@ class DeviceTypes:
             image_path (str): Local file path of the image to upload.
             object_type (str): NetBox content type string (e.g. "dcim.moduletype").
             object_id (int | str): ID of the object to attach the image to.
+
+        Returns:
+            bool: True if the upload succeeded, False on any error.
         """
         url = f"{baseurl}/api/extras/image-attachments/"
         headers = {"Authorization": f"Token {token}"}
@@ -1151,7 +1172,10 @@ class DeviceTypes:
                     f" for {object_type} {object_id}: {response.status_code}"
                 )
                 self.counter["images"] += 1
+                return True
         except OSError as e:
             self.handle.log(f"Error reading image file {image_path}: {e}")
+            return False
         except requests.RequestException as e:
             self.handle.log(f"Error uploading image attachment for {object_type} {object_id}: {e}")
+            return False
