@@ -173,7 +173,7 @@ class NetBox:
 
                 if only_new:
                     self.handle.verbose_log(
-                        f"Device Type Cached: {dt.manufacturer.name} - {dt.model} - {dt.id}. Skipping."
+                        f"Device Type Cached: {dt.manufacturer.name} - {dt.model} - {dt.id}. Skipping updates (images already handled)."
                     )
                     continue
 
@@ -354,7 +354,9 @@ class NetBox:
         src_path = Path(src_file)
         parts = list(src_path.parent.parts)
         try:
-            idx = parts.index("module-types")
+            # Replace the last occurrence — handles edge cases where
+            # "module-types" could appear earlier in the path as well.
+            idx = len(parts) - 1 - parts[::-1].index("module-types")
         except ValueError:
             return
         parts[idx] = "module-images"
