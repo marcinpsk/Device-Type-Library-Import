@@ -1,7 +1,6 @@
-import pytest
 from unittest.mock import MagicMock
 
-from change_detector import ChangeDetector, PropertyChange
+from change_detector import ChangeDetector
 
 
 class TestCompareImageProperties:

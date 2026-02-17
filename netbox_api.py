@@ -6,6 +6,9 @@ import glob
 
 from change_detector import COMPONENT_ALIASES, ChangeType
 
+# Supported image file extensions for module-type image uploads
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".svg"}
+
 # from pynetbox import RequestError as APIRequestError
 
 
@@ -263,13 +266,14 @@ class NetBox:
             all_module_types[curr_nb_mt.manufacturer.slug][curr_nb_mt.model] = curr_nb_mt
 
         # Pre-fetch all existing image attachments for module types in one API call
-        module_type_ids_with_images = {
-            att.object_id for att in self.netbox.extras.image_attachments.filter(
-                object_type="dcim.moduletype",
-            )
-        }
+        # Map module_type_id -> set of attachment filenames for per-file deduplication
+        module_type_existing_images = {}
+        for att in self.netbox.extras.image_attachments.filter(object_type="dcim.moduletype"):
+            filenames = module_type_existing_images.setdefault(att.object_id, set())
+            if att.image:
+                filenames.add(os.path.basename(att.image))
         self.handle.verbose_log(
-            f"Found {len(module_type_ids_with_images)} module type(s) with existing image attachments."
+            f"Found {len(module_type_existing_images)} module type(s) with existing image attachments."
         )
 
         iterator = progress if progress is not None else module_types
@@ -311,22 +315,26 @@ class NetBox:
                     module_name,
                 )
                 image_files = glob.glob(os.path.join(image_dir, "*"))
-                IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".svg"}
                 image_files = [f for f in image_files if os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS]
 
                 if image_files:
                     # Module types don't have built-in image fields — use Image Attachments API
-                    if module_type_res.id not in module_type_ids_with_images:
-                        for img_path in image_files:
-                            self.device_types.upload_image_attachment(
-                                self.url, self.token, img_path,
-                                "dcim.moduletype", module_type_res.id,
+                    existing = module_type_existing_images.get(module_type_res.id, set())
+                    for img_path in image_files:
+                        if os.path.basename(img_path) in existing:
+                            self.handle.verbose_log(
+                                f"Image '{os.path.basename(img_path)}' already exists for {module_type_res.model}, skipping."
                             )
-                        module_type_ids_with_images.add(module_type_res.id)
-                    else:
-                        self.handle.verbose_log(
-                            f"Image attachment(s) already cached for {module_type_res.model}, skipping upload."
+                            continue
+                        self.device_types.upload_image_attachment(
+                            self.url,
+                            self.token,
+                            img_path,
+                            "dcim.moduletype",
+                            module_type_res.id,
                         )
+                        existing.add(os.path.basename(img_path))
+                    module_type_existing_images[module_type_res.id] = existing
 
             # Module component keys often use hyphens in YAML
             if "interfaces" in curr_mt:
@@ -1129,8 +1137,12 @@ class DeviceTypes:
             with open(image_path, "rb") as f:
                 files = {"image": (os.path.basename(image_path), f)}
                 response = requests.post(
-                    url, headers=headers, data=data, files=files,
-                    verify=(not self.ignore_ssl), timeout=60,
+                    url,
+                    headers=headers,
+                    data=data,
+                    files=files,
+                    verify=(not self.ignore_ssl),
+                    timeout=60,
                 )
                 response.raise_for_status()
                 self.handle.log(
@@ -1138,5 +1150,7 @@ class DeviceTypes:
                     f" for {object_type} {object_id}: {response.status_code}"
                 )
                 self.counter["images"] += 1
+        except OSError as e:
+            self.handle.log(f"Error reading image file {image_path}: {e}")
         except requests.RequestException as e:
             self.handle.log(f"Error uploading image attachment for {object_type} {object_id}: {e}")

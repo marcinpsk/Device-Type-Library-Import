@@ -453,9 +453,7 @@ class ChangeDetector:
                 for pc in dt.property_changes:
                     if pc.property_name in IMAGE_PROPERTIES:
                         label = pc.property_name.replace("_", " ").title()
-                        self.handle.verbose_log(
-                            f"      {label}: missing in NetBox (YAML defines image)"
-                        )
+                        self.handle.verbose_log(f"      {label}: missing in NetBox (YAML defines image)")
                     else:
                         self.handle.verbose_log(
                             f"      Property '{pc.property_name}': '{pc.old_value}' -> '{pc.new_value}'"
@@ -473,7 +471,7 @@ class ChangeDetector:
                         self.handle.verbose_log(f"        - {comp.component_type}: {comp.component_name}")
 
             verbose_only = len(report.modified_device_types) - ct_removed
-            if verbose_only > 0:
+            if verbose_only > 0 and not self.handle.args.verbose:
                 self.handle.log(f"  ({verbose_only} more without removals — use --verbose to list)")
         else:
             self.handle.log("Modified device types: 0")
