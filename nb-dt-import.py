@@ -11,12 +11,17 @@ from change_detector import ChangeDetector
 
 
 import sys
-from tqdm import tqdm
+from rich.progress import track
+
+
+_PROGRESS_DESC_WIDTH = 28  # Longest: "Caching Console Server Ports"
 
 
 def get_progress_wrapper(iterable, desc=None, **kwargs):
     if sys.stdout.isatty():
-        return tqdm(iterable, desc=desc, unit="item", **kwargs)
+        if desc:
+            desc = desc.ljust(_PROGRESS_DESC_WIDTH)
+        return track(iterable, description=desc or "", **kwargs)
     return iterable
 
 

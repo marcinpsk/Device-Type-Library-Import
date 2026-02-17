@@ -220,7 +220,7 @@ class DTLRepo:
         # Use ThreadPoolExecutor for parallel parsing
         with concurrent.futures.ThreadPoolExecutor() as executor:
             # executor.map preserves order and processes the same files list
-            # progress (if provided) is a tqdm wrapper over the same files list
+            # progress (if provided) is a progress wrapper over the same files list
             # Use strict=True to catch any length mismatch instead of silent truncation
             files_list = list(files)  # Ensure we have a concrete list
             items_iterator = progress if progress is not None else files_list
