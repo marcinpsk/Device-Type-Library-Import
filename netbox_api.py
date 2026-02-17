@@ -319,7 +319,7 @@ class NetBox:
 
                 if image_files:
                     # Module types don't have built-in image fields — use Image Attachments API
-                    existing = module_type_existing_images.get(module_type_res.id, set())
+                    existing = module_type_existing_images.setdefault(module_type_res.id, set())
                     for img_path in image_files:
                         if os.path.basename(img_path) in existing:
                             self.handle.verbose_log(
@@ -334,7 +334,6 @@ class NetBox:
                             module_type_res.id,
                         )
                         existing.add(os.path.basename(img_path))
-                    module_type_existing_images[module_type_res.id] = existing
 
             # Module component keys often use hyphens in YAML
             if "interfaces" in curr_mt:
@@ -1103,6 +1102,8 @@ class DeviceTypes:
             response.raise_for_status()
             self.handle.log(f"Images {images} updated at {url}: {response.status_code}")
             self.counter["images"] += len(images)
+        except OSError as e:
+            self.handle.log(f"Error reading image file for device type {device_type}: {e}")
         except requests.RequestException as e:
             self.handle.log(f"Error uploading images for device type {device_type}: {e}")
         finally:
