@@ -154,9 +154,22 @@ class NetBox:
                 if dt is None:
                     raise KeyError("Device type not found")
 
+                # Upload images for existing device types (if missing) — always, regardless of mode
+                if saved_images:
+                    if "front_image" in saved_images and getattr(dt, "front_image", None):
+                        self.handle.verbose_log(f"Front image already exists for {dt.model}, skipping upload.")
+                        del saved_images["front_image"]
+
+                    if "rear_image" in saved_images and getattr(dt, "rear_image", None):
+                        self.handle.verbose_log(f"Rear image already exists for {dt.model}, skipping upload.")
+                        del saved_images["rear_image"]
+
+                    if saved_images:
+                        self.device_types.upload_images(self.url, self.token, saved_images, dt.id)
+
                 if only_new:
                     self.handle.verbose_log(
-                        f"Device Type Exists: {dt.manufacturer.name} - {dt.model} - {dt.id}. Skipping updates."
+                        f"Device Type Cached: {dt.manufacturer.name} - {dt.model} - {dt.id}. Skipping."
                     )
                     continue
 
@@ -170,17 +183,22 @@ class NetBox:
                             break
 
                     if dt_change:
-                        # Apply property changes
+                        # Apply property changes (exclude image properties — uploads are handled separately)
                         if dt_change.property_changes:
-                            updates = {pc.property_name: pc.new_value for pc in dt_change.property_changes}
-                            try:
-                                dt.update(updates)
-                                self.counter.update({"properties_updated": 1})
-                                self.handle.verbose_log(
-                                    f"Updated device type {dt.model} properties: {list(updates.keys())}"
-                                )
-                            except pynetbox.RequestError as e:
-                                self.handle.log(f"Error updating device type {dt.model}: {e.error}")
+                            updates = {
+                                pc.property_name: pc.new_value
+                                for pc in dt_change.property_changes
+                                if pc.property_name not in ("front_image", "rear_image")
+                            }
+                            if updates:
+                                try:
+                                    dt.update(updates)
+                                    self.counter.update({"properties_updated": 1})
+                                    self.handle.verbose_log(
+                                        f"Updated device type {dt.model} properties: {list(updates.keys())}"
+                                    )
+                                except pynetbox.RequestError as e:
+                                    self.handle.log(f"Error updating device type {dt.model}: {e.error}")
 
                         # Apply component changes
                         if dt_change.component_changes:
@@ -192,7 +210,8 @@ class NetBox:
                                     dt.id, dt_change.component_changes, parent_type="device"
                                 )
 
-                self.handle.verbose_log(f"Device Type Exists: {dt.manufacturer.name} - " + f"{dt.model} - {dt.id}")
+                self.handle.verbose_log(f"Device Type Cached: {dt.manufacturer.name} - " + f"{dt.model} - {dt.id}")
+
                 # Device type already exists - skip component creation
                 continue
 
@@ -231,24 +250,9 @@ class NetBox:
             if self.modules and "module-bays" in device_type:
                 self.device_types.create_module_bays(device_type["module-bays"], dt.id)
 
-            # Finally, update images if any
+            # Upload images for newly created device types
             if saved_images:
-                # Check if images are already present on the device type object
-                # dt is the object returned by pynetbox or created
-
-                # Use dot notation or getattr because pynetbox objects mimic attributes
-                # We want to remove from saved_images if dt.front_image or dt.rear_image exists
-
-                if "front_image" in saved_images and getattr(dt, "front_image", None):
-                    self.handle.verbose_log(f"Front image already exists for {dt.model}, skipping upload.")
-                    del saved_images["front_image"]
-
-                if "rear_image" in saved_images and getattr(dt, "rear_image", None):
-                    self.handle.verbose_log(f"Rear image already exists for {dt.model}, skipping upload.")
-                    del saved_images["rear_image"]
-
-                if saved_images:
-                    self.device_types.upload_images(self.url, self.token, saved_images, dt.id)
+                self.device_types.upload_images(self.url, self.token, saved_images, dt.id)
 
     def create_module_types(self, module_types, progress=None, only_new=False):
         all_module_types = {}
@@ -257,6 +261,16 @@ class NetBox:
                 all_module_types[curr_nb_mt.manufacturer.slug] = {}
 
             all_module_types[curr_nb_mt.manufacturer.slug][curr_nb_mt.model] = curr_nb_mt
+
+        # Pre-fetch all existing image attachments for module types in one API call
+        module_type_ids_with_images = {
+            att.object_id for att in self.netbox.extras.image_attachments.filter(
+                object_type="dcim.moduletype",
+            )
+        }
+        self.handle.verbose_log(
+            f"Found {len(module_type_ids_with_images)} module type(s) with existing image attachments."
+        )
 
         iterator = progress if progress is not None else module_types
         for curr_mt in iterator:
@@ -268,12 +282,12 @@ class NetBox:
                 module_type_res = all_module_types[curr_mt["manufacturer"]["slug"]][curr_mt["model"]]
                 if only_new:
                     self.handle.verbose_log(
-                        f"Module Type Exists: {module_type_res.manufacturer.name} - "
-                        + f"{module_type_res.model} - {module_type_res.id}. Skipping updates."
+                        f"Module Type Cached: {module_type_res.manufacturer.name} - "
+                        + f"{module_type_res.model} - {module_type_res.id}. Skipping."
                     )
                     continue
                 self.handle.verbose_log(
-                    f"Module Type Exists: {module_type_res.manufacturer.name} - "
+                    f"Module Type Cached: {module_type_res.manufacturer.name} - "
                     + f"{module_type_res.model} - {module_type_res.id}"
                 )
             except KeyError:
@@ -287,6 +301,32 @@ class NetBox:
                 except pynetbox.RequestError as excep:
                     self.handle.log(f"Error creating Module Type: {excep} (Context: {src_file})")
                     continue
+
+            # Discover and upload module-type images
+            # Derive image directory: replace "module-types" with "module-images" and append model name
+            if src_file and src_file != "Unknown":
+                module_name = os.path.splitext(os.path.basename(src_file))[0]
+                image_dir = os.path.join(
+                    os.path.dirname(src_file).replace("module-types", "module-images"),
+                    module_name,
+                )
+                image_files = glob.glob(os.path.join(image_dir, "*"))
+                IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".svg"}
+                image_files = [f for f in image_files if os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS]
+
+                if image_files:
+                    # Module types don't have built-in image fields — use Image Attachments API
+                    if module_type_res.id not in module_type_ids_with_images:
+                        for img_path in image_files:
+                            self.device_types.upload_image_attachment(
+                                self.url, self.token, img_path,
+                                "dcim.moduletype", module_type_res.id,
+                            )
+                        module_type_ids_with_images.add(module_type_res.id)
+                    else:
+                        self.handle.verbose_log(
+                            f"Image attachment(s) already cached for {module_type_res.model}, skipping upload."
+                        )
 
             # Module component keys often use hyphens in YAML
             if "interfaces" in curr_mt:
@@ -1055,9 +1095,48 @@ class DeviceTypes:
             response.raise_for_status()
             self.handle.log(f"Images {images} updated at {url}: {response.status_code}")
             self.counter["images"] += len(images)
+        except requests.RequestException as e:
+            self.handle.log(f"Error uploading images for device type {device_type}: {e}")
         finally:
             for _, (_, fh) in file_handles.items():
                 try:
                     fh.close()
                 except Exception:
                     pass
+
+    def upload_image_attachment(self, baseurl, token, image_path, object_type, object_id):
+        """Upload an image as an Image Attachment to a NetBox object.
+
+        Uses POST /api/extras/image-attachments/ to attach an image to any
+        NetBox object type (e.g. module types which lack built-in image fields).
+
+        Parameters:
+            baseurl (str): Base URL of the NetBox instance.
+            token (str): API token for authorization.
+            image_path (str): Local file path of the image to upload.
+            object_type (str): NetBox content type string (e.g. "dcim.moduletype").
+            object_id (int | str): ID of the object to attach the image to.
+        """
+        url = f"{baseurl}/api/extras/image-attachments/"
+        headers = {"Authorization": f"Token {token}"}
+        data = {
+            "object_type": object_type,
+            "object_id": str(object_id),
+            "name": os.path.splitext(os.path.basename(image_path))[0],
+        }
+
+        try:
+            with open(image_path, "rb") as f:
+                files = {"image": (os.path.basename(image_path), f)}
+                response = requests.post(
+                    url, headers=headers, data=data, files=files,
+                    verify=(not self.ignore_ssl), timeout=60,
+                )
+                response.raise_for_status()
+                self.handle.log(
+                    f"Image attachment '{os.path.basename(image_path)}' uploaded"
+                    f" for {object_type} {object_id}: {response.status_code}"
+                )
+                self.counter["images"] += 1
+        except requests.RequestException as e:
+            self.handle.log(f"Error uploading image attachment for {object_type} {object_id}: {e}")
