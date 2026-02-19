@@ -17,10 +17,19 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".
 
 
 class NetBox:
+    """Singleton-style interface to the NetBox API for importing device and module types."""
+
     def __new__(cls, *args, **kwargs):
+        """Allocate a new NetBox instance using the default object allocator."""
         return super().__new__(cls)
 
     def __init__(self, settings, handle):
+        """Initialize NetBox API connection, verify version compatibility, and load manufacturers/device types.
+
+        Args:
+            settings: Settings module with NETBOX_URL, NETBOX_TOKEN, IGNORE_SSL_ERRORS, and NETBOX_FEATURES.
+            handle (LogHandler): Logging handler for progress and error messages.
+        """
         self.counter = Counter(
             added=0,
             components_added=0,
@@ -44,6 +53,7 @@ class NetBox:
         self.device_types = DeviceTypes(self.netbox, self.handle, self.counter, self.ignore_ssl, self.new_filters)
 
     def connect_api(self):
+        """Connect to the NetBox API using the stored URL and token credentials."""
         try:
             self.netbox = pynetbox.api(self.url, token=self.token, threading=True)
             if self.ignore_ssl:
@@ -54,12 +64,19 @@ class NetBox:
             self.handle.exception("Exception", "NetBox API Error", e)
 
     def get_api(self):
+        """Return the underlying pynetbox API instance."""
         return self.netbox
 
     def get_counter(self):
+        """Return the shared operation counter."""
         return self.counter
 
     def verify_compatibility(self):
+        """Check the connected NetBox version and configure feature flags accordingly.
+
+        Sets ``self.modules = True`` for NetBox >= 3.2 and ``self.new_filters = True``
+        for >= 4.1. Logs the detected version when the new-filter flag is enabled.
+        """
         # nb.version should be the version in the form '3.2'
         version_split = [int(x) for x in self.netbox.version.split(".")]
 
@@ -74,9 +91,18 @@ class NetBox:
             self.handle.log(f"Netbox version {self.netbox.version} found. Using new filters.")
 
     def get_manufacturers(self):
+        """Fetch all manufacturers from NetBox and return them indexed by name."""
         return {str(item): item for item in self.netbox.dcim.manufacturers.all()}
 
     def create_manufacturers(self, vendors):
+        """Create any vendors not already present in NetBox as manufacturers.
+
+        Skips vendors whose name or slug already exists. Logs creation attempts and any
+        API errors. Updates the shared counter for each manufacturer created.
+
+        Args:
+            vendors (list[dict]): Vendor dicts with at least a "name" key; "slug" is added if absent.
+        """
         # Get existing manufacturers (name + slug)
         self.existing_manufacturers = self.get_manufacturers()
         existing_slugs = {item.slug for item in self.existing_manufacturers.values()}
@@ -118,6 +144,24 @@ class NetBox:
         change_report=None,
         remove_components=False,
     ):
+        """Create or update device types and their component templates in NetBox.
+
+        For each device type:
+
+        - Images are uploaded to existing types if the file exists locally and is not yet in NetBox.
+        - If the type already exists and ``only_new`` is True, it is skipped (after image handling).
+        - If ``update`` is True and a matching change entry exists, property changes are applied
+          and component additions/removals are performed.
+        - If the type does not exist, it is created along with all component templates.
+
+        Args:
+            device_types_to_add (list[dict]): Parsed YAML device-type dicts to process.
+            progress: Optional progress iterator wrapping ``device_types_to_add``.
+            only_new (bool): If True, skip update logic for existing device types.
+            update (bool): If True, apply property/component changes to existing types.
+            change_report (ChangeReport | None): Pre-computed change report; required when ``update`` is True.
+            remove_components (bool): If True (with ``update``), remove components absent from YAML.
+        """
         # Note: Caching is now done externally before this method via preload_all_components()
 
         iterator = progress if progress is not None else device_types_to_add
@@ -262,6 +306,11 @@ class NetBox:
                 self.device_types.upload_images(self.url, self.token, saved_images, dt.id)
 
     def get_existing_module_types(self):
+        """Fetch all module types from NetBox and return them indexed by manufacturer slug and model.
+
+        Returns:
+            dict: ``{manufacturer_slug: {model: pynetbox_record}}``
+        """
         all_module_types = {}
         for curr_nb_mt in self.netbox.dcim.module_types.all():
             if curr_nb_mt.manufacturer.slug not in all_module_types:
@@ -272,6 +321,15 @@ class NetBox:
 
     @staticmethod
     def _find_existing_module_type(module_type, all_module_types):
+        """Look up a module type in *all_module_types* by model name, with slug fallback.
+
+        Args:
+            module_type (dict): Parsed YAML module-type dict with "manufacturer" and "model" keys.
+            all_module_types (dict): Nested mapping ``{manufacturer_slug: {model: record}}``.
+
+        Returns:
+            pynetbox Record | None: Matching record, or None if not found.
+        """
         manufacturer_slug = module_type["manufacturer"]["slug"]
         existing_for_vendor = all_module_types.get(manufacturer_slug, {})
 
@@ -291,6 +349,15 @@ class NetBox:
 
     @staticmethod
     def filter_new_module_types(module_types, all_module_types):
+        """Return module types that do not yet exist in NetBox.
+
+        Args:
+            module_types (list[dict]): Parsed YAML module-type dicts to filter.
+            all_module_types (dict): Existing module types indexed by manufacturer slug and model.
+
+        Returns:
+            list[dict]: Module types not found in *all_module_types*.
+        """
         new_module_types = []
         for module_type in module_types:
             if NetBox._find_existing_module_type(module_type, all_module_types) is None:
@@ -298,6 +365,21 @@ class NetBox:
         return new_module_types
 
     def filter_actionable_module_types(self, module_types, all_module_types, only_new=False):
+        """Determine which module types need to be created or updated in NetBox.
+
+        For ``only_new=True``, returns only module types absent from NetBox. Otherwise,
+        bulk-preloads component caches for all existing module types and includes any
+        whose images or components differ from NetBox.
+
+        Args:
+            module_types (list[dict]): Parsed YAML module-type dicts.
+            all_module_types (dict): Existing module types from :meth:`get_existing_module_types`.
+            only_new (bool): If True, skip change detection and return only truly new entries.
+
+        Returns:
+            tuple[list[dict], dict]: Actionable module types and existing-image mapping
+                ``{module_type_id: set_of_image_names}``.
+        """
         if not module_types:
             return [], {}
 
@@ -361,6 +443,11 @@ class NetBox:
         return actionable_module_types, module_type_existing_images
 
     def _fetch_module_type_existing_images(self):
+        """Query NetBox for all image attachments on module types and return a mapping.
+
+        Returns:
+            dict: ``{module_type_id: set_of_attachment_names}``
+        """
         module_type_existing_images = {}
         for att in self.netbox.extras.image_attachments.filter(object_type="dcim.moduletype"):
             names = module_type_existing_images.setdefault(att.object_id, set())
@@ -374,6 +461,19 @@ class NetBox:
     def create_module_types(
         self, module_types, progress=None, only_new=False, all_module_types=None, module_type_existing_images=None
     ):
+        """Create or update module types and their component templates in NetBox.
+
+        For each module type: fetches or creates the record, uploads any new images,
+        and creates missing component templates (interfaces, power ports, console ports,
+        power outlets, console server ports, rear ports, and front ports).
+
+        Args:
+            module_types (list[dict]): Parsed YAML module-type dicts to process.
+            progress: Optional progress iterator wrapping ``module_types``.
+            only_new (bool): If True, skip component updates for existing module types.
+            all_module_types (dict | None): Existing module types cache; fetched if None.
+            module_type_existing_images (dict | None): Existing image map; fetched if None.
+        """
         if not module_types:
             return
 
@@ -445,6 +545,19 @@ class NetBox:
 
     @staticmethod
     def _discover_module_image_files(src_file):
+        """Locate image files associated with a module-type YAML source file.
+
+        Derives the image directory by replacing the ``module-types`` component in the source
+        path with ``module-images`` and appending the file stem as a subdirectory, then
+        returns all files with recognised image extensions.
+
+        Args:
+            src_file (str): Path to the module-type YAML file.
+
+        Returns:
+            list[str]: Absolute paths of discovered image files; empty if the directory cannot
+                be derived or contains no recognised images.
+        """
         if not src_file or src_file == "Unknown":
             return []
 
@@ -511,10 +624,22 @@ ENDPOINT_CACHE_MAP = {
 
 
 class DeviceTypes:
+    """Manages caching and creation of device-type component templates in NetBox."""
+
     def __new__(cls, *args, **kwargs):
+        """Allocate a new DeviceTypes instance using the default object allocator."""
         return super().__new__(cls)
 
     def __init__(self, netbox, exception_handler, counter, ignore_ssl, new_filters):
+        """Initialize the DeviceTypes cache and load all existing device types from NetBox.
+
+        Args:
+            netbox: Connected pynetbox API instance.
+            exception_handler (LogHandler): Handler for logging and error reporting.
+            counter (Counter): Shared operation counter updated during creation.
+            ignore_ssl (bool): Whether SSL certificate verification is disabled.
+            new_filters (bool): Whether to use updated filter parameter names (NetBox >= 4.1).
+        """
         self.netbox = netbox
         self.handle = exception_handler
         self.counter = counter
@@ -524,6 +649,13 @@ class DeviceTypes:
         self.existing_device_types, self.existing_device_types_by_slug = self.get_device_types()
 
     def get_device_types(self):
+        """Fetch all device types from NetBox and build two lookup indexes.
+
+        Returns:
+            tuple[dict, dict]:
+                - ``by_model``: ``{(manufacturer_slug, model): record}``
+                - ``by_slug``: ``{(manufacturer_slug, slug): record}``
+        """
         # Build two indexes for lookup:
         # 1. By (manufacturer_slug, model) - primary lookup
         # 2. By (manufacturer_slug, slug) - fallback for renamed devices
@@ -553,6 +685,7 @@ class DeviceTypes:
 
     @staticmethod
     def _component_preload_targets():
+        """Return the list of ``(endpoint_attr, display_label)`` pairs used for component preloading."""
         return [
             ("interface_templates", "Interfaces"),
             ("power_port_templates", "Power Ports"),
@@ -566,6 +699,14 @@ class DeviceTypes:
         ]
 
     def _get_endpoint_totals(self, components):
+        """Fetch total record counts for all given component endpoints in parallel.
+
+        Args:
+            components: Iterable of ``(endpoint_name, label)`` tuples.
+
+        Returns:
+            dict: ``{endpoint_name: int}`` mapping each endpoint to its record count.
+        """
         max_workers = max(1, min(len(components), 8))
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as total_executor:
             total_futures = {
@@ -636,6 +777,11 @@ class DeviceTypes:
 
     @staticmethod
     def stop_component_preload(preload_job):
+        """Cancel any pending futures in *preload_job* and shut down its executor.
+
+        Args:
+            preload_job (dict | None): Preload job returned by :meth:`start_component_preload`; no-op if None.
+        """
         if not preload_job:
             return
 
@@ -651,6 +797,17 @@ class DeviceTypes:
 
     @staticmethod
     def _apply_progress_updates(progress_updates, progress, task_ids, allowed_endpoints=None):
+        """Drain the progress queue and advance the corresponding Rich progress tasks.
+
+        Args:
+            progress_updates (queue.Queue | None): Queue of ``(endpoint_name, advance)`` tuples.
+            progress: Rich Progress instance, or None to skip.
+            task_ids (dict | None): Mapping of endpoint name to Rich task ID.
+            allowed_endpoints (set | None): If provided, only updates for these endpoints are applied.
+
+        Returns:
+            bool: True if at least one task was advanced; False otherwise.
+        """
         if progress_updates is None or progress is None or not task_ids:
             return False
 
@@ -674,6 +831,18 @@ class DeviceTypes:
         return advanced
 
     def pump_preload_progress(self, preload_job, progress):
+        """Drain pending progress updates and mark completed endpoints for *preload_job*.
+
+        Intended to be called periodically while parsing is in progress so that the
+        progress bar advances before :meth:`preload_all_components` is called.
+
+        Args:
+            preload_job (dict | None): Preload job returned by :meth:`start_component_preload`.
+            progress: Rich Progress instance.
+
+        Returns:
+            bool: True if any progress updates were applied or endpoints were marked done.
+        """
         if not preload_job:
             return False
         futures = preload_job.get("futures", {})
@@ -994,6 +1163,16 @@ class DeviceTypes:
                     preload_job["executor"] = None
 
     def _fetch_global_endpoint_records(self, endpoint_name, progress_callback=None, expected_total=None):
+        """Fetch all records for *endpoint_name* from NetBox, emitting batched progress updates.
+
+        Args:
+            endpoint_name (str): Attribute name on ``self.netbox.dcim`` (e.g. ``"interface_templates"``).
+            progress_callback (callable | None): Called with ``(endpoint_name, advance)`` periodically.
+            expected_total (int | None): Expected record count; reserved for callers, unused here.
+
+        Returns:
+            list: All pynetbox records returned by ``endpoint.all()``.
+        """
         endpoint = getattr(self.netbox.dcim, endpoint_name)
         records = []
         last_emit_time = time.monotonic()
@@ -1017,6 +1196,18 @@ class DeviceTypes:
         return records
 
     def _fetch_scoped_endpoint_records(self, endpoint_name, dt_ids, progress_callback=None):
+        """Fetch component records for the given device-type IDs from a single endpoint.
+
+        Issues one ``filter()`` API call per device-type ID and returns results grouped by ID.
+
+        Args:
+            endpoint_name (str): Attribute name on ``self.netbox.dcim``.
+            dt_ids (list[int]): Device-type IDs to fetch components for.
+            progress_callback (callable | None): Called with ``(endpoint_name, 1)`` after each ID.
+
+        Returns:
+            dict: ``{device_type_id: list[record]}``
+        """
         endpoint = getattr(self.netbox.dcim, endpoint_name)
         records_by_dt = {}
         for dt_id in dt_ids:
@@ -1027,6 +1218,14 @@ class DeviceTypes:
         return records_by_dt
 
     def _get_endpoint_total(self, endpoint_name):
+        """Return the total number of records for *endpoint_name*, or 0 on error.
+
+        Args:
+            endpoint_name (str): Attribute name on ``self.netbox.dcim``.
+
+        Returns:
+            int: Record count, or 0 if the count cannot be retrieved.
+        """
         endpoint = getattr(self.netbox.dcim, endpoint_name)
         try:
             total = endpoint.count()
@@ -1038,6 +1237,15 @@ class DeviceTypes:
 
     @staticmethod
     def _build_component_cache(items):
+        """Organise a flat list of component records into a nested cache structure.
+
+        Args:
+            items (list): pynetbox records; each must have a ``device_type`` or ``module_type`` attribute.
+
+        Returns:
+            tuple[dict, int]: Cache ``{(parent_type, parent_id): {name: record}}`` and the total
+                number of items successfully indexed.
+        """
         cache = {}
         count = 0
         for item in items:
@@ -1063,6 +1271,17 @@ class DeviceTypes:
         return cache, count
 
     def _get_filter_kwargs(self, parent_id, parent_type="device"):
+        """Build endpoint filter keyword arguments for the given parent type and ID.
+
+        Selects the correct parameter name based on the NetBox version (``self.new_filters``).
+
+        Args:
+            parent_id (int): ID of the device type or module type.
+            parent_type (str): ``"device"`` or ``"module"``.
+
+        Returns:
+            dict: Filter kwargs to pass to a pynetbox endpoint's ``filter()`` method.
+        """
         if parent_type == "device":
             key = "device_type_id" if self.new_filters else "devicetype_id"
             return {key: parent_id}
@@ -1135,6 +1354,22 @@ class DeviceTypes:
         context=None,
         cache_name=None,
     ):
+        """Create component templates in NetBox, skipping those that already exist.
+
+        Fetches existing components (via cache or API), filters *items* to only new entries,
+        optionally runs *post_process* to mutate items before creation (e.g. resolving port IDs),
+        then calls ``endpoint.create()`` and updates counters. On error, logs each failed item.
+
+        Args:
+            items (list[dict]): Component definitions to create; each must have a "name" key.
+            parent_id (int): ID of the parent device or module type.
+            endpoint: pynetbox endpoint proxy for create/filter calls.
+            component_name (str): Human-readable component type for log messages.
+            parent_type (str): ``"device"`` or ``"module"``; determines parent key and counter key.
+            post_process (callable | None): Optional ``(items, parent_id)`` callback run before creation.
+            context (str | None): Optional context string appended to error log messages.
+            cache_name (str | None): Key in ``self.cached_components``; entry is invalidated after creation.
+        """
         # Look up existing components via cache or API fallback
         existing = self._get_cached_or_fetch(cache_name, parent_id, parent_type, endpoint)
 
@@ -1335,6 +1570,16 @@ class DeviceTypes:
                     self.cached_components[cache_name].pop(cache_key, None)
 
     def create_interfaces(self, interfaces, device_type, context=None):
+        """Create interface templates for a device type, handling bridge references.
+
+        Strips ``bridge`` entries before creation and re-applies them after by resolving
+        bridge interface names to their NetBox IDs.
+
+        Args:
+            interfaces (list[dict]): Interface template definitions; may include a "bridge" key.
+            device_type (int): ID of the parent device type.
+            context (str | None): Optional context string for log messages.
+        """
         bridged_interfaces = {}
         # Pre-process to separate bridge config
         for x in interfaces:
@@ -1373,6 +1618,7 @@ class DeviceTypes:
                     self.handle.log(f"Error bridging interfaces: {e} (Context: {context})")
 
     def create_power_ports(self, power_ports, device_type, context=None):
+        """Create power port templates for a device type."""
         self._create_generic(
             power_ports,
             device_type,
@@ -1383,6 +1629,7 @@ class DeviceTypes:
         )
 
     def create_console_ports(self, console_ports, device_type, context=None):
+        """Create console port templates for a device type."""
         self._create_generic(
             console_ports,
             device_type,
@@ -1393,6 +1640,14 @@ class DeviceTypes:
         )
 
     def create_power_outlets(self, power_outlets, device_type, context=None):
+        """Create power outlet templates for a device type, resolving power-port name references.
+
+        Args:
+            power_outlets (list[dict]): Power-outlet template definitions; may include a "power_port" name key.
+            device_type (int): ID of the parent device type.
+            context (str | None): Optional context string for log messages.
+        """
+
         def link_ports(items, pid):
             existing_pp = self._get_cached_or_fetch(
                 "power_port_templates", pid, "device", self.netbox.dcim.power_port_templates
@@ -1436,6 +1691,7 @@ class DeviceTypes:
         )
 
     def create_console_server_ports(self, console_server_ports, device_type, context=None):
+        """Create console server port templates for a device type."""
         self._create_generic(
             console_server_ports,
             device_type,
@@ -1446,6 +1702,7 @@ class DeviceTypes:
         )
 
     def create_rear_ports(self, rear_ports, device_type, context=None):
+        """Create rear port templates for a device type."""
         self._create_generic(
             rear_ports,
             device_type,
@@ -1508,6 +1765,7 @@ class DeviceTypes:
         )
 
     def create_device_bays(self, device_bays, device_type, context=None):
+        """Create device bay templates for a device type."""
         self._create_generic(
             device_bays,
             device_type,
@@ -1518,6 +1776,7 @@ class DeviceTypes:
         )
 
     def create_module_bays(self, module_bays, device_type, context=None):
+        """Create module bay templates for a device type."""
         self._create_generic(
             module_bays,
             device_type,
@@ -1529,6 +1788,7 @@ class DeviceTypes:
 
     # Module methods
     def create_module_interfaces(self, interfaces, module_type, context=None):
+        """Create interface templates for a module type."""
         self._create_generic(
             interfaces,
             module_type,
@@ -1540,6 +1800,7 @@ class DeviceTypes:
         )
 
     def create_module_power_ports(self, power_ports, module_type, context=None):
+        """Create power port templates for a module type."""
         self._create_generic(
             power_ports,
             module_type,
@@ -1551,6 +1812,7 @@ class DeviceTypes:
         )
 
     def create_module_console_ports(self, console_ports, module_type, context=None):
+        """Create console port templates for a module type."""
         self._create_generic(
             console_ports,
             module_type,
@@ -1562,6 +1824,8 @@ class DeviceTypes:
         )
 
     def create_module_power_outlets(self, power_outlets, module_type, context=None):
+        """Create power outlet templates for a module type, resolving power-port name references."""
+
         def link_ports(items, pid):
             existing_pp = self._get_cached_or_fetch(
                 "power_port_templates", pid, "module", self.netbox.dcim.power_port_templates
@@ -1586,6 +1850,7 @@ class DeviceTypes:
         )
 
     def create_module_console_server_ports(self, console_server_ports, module_type, context=None):
+        """Create console server port templates for a module type."""
         self._create_generic(
             console_server_ports,
             module_type,

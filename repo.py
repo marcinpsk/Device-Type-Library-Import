@@ -76,6 +76,12 @@ def parse_single_file(file):
 
 
 class DTLRepo:
+    """Manages a local clone of the Device Type Library Git repository.
+
+    Handles cloning or updating the repository on construction, provides helpers
+    for locating YAML device and module type files, and exposes a parallel file parser.
+    """
+
     def __new__(cls, *args, **kwargs):
         """
         Allocate and return a new instance of the class using the default object allocator.
@@ -133,15 +139,23 @@ class DTLRepo:
         return os.path.join(self.cwd, self.repo_path)
 
     def get_devices_path(self):
+        """Return the absolute path to the ``device-types`` directory within the repository."""
         return os.path.join(self.get_absolute_path(), "device-types")
 
     def get_modules_path(self):
+        """Return the absolute path to the ``module-types`` directory within the repository."""
         return os.path.join(self.get_absolute_path(), "module-types")
 
     def slug_format(self, name):
+        """Convert *name* to a slug by lowercasing and replacing non-word characters with hyphens."""
         return re_sub(r"\W+", "-", name.lower())
 
     def pull_repo(self):
+        """Pull the latest changes for the configured branch from the existing local repository.
+
+        Opens the existing clone at ``self.repo_path``, validates the origin URL, pulls from
+        origin, and checks out ``self.branch``. Reports errors via the configured exception handler.
+        """
         try:
             self.handle.log(
                 "Package devicetype-library is already installed, " + f"updating {self.get_absolute_path()}"

@@ -31,13 +31,19 @@ _PROGRESS_DESC_WIDTH = 28  # Longest: "Caching Console Server Ports"
 
 
 class MyProgress(Progress):
+    """Rich Progress subclass that renders each task table inside a bordered Panel."""
+
     def get_renderables(self):
+        """Yield a Panel wrapping the tasks table for display inside a bordered box."""
         yield Panel(self.make_tasks_table(self.tasks))
 
 
 class ItemsPerSecondColumn(ProgressColumn):
+    """Custom Rich ProgressColumn that displays processing speed in items per second."""
+
     @staticmethod
     def _effective_speed(task, primary_attr):
+        """Return the effective speed for *task*, falling back to elapsed/completed if *primary_attr* is unavailable."""
         speed = getattr(task, primary_attr, None)
         if speed is not None:
             return speed
@@ -48,6 +54,7 @@ class ItemsPerSecondColumn(ProgressColumn):
         return None
 
     def render(self, task):
+        """Render the current or finished speed as a ``Text`` object (e.g. ``"12.3 it/s"``)."""
         if task.finished:
             speed = self._effective_speed(task, "finished_speed")
         else:
@@ -59,6 +66,14 @@ class ItemsPerSecondColumn(ProgressColumn):
 
 @contextmanager
 def get_progress_panel(show_remaining_time=False):
+    """Context manager that yields a MyProgress instance when stdout is a TTY, otherwise yields None.
+
+    Args:
+        show_remaining_time (bool): If True, appends a TimeRemainingColumn to the progress bar.
+
+    Yields:
+        MyProgress | None: Progress instance for TTY contexts; None for non-TTY (e.g. piped output).
+    """
     if not sys.stdout.isatty():
         yield None
         return
@@ -82,6 +97,19 @@ def get_progress_panel(show_remaining_time=False):
 
 
 def get_progress_wrapper(progress, iterable, desc=None, total=None, on_step=None):
+    """Wrap *iterable* with a Rich progress task if *progress* is provided, otherwise return *iterable* unchanged.
+
+    Args:
+        progress: A MyProgress instance (or compatible), or None to disable tracking.
+        iterable: The iterable to wrap.
+        desc (str | None): Task description shown in the progress bar.
+        total (int | None): Total number of items; inferred from ``len(iterable)`` if omitted.
+        on_step (callable | None): Optional callback invoked after each item and at the end.
+
+    Returns:
+        The original iterable if *progress* is None, otherwise a generator that advances
+        the progress task as items are consumed.
+    """
     if progress is None:
         return iterable
 
@@ -114,12 +142,34 @@ def get_progress_wrapper(progress, iterable, desc=None, total=None, on_step=None
 
 
 def filter_vendors_for_parsed_types(discovered_vendors, parsed_types):
+    """Return only the vendors referenced in *parsed_types* and the set of their slugs.
+
+    Args:
+        discovered_vendors (list[dict]): All vendors discovered in the repo (each has a "slug" key).
+        parsed_types (list[dict]): Parsed device-type dicts; each must have a ``manufacturer.slug`` entry.
+
+    Returns:
+        tuple[list[dict], set[str]]: Filtered vendor list and the corresponding slug set.
+    """
     selected_vendor_slugs = {item["manufacturer"]["slug"] for item in parsed_types}
     filtered_vendors = [vendor for vendor in discovered_vendors if vendor["slug"] in selected_vendor_slugs]
     return filtered_vendors, selected_vendor_slugs
 
 
 def filter_new_device_types(device_types, existing_by_model, existing_by_slug):
+    """Return device types that do not already exist in NetBox.
+
+    Looks up each device type by ``(manufacturer_slug, model)`` first, then by
+    ``(manufacturer_slug, slug)`` as a fallback.
+
+    Args:
+        device_types (list[dict]): Parsed YAML device-type dicts to filter.
+        existing_by_model (dict): Mapping of ``(manufacturer_slug, model)`` -> NetBox record.
+        existing_by_slug (dict): Mapping of ``(manufacturer_slug, slug)`` -> NetBox record.
+
+    Returns:
+        list[dict]: Device types not found in either lookup.
+    """
     new_device_types = []
     for device_type in device_types:
         manufacturer_slug = device_type["manufacturer"]["slug"]
@@ -137,10 +187,12 @@ def filter_new_device_types(device_types, existing_by_model, existing_by_slug):
 
 
 def _device_type_change_key(manufacturer_slug, model, slug):
+    """Build a canonical change-detection key tuple from individual components."""
     return manufacturer_slug, model, slug or ""
 
 
 def device_type_key(device_type):
+    """Extract the change-detection key from a parsed device-type dict."""
     return _device_type_change_key(
         device_type["manufacturer"]["slug"],
         device_type["model"],
@@ -149,6 +201,7 @@ def device_type_key(device_type):
 
 
 def change_entry_key(change_entry):
+    """Extract the change-detection key from a DeviceTypeChange entry."""
     return _device_type_change_key(
         change_entry.manufacturer_slug,
         change_entry.model,
@@ -157,12 +210,32 @@ def change_entry_key(change_entry):
 
 
 def filter_device_types_by_change_keys(device_types, change_keys):
+    """Return only those *device_types* whose key is present in *change_keys*.
+
+    Args:
+        device_types (list[dict]): Parsed device-type dicts to filter.
+        change_keys (set): Set of change-detection keys to match against.
+
+    Returns:
+        list[dict]: Subset of device_types whose key appears in change_keys.
+    """
     if not change_keys:
         return []
     return [device_type for device_type in device_types if device_type_key(device_type) in change_keys]
 
 
 def select_device_types_for_default_mode(device_types, change_report):
+    """Select device types to process in default (non-update) mode.
+
+    Includes newly discovered device types and existing ones with missing images.
+
+    Args:
+        device_types (list[dict]): All parsed device-type dicts.
+        change_report (ChangeReport | None): Change detection results; if None returns [].
+
+    Returns:
+        list[dict]: Device types that are new or have missing images.
+    """
     if not change_report:
         return []
 
@@ -176,6 +249,17 @@ def select_device_types_for_default_mode(device_types, change_report):
 
 
 def select_device_types_for_update_mode(device_types, change_report):
+    """Select device types to process in update (``--update``) mode.
+
+    Includes all new and modified device types.
+
+    Args:
+        device_types (list[dict]): All parsed device-type dicts.
+        change_report (ChangeReport | None): Change detection results; if None returns [].
+
+    Returns:
+        list[dict]: Device types that are either new or have detected changes.
+    """
     if not change_report:
         return []
 
@@ -185,6 +269,14 @@ def select_device_types_for_update_mode(device_types, change_report):
 
 
 def has_missing_device_images(change_report):
+    """Return True if any modified device type has at least one missing image.
+
+    Args:
+        change_report (ChangeReport | None): Change detection results.
+
+    Returns:
+        bool: True if there is at least one image-related property change; False otherwise.
+    """
     if not change_report:
         return False
     for device_change in change_report.modified_device_types:
@@ -194,6 +286,12 @@ def has_missing_device_images(change_report):
 
 
 def log_run_mode(handle, args):
+    """Log a human-readable summary of the active run-mode flags to *handle*.
+
+    Args:
+        handle (LogHandler): Logging handler used to emit messages.
+        args: Parsed CLI arguments; inspects ``only_new``, ``update``, and ``remove_components``.
+    """
     if args.only_new:
         handle.log("Mode: --only-new enabled; existing device types and components will not be modified.")
     elif args.update:
@@ -210,6 +308,7 @@ def log_run_mode(handle, args):
 
 
 def should_only_create_new_modules(args):
+    """Return True if module processing should only create new entries and skip updates."""
     return args.only_new or not args.update
 
 

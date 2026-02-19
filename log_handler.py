@@ -51,15 +51,19 @@ class LogHandler:
         system_exit(exception_dict[exception_type])
 
     def _timestamp(self):
+        """Return the current time formatted as HH:MM:SS."""
         return datetime.now().strftime("%H:%M:%S")
 
     def set_console(self, console):
+        """Set the Rich Console instance used for output, or None to fall back to print()."""
         self.console = console
 
     def start_progress_group(self):
+        """Begin a progress group that defers log output until the group ends."""
         self._defer_depth += 1
 
     def end_progress_group(self):
+        """End the current progress group, flushing deferred messages when the depth returns to zero."""
         if self._defer_depth == 0:
             return
         self._defer_depth -= 1
@@ -72,6 +76,7 @@ class LogHandler:
             self._deferred_messages = []
 
     def _emit(self, message):
+        """Emit *message* immediately, or defer it if inside a progress group."""
         if self._defer_depth > 0:
             self._deferred_messages.append(message)
         elif self.console is not None:
@@ -80,13 +85,24 @@ class LogHandler:
             print(message)
 
     def verbose_log(self, message):
+        """Log *message* only when verbose mode is enabled."""
         if self.args.verbose:
             self._emit(f"[{self._timestamp()}] {message}")
 
     def log(self, message):
+        """Emit a timestamped log message unconditionally."""
         self._emit(f"[{self._timestamp()}] {message}")
 
     def log_device_ports_created(self, created_ports=None, port_type: str = "port"):
+        """Log creation of device port templates and return the count created.
+
+        Args:
+            created_ports (list | None): Port template records returned by the API.
+            port_type (str): Human-readable port type label used in log messages.
+
+        Returns:
+            int: Number of ports logged.
+        """
         if created_ports is None:
             created_ports = []
         for port in created_ports:
@@ -98,6 +114,15 @@ class LogHandler:
         return len(created_ports)
 
     def log_module_ports_created(self, created_ports=None, port_type: str = "port"):
+        """Log creation of module port templates and return the count created.
+
+        Args:
+            created_ports (list | None): Port template records returned by the API.
+            port_type (str): Human-readable port type label used in log messages.
+
+        Returns:
+            int: Number of ports logged.
+        """
         if created_ports is None:
             created_ports = []
         for port in created_ports:

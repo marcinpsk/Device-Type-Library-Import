@@ -53,6 +53,7 @@ class DeviceTypeChange:
 
     @property
     def has_changes(self) -> bool:
+        """Return True if this device type is new or has any property or component changes."""
         return self.is_new or bool(self.property_changes) or bool(self.component_changes)
 
     @property
