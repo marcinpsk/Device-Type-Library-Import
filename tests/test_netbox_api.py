@@ -201,7 +201,11 @@ def test_fetch_global_endpoint_records_falls_back_to_all_iteration(mock_settings
     mock_nb_api = mock_pynetbox.api.return_value
     mock_nb_api.dcim.device_types.all.return_value = []
 
-    records = [MagicMock(name=f"item-{idx}") for idx in range(120)]
+    records = []
+    for idx in range(120):
+        item = MagicMock()
+        item.name = f"item-{idx}"
+        records.append(item)
     mock_nb_api.dcim.interface_templates.all.return_value = records
 
     dt = DeviceTypes(mock_nb_api, mock_settings.handle, MagicMock(), False, False)
@@ -432,7 +436,7 @@ def test_filter_actionable_module_types_skips_unchanged_existing_module(mock_set
     ]
 
     with patch("glob.glob", return_value=[]):
-        actionable = nb.filter_actionable_module_types(
+        actionable, _ = nb.filter_actionable_module_types(
             module_types,
             nb.get_existing_module_types(),
             only_new=False,
@@ -465,7 +469,7 @@ def test_filter_actionable_module_types_includes_module_with_missing_component(m
     }
 
     with patch("glob.glob", return_value=[]):
-        actionable = nb.filter_actionable_module_types(
+        actionable, _ = nb.filter_actionable_module_types(
             [module_type],
             nb.get_existing_module_types(),
             only_new=False,

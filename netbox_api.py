@@ -299,16 +299,12 @@ class NetBox:
 
     def filter_actionable_module_types(self, module_types, all_module_types, only_new=False):
         if not module_types:
-            return []
+            return [], {}
 
         if only_new:
-            return self.filter_new_module_types(module_types, all_module_types)
+            return self.filter_new_module_types(module_types, all_module_types), {}
 
-        module_type_existing_images = {}
-        for att in self.netbox.extras.image_attachments.filter(object_type="dcim.moduletype"):
-            names = module_type_existing_images.setdefault(att.object_id, set())
-            if att.name:
-                names.add(att.name)
+        module_type_existing_images = self._fetch_module_type_existing_images()
 
         actionable_module_types = []
         component_keys = (
@@ -352,17 +348,9 @@ class NetBox:
             if has_missing_components:
                 actionable_module_types.append(module_type)
 
-        return actionable_module_types
+        return actionable_module_types, module_type_existing_images
 
-    def create_module_types(self, module_types, progress=None, only_new=False, all_module_types=None):
-        if not module_types:
-            return
-
-        if all_module_types is None:
-            all_module_types = self.get_existing_module_types()
-
-        # Pre-fetch all existing image attachments for module types in one API call
-        # Map module_type_id -> set of attachment names for per-file deduplication
+    def _fetch_module_type_existing_images(self):
         module_type_existing_images = {}
         for att in self.netbox.extras.image_attachments.filter(object_type="dcim.moduletype"):
             names = module_type_existing_images.setdefault(att.object_id, set())
@@ -371,6 +359,19 @@ class NetBox:
         self.handle.verbose_log(
             f"Found {len(module_type_existing_images)} module type(s) with existing image attachments."
         )
+        return module_type_existing_images
+
+    def create_module_types(
+        self, module_types, progress=None, only_new=False, all_module_types=None, module_type_existing_images=None
+    ):
+        if not module_types:
+            return
+
+        if all_module_types is None:
+            all_module_types = self.get_existing_module_types()
+
+        if module_type_existing_images is None:
+            module_type_existing_images = self._fetch_module_type_existing_images()
 
         iterator = progress if progress is not None else module_types
         for curr_mt in iterator:

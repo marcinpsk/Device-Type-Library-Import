@@ -36,24 +36,22 @@ class MyProgress(Progress):
 
 
 class ItemsPerSecondColumn(ProgressColumn):
+    @staticmethod
+    def _effective_speed(task, primary_attr):
+        speed = getattr(task, primary_attr, None)
+        if speed is not None:
+            return speed
+        elapsed = getattr(task, "elapsed", None)
+        completed = getattr(task, "completed", 0)
+        if elapsed and completed:
+            return completed / elapsed
+        return None
+
     def render(self, task):
         if task.finished:
-            speed = task.finished_speed
-            if speed is None:
-                elapsed = getattr(task, "elapsed", None)
-                completed = getattr(task, "completed", 0)
-                if elapsed and completed:
-                    speed = completed / elapsed
-            if speed is None:
-                return Text("- it/s")
-            return Text(f"{speed:.1f} it/s")
-
-        speed = task.speed
-        if speed is None:
-            elapsed = getattr(task, "elapsed", None)
-            completed = getattr(task, "completed", 0)
-            if elapsed and completed:
-                speed = completed / elapsed
+            speed = self._effective_speed(task, "finished_speed")
+        else:
+            speed = self._effective_speed(task, "speed")
         if speed is None:
             return Text("- it/s")
         return Text(f"{speed:.1f} it/s")
@@ -439,7 +437,7 @@ def main():
                 handle.verbose_log(f"{len(module_types)} Module-Types Found")
                 module_only_new = should_only_create_new_modules(args)
                 existing_module_types = netbox.get_existing_module_types()
-                module_types_to_process = netbox.filter_actionable_module_types(
+                module_types_to_process, module_type_existing_images = netbox.filter_actionable_module_types(
                     module_types,
                     existing_module_types,
                     only_new=module_only_new,
@@ -454,6 +452,7 @@ def main():
                         ),
                         only_new=module_only_new,
                         all_module_types=existing_module_types,
+                        module_type_existing_images=module_type_existing_images or None,
                     )
                 else:
                     handle.verbose_log("No module type changes to process.")
