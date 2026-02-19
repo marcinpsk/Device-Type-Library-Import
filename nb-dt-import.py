@@ -304,17 +304,16 @@ def main():
         if progress is not None:
             handle.set_console(progress.console)
         try:
-            parse_hook_ref = {"fn": None}
+            parse_fn = None
 
             def on_parse_step():
-                hook = parse_hook_ref["fn"]
-                if hook is not None:
-                    hook()
+                nonlocal parse_fn
+                if parse_fn is not None:
+                    parse_fn()
 
             parse_progress = get_progress_wrapper(progress, files, desc="Parsing Device Types", on_step=on_parse_step)
 
             if not args.only_new and not args.slugs and not args.vendors:
-                preload_vendor_scope = None
                 cache_preload_job = netbox.device_types.start_component_preload(
                     vendor_slugs=preload_vendor_scope,
                     progress=progress,
@@ -324,7 +323,7 @@ def main():
                     def pump_preload():
                         netbox.device_types.pump_preload_progress(cache_preload_job, progress)
 
-                    parse_hook_ref["fn"] = pump_preload
+                    parse_fn = pump_preload
 
             device_types = dtl_repo.parse_files(
                 files,
@@ -432,7 +431,8 @@ def main():
                 if not files:
                     module_types = []
                 else:
-                    module_types = dtl_repo.parse_files(files, slugs=args.slugs)
+                    module_parse_progress = get_progress_wrapper(progress, files, desc="Parsing Module Types")
+                    module_types = dtl_repo.parse_files(files, slugs=args.slugs, progress=module_parse_progress)
                 module_vendors, _ = filter_vendors_for_parsed_types(discovered_module_vendors, module_types)
                 handle.verbose_log(f"{len(module_vendors)} Module Vendors Found")
                 handle.verbose_log(f"{len(module_types)} Module-Types Found")

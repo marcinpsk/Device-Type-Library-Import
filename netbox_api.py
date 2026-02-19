@@ -317,6 +317,16 @@ class NetBox:
             "front-ports",
         )
 
+        # Bulk-preload components for all existing module types so the per-module
+        # loop below hits the cache instead of issuing individual API calls.
+        existing_module_ids = set()
+        for module_type in module_types:
+            existing_module = self._find_existing_module_type(module_type, all_module_types)
+            if existing_module is not None:
+                existing_module_ids.add(existing_module.id)
+        if existing_module_ids:
+            self.device_types.preload_module_type_components(existing_module_ids, component_keys)
+
         for module_type in module_types:
             existing_module = self._find_existing_module_type(module_type, all_module_types)
             if existing_module is None:
@@ -1082,6 +1092,37 @@ class DeviceTypes:
         result = {item.name: item for item in endpoint.filter(**filter_kwargs)}
         self.cached_components.setdefault(cache_name, {})[cache_key] = result
         return result
+
+    def preload_module_type_components(self, module_type_ids, component_keys):
+        """Bulk-fetch components for module types and populate the cache.
+
+        For each component endpoint referenced by *component_keys*, fetches
+        all records for every module-type ID in one filter() call per endpoint
+        and stores the results so that subsequent _get_cached_or_fetch calls
+        hit the cache.
+        """
+        if not module_type_ids:
+            return
+
+        seen_endpoints = set()
+        targets = []
+        for component_key in component_keys:
+            endpoint_attr, cache_name = ENDPOINT_CACHE_MAP[component_key]
+            if endpoint_attr in seen_endpoints:
+                continue
+            seen_endpoints.add(endpoint_attr)
+            targets.append((endpoint_attr, cache_name))
+
+        for endpoint_attr, cache_name in targets:
+            endpoint = getattr(self.netbox.dcim, endpoint_attr)
+            cache = self.cached_components.setdefault(cache_name, {})
+            # Pre-populate empty entries so cache hits return {} for IDs with no components
+            for mid in module_type_ids:
+                cache.setdefault(("module", mid), {})
+            for mid in module_type_ids:
+                filter_kwargs = self._get_filter_kwargs(mid, "module")
+                for item in endpoint.filter(**filter_kwargs):
+                    cache[("module", mid)][item.name] = item
 
     def _create_generic(
         self,
