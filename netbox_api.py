@@ -743,43 +743,43 @@ class DeviceTypes:
 
         try:
             endpoint_totals = self._get_endpoint_totals(components)
+            progress_updates = queue.Queue()
+            task_ids = None
+
+            if progress is not None:
+                task_ids = {
+                    endpoint_name: progress.add_task(
+                        f"Caching {label}",
+                        total=max(endpoint_totals.get(endpoint_name, 0), 1),
+                    )
+                    for endpoint_name, label in components
+                }
+
+            def update_progress(endpoint_name, advance):
+                progress_updates.put((endpoint_name, advance))
+
+            futures = {
+                endpoint_name: executor.submit(
+                    self._fetch_global_endpoint_records,
+                    endpoint_name,
+                    update_progress,
+                    endpoint_totals.get(endpoint_name, 0),
+                )
+                for endpoint_name, _label in components
+            }
+            return {
+                "mode": "global",
+                "components": components,
+                "futures": futures,
+                "progress_updates": progress_updates,
+                "endpoint_totals": endpoint_totals,
+                "task_ids": task_ids,
+                "finished_endpoints": set(),
+                "executor": executor,
+            }
         except Exception:
             executor.shutdown(wait=False, cancel_futures=True)
             raise
-        progress_updates = queue.Queue()
-        task_ids = None
-
-        if progress is not None:
-            task_ids = {
-                endpoint_name: progress.add_task(
-                    f"Caching {label}",
-                    total=max(endpoint_totals.get(endpoint_name, 0), 1),
-                )
-                for endpoint_name, label in components
-            }
-
-        def update_progress(endpoint_name, advance):
-            progress_updates.put((endpoint_name, advance))
-
-        futures = {
-            endpoint_name: executor.submit(
-                self._fetch_global_endpoint_records,
-                endpoint_name,
-                update_progress,
-                endpoint_totals.get(endpoint_name, 0),
-            )
-            for endpoint_name, _label in components
-        }
-        return {
-            "mode": "global",
-            "components": components,
-            "futures": futures,
-            "progress_updates": progress_updates,
-            "endpoint_totals": endpoint_totals,
-            "task_ids": task_ids,
-            "finished_endpoints": set(),
-            "executor": executor,
-        }
 
     @staticmethod
     def stop_component_preload(preload_job):
@@ -1003,7 +1003,7 @@ class DeviceTypes:
                         pending.remove(endpoint_name)
                         try:
                             records_by_endpoint[endpoint_name] = future_map[endpoint_name].result()
-                        except (pynetbox.RequestError, concurrent.futures.CancelledError, Exception) as exc:
+                        except Exception as exc:
                             self.handle.log(f"Preload failed for {endpoint_name}: {exc}")
                             records_by_endpoint[endpoint_name] = []
                         final_total = max(
@@ -1041,7 +1041,7 @@ class DeviceTypes:
                     self.handle.verbose_log(f"Pre-fetching {label}...")
                     try:
                         records_by_endpoint[endpoint] = futures[endpoint].result()
-                    except (pynetbox.RequestError, concurrent.futures.CancelledError, Exception) as exc:
+                    except Exception as exc:
                         self.handle.log(f"Preload failed for {label}: {exc}")
                         records_by_endpoint[endpoint] = []
 
@@ -1112,7 +1112,7 @@ class DeviceTypes:
                         endpoint_name, _label = future_map[future]
                         try:
                             records_by_endpoint[endpoint_name] = future.result()
-                        except (pynetbox.RequestError, concurrent.futures.CancelledError, Exception) as exc:
+                        except Exception as exc:
                             self.handle.log(f"Preload failed for {endpoint_name}: {exc}")
                             records_by_endpoint[endpoint_name] = {}
                         progress.update(task_ids[endpoint_name], completed=1)
@@ -1153,7 +1153,7 @@ class DeviceTypes:
                             pending.remove(endpoint_name)
                             try:
                                 records_by_endpoint[endpoint_name] = future_map[endpoint_name].result()
-                            except (pynetbox.RequestError, concurrent.futures.CancelledError, Exception) as exc:
+                            except Exception as exc:
                                 self.handle.log(f"Preload failed for {endpoint_name}: {exc}")
                                 records_by_endpoint[endpoint_name] = {}
                             progress.update(task_ids[endpoint_name], completed=total_per_endpoint)
@@ -1173,7 +1173,7 @@ class DeviceTypes:
                     self.handle.verbose_log(f"Pre-fetching {label}...")
                     try:
                         records_by_endpoint[endpoint_name] = futures[endpoint_name].result()
-                    except (pynetbox.RequestError, concurrent.futures.CancelledError, Exception) as exc:
+                    except Exception as exc:
                         self.handle.log(f"Preload failed for {label}: {exc}")
                         records_by_endpoint[endpoint_name] = {}
 
