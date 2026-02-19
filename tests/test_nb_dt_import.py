@@ -8,7 +8,7 @@ import pytest
 
 
 def _dt_sort_key(d):
-    return (d["manufacturer"]["slug"], d["model"], d["slug"])
+    return (d.get("manufacturer", {}).get("slug", ""), d.get("model", ""), d.get("slug", ""))
 
 
 @pytest.fixture(scope="module")

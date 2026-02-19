@@ -219,15 +219,17 @@ class DTLRepo:
 
     def parse_files(self, files: list, slugs: list = None, progress=None):
         """
-        Parse YAML device files into device type dictionaries, optionally filtering by vendor slugs and advancing a progress iterable.
+        Parse YAML device files into device type dictionaries, optionally filtering by slug/model and advancing a progress iterable.
 
         Parameters:
             files (Iterable[str]): Paths of YAML files to parse.
-            slugs (list[str], optional): Vendor slug substrings used to filter results; an item is included if any provided slug is a case-insensitive substring of the item's `"slug"`. If omitted, no slug filtering is applied.
+            slugs (list[str], optional): Device-type slug or model substrings used to filter results;
+                an item is included if any provided slug is a case-insensitive substring of the item's
+                ``"slug"`` or ``"model"`` field. If omitted, no slug filtering is applied.
             progress (Iterable, optional): Iterable consumed in parallel with parsing to drive an external progress display; values are ignored but the iterable should yield once per file.
 
         Returns:
-            list: Parsed device type dictionaries. Files that fail parsing (returned as strings beginning with `"Error:"`) are logged via the instance handler and excluded. Parsed items that do not match the provided slug filters are also excluded.
+            list: Parsed device type dictionaries. Files that fail parsing (returned as strings beginning with ``"Error:"``) are logged via the instance handler and excluded. Parsed items that do not match the provided slug filters are also excluded.
         """
         deviceTypes = []
 

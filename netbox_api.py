@@ -1366,7 +1366,10 @@ class DeviceTypes:
             for mid in id_list:
                 cache.setdefault(("module", mid), {})
             for item in endpoint.filter(**{filter_key: id_list}):
-                mid = item.module_type.id
+                module_type = getattr(item, "module_type", None)
+                if module_type is None:
+                    continue
+                mid = module_type.id
                 cache.setdefault(("module", mid), {})[item.name] = item
 
     def _create_generic(
