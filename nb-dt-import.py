@@ -96,18 +96,19 @@ def get_progress_wrapper(progress, iterable, desc=None, total=None, on_step=None
 
     def iterator():
         count = 0
-        for item in iterable:
-            yield item
-            count += 1
-            progress.advance(task_id)
+        try:
+            for item in iterable:
+                yield item
+                count += 1
+                progress.advance(task_id)
+                if on_step:
+                    on_step()
+        finally:
+            if total is None:
+                progress.update(task_id, total=max(count, 1), completed=count)
+            progress.stop_task(task_id)
             if on_step:
                 on_step()
-
-        if total is None:
-            progress.update(task_id, total=max(count, 1), completed=count)
-        progress.stop_task(task_id)
-        if on_step:
-            on_step()
 
     return iterator()
 
@@ -452,7 +453,7 @@ def main():
                         ),
                         only_new=module_only_new,
                         all_module_types=existing_module_types,
-                        module_type_existing_images=module_type_existing_images or None,
+                        module_type_existing_images=module_type_existing_images,
                     )
                 else:
                     handle.verbose_log("No module type changes to process.")

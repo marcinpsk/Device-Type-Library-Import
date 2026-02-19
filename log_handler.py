@@ -66,7 +66,7 @@ class LogHandler:
         if self._defer_depth == 0 and self._deferred_messages:
             for message in self._deferred_messages:
                 if self.console is not None and hasattr(self.console, "print"):
-                    self.console.print(message)
+                    self.console.print(message, markup=False)
                 else:
                     print(message)
             self._deferred_messages = []
@@ -75,7 +75,7 @@ class LogHandler:
         if self._defer_depth > 0:
             self._deferred_messages.append(message)
         elif self.console is not None:
-            self.console.print(message)
+            self.console.print(message, markup=False)
         else:
             print(message)
 
