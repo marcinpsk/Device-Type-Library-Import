@@ -126,6 +126,17 @@ def test_has_missing_device_images_detects_image_changes(nb_dt_import):
     assert nb_dt_import.has_missing_device_images(report)
 
 
+def test_has_missing_device_images_detects_rear_image_changes(nb_dt_import):
+    image_change = SimpleNamespace(property_name="rear_image")
+    report = SimpleNamespace(
+        modified_device_types=[
+            SimpleNamespace(property_changes=[image_change]),
+        ]
+    )
+
+    assert nb_dt_import.has_missing_device_images(report)
+
+
 def test_has_missing_device_images_returns_false_for_none_report(nb_dt_import):
     assert not nb_dt_import.has_missing_device_images(None)
 

@@ -744,7 +744,7 @@ class DeviceTypes:
         try:
             endpoint_totals = self._get_endpoint_totals(components)
         except Exception:
-            executor.shutdown(wait=False)
+            executor.shutdown(wait=False, cancel_futures=True)
             raise
         progress_updates = queue.Queue()
         task_ids = None
@@ -943,8 +943,8 @@ class DeviceTypes:
             endpoint_totals = preload_job.get("endpoint_totals", {})
         else:
             max_workers = max(1, min(len(components), 8))
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
             endpoint_totals = self._get_endpoint_totals(components)
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
             if progress is not None:
                 progress_updates = queue.Queue()
 
@@ -1095,6 +1095,7 @@ class DeviceTypes:
                     task_ids = {
                         endpoint_name: progress.add_task(f"Caching {label}", total=1)
                         for endpoint_name, label in components
+                        if endpoint_name in futures
                     }
                     future_map = {
                         futures[endpoint_name]: (endpoint_name, label)
@@ -1118,6 +1119,7 @@ class DeviceTypes:
                             total=total_per_endpoint,
                         )
                         for endpoint_name, label in components
+                        if endpoint_name in futures
                     }
                     future_map = {
                         endpoint_name: futures[endpoint_name]
@@ -1864,12 +1866,31 @@ class DeviceTypes:
                 "power_port_templates", pid, "module", self.netbox.dcim.power_port_templates
             )
 
+            outlets_to_remove = []
             for outlet in items:
+                if "power_port" not in outlet:
+                    continue
                 try:
                     power_port = existing_pp[outlet["power_port"]]
                     outlet["power_port"] = power_port.id
                 except KeyError:
-                    pass
+                    available = list(existing_pp.keys()) if existing_pp else []
+                    ctx = f" (Context: {context})" if context else ""
+                    self.handle.log(
+                        f'Could not find Power Port "{outlet["power_port"]}" for Module Power Outlet "{outlet.get("name", "Unknown")}". '
+                        f"Available: {available}{ctx}"
+                    )
+                    outlets_to_remove.append(outlet)
+
+            for outlet in outlets_to_remove:
+                items.remove(outlet)
+
+            if outlets_to_remove:
+                skipped_names = [o["name"] for o in outlets_to_remove]
+                ctx = f" (Context: {context})" if context else ""
+                self.handle.log(
+                    f"Skipped {len(outlets_to_remove)} module power outlet(s) with invalid power port refs: {skipped_names}{ctx}"
+                )
 
         self._create_generic(
             power_outlets,
