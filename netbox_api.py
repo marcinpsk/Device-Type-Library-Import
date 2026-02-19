@@ -724,22 +724,26 @@ class DeviceTypes:
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
 
         if vendor_slugs:
-            vendor_scope = set(vendor_slugs)
-            dt_ids = sorted(
-                {dt.id for (mfr_slug, _model), dt in self.existing_device_types.items() if mfr_slug in vendor_scope}
-            )
-            futures = {
-                endpoint_name: executor.submit(self._fetch_scoped_endpoint_records, endpoint_name, dt_ids)
-                for endpoint_name, _label in components
-            }
-            return {
-                "mode": "scoped",
-                "components": components,
-                "dt_ids": dt_ids,
-                "futures": futures,
-                "finished_endpoints": set(),
-                "executor": executor,
-            }
+            try:
+                vendor_scope = set(vendor_slugs)
+                dt_ids = sorted(
+                    {dt.id for (mfr_slug, _model), dt in self.existing_device_types.items() if mfr_slug in vendor_scope}
+                )
+                futures = {
+                    endpoint_name: executor.submit(self._fetch_scoped_endpoint_records, endpoint_name, dt_ids)
+                    for endpoint_name, _label in components
+                }
+                return {
+                    "mode": "scoped",
+                    "components": components,
+                    "dt_ids": dt_ids,
+                    "futures": futures,
+                    "finished_endpoints": set(),
+                    "executor": executor,
+                }
+            except Exception:
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
 
         try:
             endpoint_totals = self._get_endpoint_totals(components)
@@ -1048,7 +1052,8 @@ class DeviceTypes:
             for endpoint, label in components:
                 all_items = records_by_endpoint.get(endpoint, [])
                 cache, count = self._build_component_cache(all_items)
-                self.cached_components[endpoint] = cache
+                # Merge to preserve entries from prior incremental preloads.
+                self.cached_components.setdefault(endpoint, {}).update(cache)
                 self.handle.verbose_log(f"Cached {count} {label}.")
         finally:
             if executor:
@@ -1188,7 +1193,8 @@ class DeviceTypes:
                         cache[key][item.name] = item
                         count += 1
 
-                self.cached_components[endpoint_name] = cache
+                # Merge to preserve entries from prior incremental preloads.
+                self.cached_components.setdefault(endpoint_name, {}).update(cache)
                 self.handle.verbose_log(f"Cached {count} {label}.")
         finally:
             if executor:
