@@ -394,7 +394,7 @@ def main():
     if args.slugs:
         handle.log(f"Filtering by slugs: {', '.join(args.slugs)}")
 
-    files, discovered_vendors = dtl_repo.get_devices(f"{dtl_repo.repo_path}/device-types/", args.vendors)
+    files, discovered_vendors = dtl_repo.get_devices(dtl_repo.get_devices_path(), args.vendors)
     cache_preload_job = None
 
     with get_progress_panel(args.show_remaining_time) as progress:
@@ -522,7 +522,7 @@ def main():
                     module_vendor_filter = sorted(selected_vendor_slugs)
 
                 files, discovered_module_vendors = dtl_repo.get_devices(
-                    f"{dtl_repo.repo_path}/module-types/", module_vendor_filter
+                    dtl_repo.get_modules_path(), module_vendor_filter
                 )
                 if not files:
                     module_types = []

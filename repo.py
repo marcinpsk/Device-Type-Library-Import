@@ -214,7 +214,7 @@ class DTLRepo:
             if folder.casefold() != "testing":
                 discovered_vendors.append({"name": folder, "slug": self.slug_format(folder)})
                 for extension in self.yaml_extensions:
-                    files.extend(glob(base_path + folder + f"/*.{extension}"))
+                    files.extend(glob(os.path.join(base_path, folder, f"*.{extension}")))
         return files, discovered_vendors
 
     def parse_files(self, files: list, slugs: list = None, progress=None):
