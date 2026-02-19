@@ -35,7 +35,7 @@ def _chunked(iterable, size):
 
 
 class NetBox:
-    """Singleton-style interface to the NetBox API for importing device and module types."""
+    """Interface to the NetBox API for importing device and module types."""
 
     def __new__(cls, *args, **kwargs):
         """Allocate a new NetBox instance using the default object allocator."""
@@ -210,27 +210,24 @@ class NetBox:
                             self.handle.log(f"Error locating image file using '{image_glob}'")
                     del device_type[i]
 
-            try:
-                # Look up by (manufacturer_slug, model), with fallback to (manufacturer_slug, slug)
-                # The fallback handles cases where device exists in NetBox with a different model name
-                manufacturer_slug = device_type["manufacturer"]["slug"]
-                device_slug = device_type.get("slug", "")
+            # Look up by (manufacturer_slug, model), with fallback to (manufacturer_slug, slug).
+            # Using .get() to avoid masking real KeyErrors from accesses inside the logic below.
+            manufacturer_slug = device_type.get("manufacturer", {}).get("slug", "")
+            device_slug = device_type.get("slug", "")
 
-                # Try primary lookup by model
-                dt = self.device_types.existing_device_types.get((manufacturer_slug, device_type["model"]))
+            # Try primary lookup by model
+            dt = self.device_types.existing_device_types.get((manufacturer_slug, device_type.get("model", "")))
 
-                # Fallback to lookup by slug if model lookup failed
-                if dt is None and device_slug:
-                    dt = self.device_types.existing_device_types_by_slug.get((manufacturer_slug, device_slug))
-                    if dt is not None:
-                        self.handle.verbose_log(
-                            f"Device Type found by slug (model mismatch): NetBox has '{dt.model}', "
-                            f"YAML has '{device_type['model']}'"
-                        )
+            # Fallback to lookup by slug if model lookup failed
+            if dt is None and device_slug:
+                dt = self.device_types.existing_device_types_by_slug.get((manufacturer_slug, device_slug))
+                if dt is not None:
+                    self.handle.verbose_log(
+                        f"Device Type found by slug (model mismatch): NetBox has '{dt.model}', "
+                        f"YAML has '{device_type.get('model', '')}'"
+                    )
 
-                if dt is None:
-                    raise KeyError("Device type not found")
-
+            if dt is not None:
                 # Upload images for existing device types (if missing) — always, regardless of mode
                 if saved_images:
                     if "front_image" in saved_images and getattr(dt, "front_image", None):
@@ -255,7 +252,9 @@ class NetBox:
                 if update and change_report:
                     # Find the matching change entry once
                     for change in change_report.modified_device_types:
-                        if change.manufacturer_slug == manufacturer_slug and change.model == device_type["model"]:
+                        if change.manufacturer_slug == manufacturer_slug and change.model == device_type.get(
+                            "model", ""
+                        ):
                             dt_change = change
                             break
 
@@ -303,18 +302,17 @@ class NetBox:
                 # Device type already exists - skip component creation
                 continue
 
-            except KeyError:
-                # Device type doesn't exist - create it
-                try:
-                    dt = self.netbox.dcim.device_types.create(device_type)
-                    self.counter.update({"added": 1})
-                    self.handle.verbose_log(f"Device Type Created: {dt.manufacturer.name} - " + f"{dt.model} - {dt.id}")
-                except pynetbox.RequestError as e:
-                    self.handle.log(
-                        f"Error {e.error} creating device type:"
-                        f" {device_type['manufacturer']['slug']} {device_type['model']}"
-                    )
-                    continue
+            # Device type doesn't exist - create it
+            try:
+                dt = self.netbox.dcim.device_types.create(device_type)
+                self.counter.update({"added": 1})
+                self.handle.verbose_log(f"Device Type Created: {dt.manufacturer.name} - " + f"{dt.model} - {dt.id}")
+            except pynetbox.RequestError as e:
+                self.handle.log(
+                    f"Error {e.error} creating device type:"
+                    f" {device_type.get('manufacturer', {}).get('slug', '')} {device_type.get('model', '')}"
+                )
+                continue
 
             # Create components for newly created device type
             if "interfaces" in device_type:
@@ -1033,8 +1031,16 @@ class DeviceTypes:
                 future_map = {endpoint: futures[endpoint] for endpoint, _label in components if endpoint in futures}
                 pending = set(future_map.keys())
                 if preload_job:
-                    # Exclude endpoints already finalised by pump_preload_progress to avoid double stop_task.
-                    pending -= preload_job.get("finished_endpoints", set())
+                    already_done = pending & preload_job.get("finished_endpoints", set())
+                    # Collect results for endpoints already finalised by pump_preload_progress.
+                    for endpoint_name in already_done:
+                        try:
+                            records_by_endpoint[endpoint_name] = future_map[endpoint_name].result()
+                        except Exception as exc:
+                            self.handle.log(f"Preload failed for {endpoint_name}: {exc}")
+                            records_by_endpoint[endpoint_name] = []
+                    # Exclude from pending to avoid double stop_task.
+                    pending -= already_done
 
                 while pending:
                     had_updates = self._apply_progress_updates(
@@ -1473,8 +1479,8 @@ class DeviceTypes:
         to_create = [x for x in items if x["name"] not in existing]
         parent_key = "device_type" if parent_type == "device" else "module_type"
 
-        for item in to_create:
-            item[parent_key] = parent_id
+        # Build shallow copies so the caller's dicts are not mutated.
+        to_create = [{**item, parent_key: parent_id} for item in to_create]
 
         if post_process:
             post_process(to_create, parent_id)
