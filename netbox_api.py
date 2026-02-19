@@ -96,7 +96,8 @@ class NetBox:
         for >= 4.1. Logs the detected version when the new-filter flag is enabled.
         """
         # nb.version should be the version in the form '3.2'
-        version_split = [int(x) for x in self.netbox.version.split(".")]
+        _raw = [int(x) for x in self.netbox.version.split(".")]
+        version_split = (_raw + [0, 0])[:2]  # pad to (major, minor) to guard against single-component strings
 
         # Later than 3.2
         # Might want to check for the module-types entry as well?
@@ -197,10 +198,10 @@ class NetBox:
                 _parts[_idx] = "elevation-images"
                 image_base = str(Path(*_parts))
             except ValueError:
-                image_base = os.path.dirname(src_file)
+                image_base = None  # "device-types" not in path; skip image discovery
             for i in ["front_image", "rear_image"]:
                 if i in device_type:
-                    if device_type[i]:
+                    if device_type[i] and image_base is not None:
                         image_glob = f"{image_base}/{device_type['slug']}.{i.split('_')[0]}.*"
                         images = glob.glob(image_glob, recursive=False)
                         if images:
@@ -1031,6 +1032,9 @@ class DeviceTypes:
                     }
                 future_map = {endpoint: futures[endpoint] for endpoint, _label in components if endpoint in futures}
                 pending = set(future_map.keys())
+                if preload_job:
+                    # Exclude endpoints already finalised by pump_preload_progress to avoid double stop_task.
+                    pending -= preload_job.get("finished_endpoints", set())
 
                 while pending:
                     had_updates = self._apply_progress_updates(
