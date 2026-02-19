@@ -45,7 +45,8 @@ def test_log_run_mode_reports_default_non_update_behavior(nb_dt_import):
 
     messages = [call.args[0] for call in handle.log.call_args_list]
     assert any("--update not set" in message for message in messages)
-    assert any("will not remove components" in message for message in messages)
+    # remove-components guidance is only shown when --update is active
+    assert not any("remove-components" in message for message in messages)
 
 
 def test_log_run_mode_reports_update_and_remove_enabled(nb_dt_import):
@@ -57,6 +58,17 @@ def test_log_run_mode_reports_update_and_remove_enabled(nb_dt_import):
     messages = [call.args[0] for call in handle.log.call_args_list]
     assert any("--update enabled" in message for message in messages)
     assert any("--remove-components enabled" in message for message in messages)
+
+
+def test_log_run_mode_reports_update_without_remove_components(nb_dt_import):
+    handle = MagicMock()
+    args = SimpleNamespace(only_new=False, update=True, remove_components=False)
+
+    nb_dt_import.log_run_mode(handle, args)
+
+    messages = [call.args[0] for call in handle.log.call_args_list]
+    assert any("--update enabled" in message for message in messages)
+    assert any("will not remove components" in message for message in messages)
 
 
 def test_log_run_mode_reports_only_new_enabled(nb_dt_import):

@@ -296,15 +296,14 @@ def log_run_mode(handle, args):
         handle.log("Mode: --only-new enabled; existing device types and components will not be modified.")
     elif args.update:
         handle.log("Mode: --update enabled; changed properties and components on existing models will be updated.")
+        if args.remove_components:
+            handle.log("Mode: --remove-components enabled; missing components will be removed from existing models.")
+        else:
+            handle.log(
+                "Mode: will not remove components from existing models; use --remove-components with --update to change this."
+            )
     else:
         handle.log("Mode: --update not set; changed properties/components will not be applied (use --update).")
-
-    if args.remove_components:
-        handle.log("Mode: --remove-components enabled; missing components will be removed from existing models.")
-    else:
-        handle.log(
-            "Mode: will not remove components from existing models; use --remove-components with --update to change this."
-        )
 
 
 def should_only_create_new_modules(args):
@@ -397,7 +396,6 @@ def main():
 
     files, discovered_vendors = dtl_repo.get_devices(f"{dtl_repo.repo_path}/device-types/", args.vendors)
     cache_preload_job = None
-    preload_vendor_scope = None
 
     with get_progress_panel(args.show_remaining_time) as progress:
         if progress is not None:
@@ -406,7 +404,6 @@ def main():
             parse_fn = None
 
             def on_parse_step():
-                nonlocal parse_fn
                 if parse_fn is not None:
                     parse_fn()
 
@@ -414,7 +411,7 @@ def main():
 
             if not args.only_new and not args.slugs and not args.vendors:
                 cache_preload_job = netbox.device_types.start_component_preload(
-                    vendor_slugs=preload_vendor_scope,
+                    vendor_slugs=None,
                     progress=progress,
                 )
                 if progress is not None:
@@ -464,7 +461,7 @@ def main():
                         )
                         netbox.device_types.preload_all_components(
                             progress=progress,
-                            vendor_slugs=preload_vendor_scope,
+                            vendor_slugs=None,
                             preload_job=cache_preload_job,
                         )
                         cache_preload_job = None

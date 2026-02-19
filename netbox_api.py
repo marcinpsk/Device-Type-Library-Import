@@ -401,16 +401,18 @@ class NetBox:
 
         # Bulk-preload components for all existing module types so the per-module
         # loop below hits the cache instead of issuing individual API calls.
+        existing_module_map = {}
         existing_module_ids = set()
         for module_type in module_types:
             existing_module = self._find_existing_module_type(module_type, all_module_types)
+            existing_module_map[id(module_type)] = existing_module
             if existing_module is not None:
                 existing_module_ids.add(existing_module.id)
         if existing_module_ids:
             self.device_types.preload_module_type_components(existing_module_ids, component_keys)
 
         for module_type in module_types:
-            existing_module = self._find_existing_module_type(module_type, all_module_types)
+            existing_module = existing_module_map[id(module_type)]
             if existing_module is None:
                 actionable_module_types.append(module_type)
                 continue
@@ -992,7 +994,11 @@ class DeviceTypes:
                     done_now = [endpoint_name for endpoint_name in pending if future_map[endpoint_name].done()]
                     for endpoint_name in done_now:
                         pending.remove(endpoint_name)
-                        records_by_endpoint[endpoint_name] = future_map[endpoint_name].result()
+                        try:
+                            records_by_endpoint[endpoint_name] = future_map[endpoint_name].result()
+                        except (pynetbox.RequestError, concurrent.futures.CancelledError, Exception) as exc:
+                            self.handle.log(f"Preload failed for {endpoint_name}: {exc}")
+                            records_by_endpoint[endpoint_name] = []
                         final_total = max(
                             endpoint_totals.get(endpoint_name, 0),
                             len(records_by_endpoint[endpoint_name]),
@@ -1010,6 +1016,7 @@ class DeviceTypes:
                             try:
                                 endpoint_name, advance = progress_updates.get(timeout=0.1)
                                 if endpoint_name not in pending:
+                                    progress_updates.put((endpoint_name, advance))
                                     continue
                                 task_id = task_ids.get(endpoint_name)
                                 if task_id is not None:
@@ -1025,7 +1032,11 @@ class DeviceTypes:
             else:
                 for endpoint, label in components:
                     self.handle.verbose_log(f"Pre-fetching {label}...")
-                    records_by_endpoint[endpoint] = futures[endpoint].result()
+                    try:
+                        records_by_endpoint[endpoint] = futures[endpoint].result()
+                    except (pynetbox.RequestError, concurrent.futures.CancelledError, Exception) as exc:
+                        self.handle.log(f"Preload failed for {label}: {exc}")
+                        records_by_endpoint[endpoint] = []
 
             for endpoint, label in components:
                 all_items = records_by_endpoint.get(endpoint, [])
@@ -1088,7 +1099,11 @@ class DeviceTypes:
                     }
                     for future in concurrent.futures.as_completed(future_map):
                         endpoint_name, _label = future_map[future]
-                        records_by_endpoint[endpoint_name] = future.result()
+                        try:
+                            records_by_endpoint[endpoint_name] = future.result()
+                        except (pynetbox.RequestError, concurrent.futures.CancelledError, Exception) as exc:
+                            self.handle.log(f"Preload failed for {endpoint_name}: {exc}")
+                            records_by_endpoint[endpoint_name] = {}
                         progress.update(task_ids[endpoint_name], completed=1)
                         progress.stop_task(task_ids[endpoint_name])
                 else:
@@ -1124,7 +1139,11 @@ class DeviceTypes:
                         done_now = [endpoint_name for endpoint_name in pending if future_map[endpoint_name].done()]
                         for endpoint_name in done_now:
                             pending.remove(endpoint_name)
-                            records_by_endpoint[endpoint_name] = future_map[endpoint_name].result()
+                            try:
+                                records_by_endpoint[endpoint_name] = future_map[endpoint_name].result()
+                            except (pynetbox.RequestError, concurrent.futures.CancelledError, Exception) as exc:
+                                self.handle.log(f"Preload failed for {endpoint_name}: {exc}")
+                                records_by_endpoint[endpoint_name] = {}
                             progress.update(task_ids[endpoint_name], completed=total_per_endpoint)
                             progress.stop_task(task_ids[endpoint_name])
 
@@ -1132,6 +1151,7 @@ class DeviceTypes:
                             try:
                                 endpoint_name, advance = progress_updates.get(timeout=0.1)
                                 if endpoint_name not in pending:
+                                    progress_updates.put((endpoint_name, advance))
                                     continue
                                 progress.update(task_ids[endpoint_name], advance=advance)
                             except queue.Empty:
@@ -1139,7 +1159,11 @@ class DeviceTypes:
             else:
                 for endpoint_name, label in components:
                     self.handle.verbose_log(f"Pre-fetching {label}...")
-                    records_by_endpoint[endpoint_name] = futures[endpoint_name].result()
+                    try:
+                        records_by_endpoint[endpoint_name] = futures[endpoint_name].result()
+                    except (pynetbox.RequestError, concurrent.futures.CancelledError, Exception) as exc:
+                        self.handle.log(f"Preload failed for {label}: {exc}")
+                        records_by_endpoint[endpoint_name] = {}
 
             for endpoint_name, label in components:
                 records_by_dt = records_by_endpoint.get(endpoint_name, {})
@@ -1315,10 +1339,10 @@ class DeviceTypes:
     def preload_module_type_components(self, module_type_ids, component_keys):
         """Bulk-fetch components for module types and populate the cache.
 
-        For each component endpoint referenced by *component_keys*, fetches
-        all records for every module-type ID in one filter() call per endpoint
-        and stores the results so that subsequent _get_cached_or_fetch calls
-        hit the cache.
+        For each component endpoint referenced by *component_keys*, issues one
+        ``filter()`` call per endpoint (filtering by module_type_id=[...]) and
+        distributes the returned items into per-module-type cache entries so
+        that subsequent ``_get_cached_or_fetch`` calls hit the cache.
         """
         if not module_type_ids:
             return
@@ -1332,16 +1356,18 @@ class DeviceTypes:
             seen_endpoints.add(endpoint_attr)
             targets.append((endpoint_attr, cache_name))
 
+        filter_key = "module_type_id" if self.new_filters else "moduletype_id"
+        id_list = sorted(module_type_ids)
+
         for endpoint_attr, cache_name in targets:
             endpoint = getattr(self.netbox.dcim, endpoint_attr)
             cache = self.cached_components.setdefault(cache_name, {})
             # Pre-populate empty entries so cache hits return {} for IDs with no components
-            for mid in module_type_ids:
+            for mid in id_list:
                 cache.setdefault(("module", mid), {})
-            for mid in module_type_ids:
-                filter_kwargs = self._get_filter_kwargs(mid, "module")
-                for item in endpoint.filter(**filter_kwargs):
-                    cache[("module", mid)][item.name] = item
+            for item in endpoint.filter(**{filter_key: id_list}):
+                mid = item.module_type.id
+                cache.setdefault(("module", mid), {})[item.name] = item
 
     def _create_generic(
         self,
