@@ -1,5 +1,6 @@
 from collections import Counter
 import concurrent.futures
+import itertools
 import queue
 import time
 import pynetbox
@@ -17,10 +18,17 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".
 FILTER_CHUNK_SIZE = 200
 
 
-def _chunked(seq, size):
-    """Yield successive *size*-length slices of *seq*."""
-    for i in range(0, len(seq), size):
-        yield seq[i : i + size]
+def _chunked(iterable, size):
+    """Yield successive *size*-length chunks from *iterable*.
+
+    Accepts any iterable; does not require a Sequence.
+    """
+    it = iter(iterable)
+    while True:
+        chunk = list(itertools.islice(it, size))
+        if not chunk:
+            break
+        yield chunk
 
 
 # from pynetbox import RequestError as APIRequestError
@@ -182,7 +190,14 @@ class NetBox:
 
             # Pre-process front/rear_image flag, remove it if present
             saved_images = {}
-            image_base = os.path.dirname(src_file).replace("device-types", "elevation-images")
+            _src = Path(src_file)
+            _parts = list(_src.parent.parts)
+            try:
+                _idx = len(_parts) - 1 - _parts[::-1].index("device-types")
+                _parts[_idx] = "elevation-images"
+                image_base = str(Path(*_parts))
+            except ValueError:
+                image_base = os.path.dirname(src_file)
             for i in ["front_image", "rear_image"]:
                 if i in device_type:
                     if device_type[i]:
@@ -234,10 +249,10 @@ class NetBox:
                     )
                     continue
 
+                dt_change = None
                 # If update mode is enabled, update device type properties and components
                 if update and change_report:
                     # Find the matching change entry once
-                    dt_change = None
                     for change in change_report.modified_device_types:
                         if change.manufacturer_slug == manufacturer_slug and change.model == device_type["model"]:
                             dt_change = change
@@ -271,10 +286,18 @@ class NetBox:
                                     dt.id, dt_change.component_changes, parent_type="device"
                                 )
 
-                self.handle.verbose_log(
-                    f"Device Type Cached: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
-                    "No pending updates; skipping component creation."
-                )
+                if dt_change is not None:
+                    self.handle.verbose_log(
+                        f"Device Type Updated: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
+                        f"Applied {len(dt_change.property_changes or [])} property and "
+                        f"{len(dt_change.component_changes or [])} component change(s); "
+                        "skipping component creation."
+                    )
+                else:
+                    self.handle.verbose_log(
+                        f"Device Type Cached: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
+                        "No pending updates; skipping component creation."
+                    )
 
                 # Device type already exists - skip component creation
                 continue
@@ -840,6 +863,8 @@ class DeviceTypes:
             try:
                 endpoint_name, advance = progress_updates.get_nowait()
                 if allowed_endpoints is not None and endpoint_name not in allowed_endpoints:
+                    # Drop updates for already-completed endpoints; their progress tasks are
+                    # already stopped so re-enqueuing would have no visible effect.
                     continue
                 updates[endpoint_name] = updates.get(endpoint_name, 0) + advance
             except queue.Empty:
