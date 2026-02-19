@@ -19,6 +19,9 @@ class LogHandler:
                   stored on the instance as `self.args`.
         """
         self.args = args
+        self.console = None
+        self._defer_depth = 0
+        self._deferred_messages = []
 
     def exception(self, exception_type, exception, stack_trace=None):
         """
@@ -50,12 +53,35 @@ class LogHandler:
     def _timestamp(self):
         return datetime.now().strftime("%H:%M:%S")
 
+    def set_console(self, console):
+        self.console = console
+
+    def start_progress_group(self):
+        self._defer_depth += 1
+
+    def end_progress_group(self):
+        if self._defer_depth == 0:
+            return
+        self._defer_depth -= 1
+        if self._defer_depth == 0 and self._deferred_messages:
+            for message in self._deferred_messages:
+                print(message)
+            self._deferred_messages = []
+
+    def _emit(self, message):
+        if self._defer_depth > 0:
+            self._deferred_messages.append(message)
+        elif self.console is not None:
+            self.console.print(message)
+        else:
+            print(message)
+
     def verbose_log(self, message):
         if self.args.verbose:
-            print(f"[{self._timestamp()}] {message}")
+            self._emit(f"[{self._timestamp()}] {message}")
 
     def log(self, message):
-        print(f"[{self._timestamp()}] {message}")
+        self._emit(f"[{self._timestamp()}] {message}")
 
     def log_device_ports_created(self, created_ports: list = [], port_type: str = "port"):
         for port in created_ports:

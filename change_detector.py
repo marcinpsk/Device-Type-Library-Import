@@ -105,6 +105,11 @@ COMPONENT_ALIASES = {
     "power-port": "power-ports",
 }
 
+# canonical key -> list of aliases
+COMPONENT_ALIASES_BY_CANONICAL = {}
+for alias, canonical_key in COMPONENT_ALIASES.items():
+    COMPONENT_ALIASES_BY_CANONICAL.setdefault(canonical_key, []).append(alias)
+
 
 class ChangeDetector:
     """Detects changes between YAML device types and NetBox cached data."""
@@ -133,6 +138,8 @@ class ChangeDetector:
         """
         report = ChangeReport()
         iterable = progress if progress is not None else device_types
+        existing_by_model = self.device_types.existing_device_types
+        existing_by_slug = self.device_types.existing_device_types_by_slug
 
         for dt_data in iterable:
             manufacturer_slug = dt_data["manufacturer"]["slug"]
@@ -140,11 +147,11 @@ class ChangeDetector:
             slug = dt_data.get("slug", "")
 
             # Try to find existing device type
-            existing_dt = self.device_types.existing_device_types.get((manufacturer_slug, model))
+            existing_dt = existing_by_model.get((manufacturer_slug, model))
 
             # Fallback to slug lookup
             if existing_dt is None and slug:
-                existing_dt = self.device_types.existing_device_types_by_slug.get((manufacturer_slug, slug))
+                existing_dt = existing_by_slug.get((manufacturer_slug, slug))
 
             change = DeviceTypeChange(
                 manufacturer_slug=manufacturer_slug,
@@ -296,7 +303,7 @@ class ChangeDetector:
             yaml_components = list(yaml_data.get(yaml_key) or [])
 
             # Check whether the canonical key or any alias is actually present in YAML
-            aliases_for_key = [a for a, canonical in COMPONENT_ALIASES.items() if canonical == yaml_key]
+            aliases_for_key = COMPONENT_ALIASES_BY_CANONICAL.get(yaml_key, [])
             key_present = yaml_key in yaml_data or any(alias in yaml_data for alias in aliases_for_key)
 
             # Merge components from any aliases that map to this canonical key

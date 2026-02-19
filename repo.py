@@ -219,22 +219,28 @@ class DTLRepo:
 
         # Use ThreadPoolExecutor for parallel parsing
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            # executor.map preserves order and processes the same files list
-            # progress (if provided) is a progress wrapper over the same files list
-            # Use strict=True to catch any length mismatch instead of silent truncation
-            files_list = list(files)  # Ensure we have a concrete list
-            items_iterator = progress if progress is not None else files_list
-            results = executor.map(parse_single_file, files_list)
+            try:
+                # executor.map preserves order and processes the same files list
+                # progress (if provided) is a progress wrapper over the same files list
+                # Use strict=True to catch any length mismatch instead of silent truncation
+                files_list = list(files)  # Ensure we have a concrete list
+                items_iterator = progress if progress is not None else files_list
+                results = executor.map(parse_single_file, files_list)
 
-            for _, data in zip(items_iterator, results, strict=True):
-                if isinstance(data, str) and data.startswith("Error:"):
-                    self.handle.verbose_log(data)
-                    continue
+                for _, data in zip(items_iterator, results, strict=True):
+                    if isinstance(data, str) and data.startswith("Error:"):
+                        self.handle.verbose_log(data)
+                        continue
 
-                if slugs and True not in [True if s.casefold() in data["slug"].casefold() else False for s in slugs]:
-                    self.handle.verbose_log(f"Skipping {data['model']}")
-                    continue
+                    if slugs:
+                        slug_target = str(data.get("slug") or data.get("model") or "").casefold()
+                        if not any(s.casefold() in slug_target for s in slugs):
+                            self.handle.verbose_log(f"Skipping {data.get('model', 'Unknown')}")
+                            continue
 
-                deviceTypes.append(data)
+                    deviceTypes.append(data)
+            except KeyboardInterrupt:
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
 
         return deviceTypes

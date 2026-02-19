@@ -1,4 +1,7 @@
 from collections import Counter
+import concurrent.futures
+import queue
+import time
 import pynetbox
 import requests
 import os
@@ -42,7 +45,7 @@ class NetBox:
 
     def connect_api(self):
         try:
-            self.netbox = pynetbox.api(self.url, token=self.token)
+            self.netbox = pynetbox.api(self.url, token=self.token, threading=True)
             if self.ignore_ssl:
                 self.handle.verbose_log("IGNORE_SSL_ERRORS is True, catching exception and disabling SSL verification.")
                 # requests.packages.urllib3.disable_warnings()
@@ -104,7 +107,7 @@ class NetBox:
                 # Log error with detailed API error message
                 self.handle.log(f"Error creating manufacturers: {request_error.error}")
         else:
-            self.handle.log("No new manufacturers to create.")
+            self.handle.verbose_log("No new manufacturers to create.")
 
     def create_device_types(
         self,
@@ -258,13 +261,105 @@ class NetBox:
             if saved_images:
                 self.device_types.upload_images(self.url, self.token, saved_images, dt.id)
 
-    def create_module_types(self, module_types, progress=None, only_new=False):
+    def get_existing_module_types(self):
         all_module_types = {}
         for curr_nb_mt in self.netbox.dcim.module_types.all():
             if curr_nb_mt.manufacturer.slug not in all_module_types:
                 all_module_types[curr_nb_mt.manufacturer.slug] = {}
 
             all_module_types[curr_nb_mt.manufacturer.slug][curr_nb_mt.model] = curr_nb_mt
+        return all_module_types
+
+    @staticmethod
+    def _find_existing_module_type(module_type, all_module_types):
+        manufacturer_slug = module_type["manufacturer"]["slug"]
+        existing_for_vendor = all_module_types.get(manufacturer_slug, {})
+
+        existing = existing_for_vendor.get(module_type["model"])
+        if existing is not None:
+            return existing
+
+        slug = module_type.get("slug")
+        if not slug:
+            return None
+
+        for existing_module in existing_for_vendor.values():
+            if getattr(existing_module, "slug", None) == slug:
+                return existing_module
+
+        return None
+
+    @staticmethod
+    def filter_new_module_types(module_types, all_module_types):
+        new_module_types = []
+        for module_type in module_types:
+            if NetBox._find_existing_module_type(module_type, all_module_types) is None:
+                new_module_types.append(module_type)
+        return new_module_types
+
+    def filter_actionable_module_types(self, module_types, all_module_types, only_new=False):
+        if not module_types:
+            return []
+
+        if only_new:
+            return self.filter_new_module_types(module_types, all_module_types)
+
+        module_type_existing_images = {}
+        for att in self.netbox.extras.image_attachments.filter(object_type="dcim.moduletype"):
+            names = module_type_existing_images.setdefault(att.object_id, set())
+            if att.name:
+                names.add(att.name)
+
+        actionable_module_types = []
+        component_keys = (
+            "interfaces",
+            "power-ports",
+            "console-ports",
+            "power-outlets",
+            "console-server-ports",
+            "rear-ports",
+            "front-ports",
+        )
+
+        for module_type in module_types:
+            existing_module = self._find_existing_module_type(module_type, all_module_types)
+            if existing_module is None:
+                actionable_module_types.append(module_type)
+                continue
+
+            existing_images = module_type_existing_images.get(existing_module.id, set())
+            image_files = self._discover_module_image_files(module_type.get("src", ""))
+            if any(os.path.splitext(os.path.basename(path))[0] not in existing_images for path in image_files):
+                actionable_module_types.append(module_type)
+                continue
+
+            has_missing_components = False
+            for component_key in component_keys:
+                components = module_type.get(component_key)
+                if not components:
+                    continue
+
+                endpoint_attr, cache_name = ENDPOINT_CACHE_MAP[component_key]
+                endpoint = getattr(self.netbox.dcim, endpoint_attr)
+                existing_components = self.device_types._get_cached_or_fetch(
+                    cache_name, existing_module.id, "module", endpoint
+                )
+                requested_names = {component.get("name") for component in components if component.get("name")}
+                if any(name not in existing_components for name in requested_names):
+                    has_missing_components = True
+                    break
+
+            if has_missing_components:
+                actionable_module_types.append(module_type)
+
+        return actionable_module_types
+
+    def create_module_types(self, module_types, progress=None, only_new=False, all_module_types=None):
+        if not module_types:
+            return
+
+        if all_module_types is None:
+            all_module_types = self.get_existing_module_types()
 
         # Pre-fetch all existing image attachments for module types in one API call
         # Map module_type_id -> set of attachment names for per-file deduplication
@@ -284,17 +379,19 @@ class NetBox:
                 del curr_mt["src"]
 
             is_new = False
-            try:
-                module_type_res = all_module_types[curr_mt["manufacturer"]["slug"]][curr_mt["model"]]
+            module_type_res = self._find_existing_module_type(curr_mt, all_module_types)
+            if module_type_res is not None:
                 self.handle.verbose_log(
                     f"Module Type Cached: {module_type_res.manufacturer.name} - "
                     + f"{module_type_res.model} - {module_type_res.id}"
                 )
-            except KeyError:
+            else:
                 try:
                     module_type_res = self.netbox.dcim.module_types.create(curr_mt)
                     self.counter["module_added"] += 1
                     is_new = True
+                    manufacturer_slug = curr_mt["manufacturer"]["slug"]
+                    all_module_types.setdefault(manufacturer_slug, {})[curr_mt["model"]] = module_type_res
                     self.handle.verbose_log(
                         f"Module Type Created: {module_type_res.manufacturer.name} - "
                         + f"{module_type_res.model} - {module_type_res.id}"
@@ -335,6 +432,25 @@ class NetBox:
                     curr_mt["front-ports"], module_type_res.id, context=src_file
                 )
 
+    @staticmethod
+    def _discover_module_image_files(src_file):
+        if not src_file or src_file == "Unknown":
+            return []
+
+        src_path = Path(src_file)
+        parts = list(src_path.parent.parts)
+        try:
+            # Replace the last occurrence — handles edge cases where
+            # "module-types" could appear earlier in the path as well.
+            idx = len(parts) - 1 - parts[::-1].index("module-types")
+        except ValueError:
+            return []
+
+        parts[idx] = "module-images"
+        image_dir = Path(*parts) / src_path.stem
+        image_files = glob.glob(str(image_dir / "*"))
+        return [f for f in image_files if os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS]
+
     def _upload_module_type_images(self, module_type_res, src_file, module_type_existing_images):
         """Discover and upload images for a module type, skipping duplicates.
 
@@ -348,23 +464,7 @@ class NetBox:
             src_file (str): Source YAML file path used to derive the image directory.
             module_type_existing_images (dict): module_type_id -> set of attachment names.
         """
-        if not src_file or src_file == "Unknown":
-            return
-
-        src_path = Path(src_file)
-        parts = list(src_path.parent.parts)
-        try:
-            # Replace the last occurrence — handles edge cases where
-            # "module-types" could appear earlier in the path as well.
-            idx = len(parts) - 1 - parts[::-1].index("module-types")
-        except ValueError:
-            return
-        parts[idx] = "module-images"
-        module_name = src_path.stem
-        image_dir = Path(*parts) / module_name
-
-        image_files = glob.glob(str(image_dir / "*"))
-        image_files = [f for f in image_files if os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS]
+        image_files = self._discover_module_image_files(src_file)
         if not image_files:
             return
 
@@ -423,17 +523,26 @@ class DeviceTypes:
             by_slug[(item.manufacturer.slug, item.slug)] = item
         return by_model, by_slug
 
-    def preload_all_components(self, progress_wrapper=None, vendor_slugs=None):
-        """Pre-fetch component templates to avoid N+1 queries during updates.
+    def resolve_existing_device_type_ids(self, device_types):
+        """Return NetBox device-type IDs matching parsed YAML device types."""
+        ids = set()
+        for device_type in device_types:
+            manufacturer_slug = device_type["manufacturer"]["slug"]
+            model = device_type["model"]
+            slug = device_type.get("slug", "")
 
-        Args:
-            progress_wrapper: Optional callable to wrap iterables with progress bars
-            vendor_slugs: Optional list of vendor slugs to scope the preload.
-                When provided, only caches components for device types belonging
-                to these vendors (per-device-type API calls).
-                When None, fetches all components globally (bulk .all()).
-        """
-        components = [
+            existing = self.existing_device_types.get((manufacturer_slug, model))
+            if existing is None and slug:
+                existing = self.existing_device_types_by_slug.get((manufacturer_slug, slug))
+
+            if existing is not None:
+                ids.add(existing.id)
+
+        return ids
+
+    @staticmethod
+    def _component_preload_targets():
+        return [
             ("interface_templates", "Interfaces"),
             ("power_port_templates", "Power Ports"),
             ("console_port_templates", "Console Ports"),
@@ -445,79 +554,502 @@ class DeviceTypes:
             ("module_bay_templates", "Module Bays"),
         ]
 
+    def _get_endpoint_totals(self, components):
+        max_workers = max(1, min(len(components), 8))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as total_executor:
+            total_futures = {
+                endpoint_name: total_executor.submit(self._get_endpoint_total, endpoint_name)
+                for endpoint_name, _label in components
+            }
+            return {endpoint_name: total_futures[endpoint_name].result() for endpoint_name, _label in components}
+
+    def start_component_preload(self, vendor_slugs=None, progress=None):
+        """Start concurrent component prefetch and return a preload job handle."""
+        components = self._component_preload_targets()
+        max_workers = max(1, min(len(components), 8))
+        executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+
+        if vendor_slugs:
+            vendor_scope = set(vendor_slugs)
+            dt_ids = sorted(
+                {dt.id for (mfr_slug, _model), dt in self.existing_device_types.items() if mfr_slug in vendor_scope}
+            )
+            futures = {
+                endpoint_name: executor.submit(self._fetch_scoped_endpoint_records, endpoint_name, dt_ids)
+                for endpoint_name, _label in components
+            }
+            return {
+                "mode": "scoped",
+                "components": components,
+                "dt_ids": dt_ids,
+                "futures": futures,
+                "finished_endpoints": set(),
+                "executor": executor,
+            }
+
+        endpoint_totals = self._get_endpoint_totals(components)
+        progress_updates = queue.Queue()
+        task_ids = None
+
+        if progress is not None:
+            task_ids = {
+                endpoint_name: progress.add_task(
+                    f"Caching {label}",
+                    total=max(endpoint_totals.get(endpoint_name, 0), 1),
+                )
+                for endpoint_name, label in components
+            }
+
+        def update_progress(endpoint_name, advance):
+            progress_updates.put((endpoint_name, advance))
+
+        futures = {
+            endpoint_name: executor.submit(
+                self._fetch_global_endpoint_records,
+                endpoint_name,
+                update_progress,
+                endpoint_totals.get(endpoint_name, 0),
+            )
+            for endpoint_name, _label in components
+        }
+        return {
+            "mode": "global",
+            "components": components,
+            "futures": futures,
+            "progress_updates": progress_updates,
+            "endpoint_totals": endpoint_totals,
+            "task_ids": task_ids,
+            "finished_endpoints": set(),
+            "executor": executor,
+        }
+
+    @staticmethod
+    def stop_component_preload(preload_job):
+        if not preload_job:
+            return
+
+        futures = preload_job.get("futures", {})
+        for future in futures.values():
+            if not future.done():
+                future.cancel()
+
+        executor = preload_job.get("executor")
+        if executor:
+            executor.shutdown(wait=False, cancel_futures=True)
+            preload_job["executor"] = None
+
+    @staticmethod
+    def _apply_progress_updates(progress_updates, progress, task_ids, allowed_endpoints=None):
+        if progress_updates is None or progress is None or not task_ids:
+            return False
+
+        advanced = False
+        updates = {}
+        while True:
+            try:
+                endpoint_name, advance = progress_updates.get_nowait()
+                if allowed_endpoints is not None and endpoint_name not in allowed_endpoints:
+                    continue
+                updates[endpoint_name] = updates.get(endpoint_name, 0) + advance
+            except queue.Empty:
+                break
+
+        for endpoint_name, advance in updates.items():
+            task_id = task_ids.get(endpoint_name)
+            if task_id is not None:
+                progress.update(task_id, advance=advance)
+                advanced = True
+
+        return advanced
+
+    def pump_preload_progress(self, preload_job, progress):
+        if not preload_job:
+            return False
+        futures = preload_job.get("futures", {})
+        finished_endpoints = preload_job.setdefault("finished_endpoints", set())
+        pending_endpoints = {endpoint_name for endpoint_name in futures if endpoint_name not in finished_endpoints}
+
+        advanced = self._apply_progress_updates(
+            preload_job.get("progress_updates"),
+            progress,
+            preload_job.get("task_ids"),
+            allowed_endpoints=pending_endpoints if pending_endpoints else None,
+        )
+
+        task_ids = preload_job.get("task_ids") or {}
+        endpoint_totals = preload_job.get("endpoint_totals", {})
+        for endpoint_name in pending_endpoints:
+            future = futures.get(endpoint_name)
+            if future is None or not future.done():
+                continue
+            if progress is not None and endpoint_name in task_ids:
+                total = max(endpoint_totals.get(endpoint_name, 0), 1)
+                progress.update(task_ids[endpoint_name], total=total, completed=total)
+                progress.stop_task(task_ids[endpoint_name])
+            finished_endpoints.add(endpoint_name)
+            advanced = True
+
+        return advanced
+
+    def preload_all_components(
+        self,
+        progress_wrapper=None,
+        vendor_slugs=None,
+        preload_job=None,
+        progress=None,
+        device_type_ids=None,
+    ):
+        """Pre-fetch component templates to avoid N+1 queries during updates.
+
+        Args:
+            progress_wrapper: Optional callable to wrap iterables with progress bars
+            vendor_slugs: Optional list of vendor slugs to scope the preload.
+                When provided, only caches components for device types belonging
+                to these vendors (per-device-type API calls).
+                When None, fetches all components globally (bulk .all()).
+            device_type_ids: Optional explicit set/list of device-type IDs to scope preload.
+                When provided, takes precedence over vendor_slugs.
+            preload_job: Optional preload job from start_component_preload().
+            progress: Optional shared Rich Progress instance used to render
+                all caching tasks inside a single progress panel.
+        """
+        components = self._component_preload_targets()
+
+        if preload_job:
+            mode = preload_job.get("mode")
+            if mode == "scoped":
+                self._preload_scoped(
+                    preload_job.get("components", components),
+                    preload_job.get("dt_ids", []),
+                    progress_wrapper,
+                    preload_job=preload_job,
+                    progress=progress,
+                )
+            else:
+                self._preload_global(
+                    preload_job.get("components", components),
+                    progress_wrapper,
+                    preload_job=preload_job,
+                    progress=progress,
+                )
+            return
+
+        if device_type_ids is not None:
+            self._preload_scoped(components, set(device_type_ids), progress_wrapper, progress=progress)
+            return
+
         if vendor_slugs:
             # Collect device type IDs for the specified vendors
             dt_ids = {
                 dt.id for (mfr_slug, _model), dt in self.existing_device_types.items() if mfr_slug in vendor_slugs
             }
-            self._preload_scoped(components, dt_ids, progress_wrapper)
+            self._preload_scoped(components, dt_ids, progress_wrapper, progress=progress)
         else:
-            self._preload_global(components, progress_wrapper)
+            self._preload_global(components, progress_wrapper, progress=progress)
 
-    def _preload_global(self, components, progress_wrapper=None):
+    def _preload_global(self, components, progress_wrapper=None, preload_job=None, progress=None):
         """Fetch all component templates globally (no vendor/device filter)."""
-        for endpoint, label in components:
-            if not progress_wrapper:
-                self.handle.log(f"Pre-fetching {label}...")
+        own_executor = preload_job is None
+        if preload_job:
+            executor = preload_job.get("executor")
+            futures = preload_job.get("futures", {})
+            progress_updates = preload_job.get("progress_updates")
+            endpoint_totals = preload_job.get("endpoint_totals", {})
+        else:
+            max_workers = max(1, min(len(components), 8))
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+            endpoint_totals = self._get_endpoint_totals(components)
+            if progress is not None:
+                progress_updates = queue.Queue()
 
-            cache = {}
-            count = 0
-            all_items = getattr(self.netbox.dcim, endpoint).all()
+                def update_progress(endpoint_name, advance):
+                    progress_updates.put((endpoint_name, advance))
 
-            if progress_wrapper:
-                total = len(all_items)
-                items_iter = progress_wrapper(all_items, desc=f"Caching {label}", total=total)
+                futures = {
+                    endpoint: executor.submit(
+                        self._fetch_global_endpoint_records,
+                        endpoint,
+                        update_progress,
+                        endpoint_totals.get(endpoint, 0),
+                    )
+                    for endpoint, _label in components
+                }
             else:
-                items_iter = all_items
+                futures = {
+                    endpoint: executor.submit(
+                        self._fetch_global_endpoint_records,
+                        endpoint,
+                        None,
+                        endpoint_totals.get(endpoint, 0),
+                    )
+                    for endpoint, _label in components
+                }
+                progress_updates = None
 
-            for item in items_iter:
-                parent_id = None
-                parent_type = None
+        try:
+            records_by_endpoint = {}
+            if progress is not None:
+                task_ids = preload_job.get("task_ids") if preload_job else None
+                if not task_ids:
+                    task_ids = {
+                        endpoint: progress.add_task(
+                            f"Caching {label}",
+                            total=max(endpoint_totals.get(endpoint, 0), 1),
+                        )
+                        for endpoint, label in components
+                    }
+                future_map = {endpoint: futures[endpoint] for endpoint, _label in components if endpoint in futures}
+                pending = set(future_map.keys())
 
-                if getattr(item, "device_type", None):
-                    parent_id = item.device_type.id
-                    parent_type = "device"
-                elif getattr(item, "module_type", None):
-                    parent_id = item.module_type.id
-                    parent_type = "module"
+                while pending:
+                    had_updates = self._apply_progress_updates(
+                        progress_updates,
+                        progress,
+                        task_ids,
+                        allowed_endpoints=pending,
+                    )
 
-                if parent_id:
-                    key = (parent_type, parent_id)
-                    if key not in cache:
-                        cache[key] = {}
-                    cache[key][item.name] = item
-                    count += 1
+                    done_now = [endpoint_name for endpoint_name in pending if future_map[endpoint_name].done()]
+                    for endpoint_name in done_now:
+                        pending.remove(endpoint_name)
+                        records_by_endpoint[endpoint_name] = future_map[endpoint_name].result()
+                        final_total = max(
+                            endpoint_totals.get(endpoint_name, 0),
+                            len(records_by_endpoint[endpoint_name]),
+                            1,
+                        )
+                        progress.update(
+                            task_ids[endpoint_name],
+                            total=final_total,
+                            completed=final_total,
+                        )
+                        progress.stop_task(task_ids[endpoint_name])
 
-            self.cached_components[endpoint] = cache
-            self.handle.verbose_log(f"Cached {count} {label}.")
+                    if pending and not had_updates:
+                        if progress_updates is not None:
+                            try:
+                                endpoint_name, advance = progress_updates.get(timeout=0.1)
+                                if endpoint_name not in pending:
+                                    continue
+                                task_id = task_ids.get(endpoint_name)
+                                if task_id is not None:
+                                    progress.update(task_id, advance=advance)
+                            except queue.Empty:
+                                pass
+                        else:
+                            concurrent.futures.wait(
+                                [future_map[endpoint_name] for endpoint_name in pending],
+                                timeout=0.1,
+                                return_when=concurrent.futures.FIRST_COMPLETED,
+                            )
+            else:
+                for endpoint, label in components:
+                    self.handle.verbose_log(f"Pre-fetching {label}...")
+                    records_by_endpoint[endpoint] = futures[endpoint].result()
 
-    def _preload_scoped(self, components, device_type_ids, progress_wrapper=None):
+            for endpoint, label in components:
+                all_items = records_by_endpoint.get(endpoint, [])
+                cache, count = self._build_component_cache(all_items)
+                self.cached_components[endpoint] = cache
+                self.handle.verbose_log(f"Cached {count} {label}.")
+        finally:
+            if executor:
+                if own_executor:
+                    executor.shutdown(wait=True)
+                elif preload_job and preload_job.get("executor") is executor:
+                    executor.shutdown(wait=True)
+                    preload_job["executor"] = None
+
+    def _preload_scoped(self, components, device_type_ids, progress_wrapper=None, preload_job=None, progress=None):
         """Fetch component templates for the given device type IDs via per-device-type API calls."""
-        dt_ids = set(device_type_ids)
-        self.handle.log(f"Scoped preload for {len(dt_ids)} device type(s)...")
+        dt_ids = sorted(set(device_type_ids))
+        self.handle.verbose_log(f"Scoped preload for {len(dt_ids)} device type(s)...")
 
-        for endpoint_name, label in components:
-            if not progress_wrapper:
-                self.handle.log(f"Pre-fetching {label}...")
+        own_executor = preload_job is None
+        if preload_job:
+            executor = preload_job.get("executor")
+            futures = preload_job.get("futures", {})
+            progress_updates = None
+        else:
+            max_workers = max(1, min(len(components), 8))
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+            if progress is not None:
+                progress_updates = queue.Queue()
 
-            cache = {}
-            count = 0
-            ep = getattr(self.netbox.dcim, endpoint_name)
+                def update_progress(endpoint_name, advance):
+                    progress_updates.put((endpoint_name, advance))
 
-            ids_iter = dt_ids
-            if progress_wrapper:
-                ids_iter = progress_wrapper(dt_ids, desc=f"Caching {label}", total=len(dt_ids))
+                futures = {
+                    endpoint_name: executor.submit(
+                        self._fetch_scoped_endpoint_records, endpoint_name, dt_ids, update_progress
+                    )
+                    for endpoint_name, _label in components
+                }
+            else:
+                futures = {
+                    endpoint_name: executor.submit(self._fetch_scoped_endpoint_records, endpoint_name, dt_ids)
+                    for endpoint_name, _label in components
+                }
+                progress_updates = None
 
-            for dt_id in ids_iter:
-                filter_kwargs = self._get_filter_kwargs(dt_id, "device")
-                key = ("device", dt_id)
+        try:
+            records_by_endpoint = {}
+            if progress is not None:
+                if preload_job:
+                    # Preloaded scoped jobs don't report per-device updates, so track completion per endpoint.
+                    task_ids = {
+                        endpoint_name: progress.add_task(f"Caching {label}", total=1)
+                        for endpoint_name, label in components
+                    }
+                    future_map = {
+                        futures[endpoint_name]: (endpoint_name, label)
+                        for endpoint_name, label in components
+                        if endpoint_name in futures
+                    }
+                    for future in concurrent.futures.as_completed(future_map):
+                        endpoint_name, _label = future_map[future]
+                        records_by_endpoint[endpoint_name] = future.result()
+                        progress.update(task_ids[endpoint_name], completed=1)
+                        progress.stop_task(task_ids[endpoint_name])
+                else:
+                    total_per_endpoint = max(len(dt_ids), 1)
+                    task_ids = {
+                        endpoint_name: progress.add_task(
+                            f"Caching {label}",
+                            total=total_per_endpoint,
+                        )
+                        for endpoint_name, label in components
+                    }
+                    future_map = {
+                        endpoint_name: futures[endpoint_name]
+                        for endpoint_name, _label in components
+                        if endpoint_name in futures
+                    }
+                    pending = set(future_map.keys())
+
+                    while pending:
+                        updates = {}
+                        while True:
+                            try:
+                                endpoint_name, advance = progress_updates.get_nowait()
+                                if endpoint_name not in pending:
+                                    continue
+                                updates[endpoint_name] = updates.get(endpoint_name, 0) + advance
+                            except queue.Empty:
+                                break
+
+                        for endpoint_name, advance in updates.items():
+                            progress.update(task_ids[endpoint_name], advance=advance)
+
+                        done_now = [endpoint_name for endpoint_name in pending if future_map[endpoint_name].done()]
+                        for endpoint_name in done_now:
+                            pending.remove(endpoint_name)
+                            records_by_endpoint[endpoint_name] = future_map[endpoint_name].result()
+                            progress.update(task_ids[endpoint_name], completed=total_per_endpoint)
+                            progress.stop_task(task_ids[endpoint_name])
+
+                        if pending and not updates:
+                            try:
+                                endpoint_name, advance = progress_updates.get(timeout=0.1)
+                                if endpoint_name not in pending:
+                                    continue
+                                progress.update(task_ids[endpoint_name], advance=advance)
+                            except queue.Empty:
+                                pass
+            else:
+                for endpoint_name, label in components:
+                    self.handle.verbose_log(f"Pre-fetching {label}...")
+                    records_by_endpoint[endpoint_name] = futures[endpoint_name].result()
+
+            for endpoint_name, label in components:
+                records_by_dt = records_by_endpoint.get(endpoint_name, {})
+                cache = {}
+                count = 0
+                for dt_id in dt_ids:
+                    key = ("device", dt_id)
+                    cache[key] = {}
+                    for item in records_by_dt.get(dt_id, []):
+                        cache[key][item.name] = item
+                        count += 1
+
+                self.cached_components[endpoint_name] = cache
+                self.handle.verbose_log(f"Cached {count} {label}.")
+        finally:
+            if executor:
+                if own_executor:
+                    executor.shutdown(wait=True)
+                elif preload_job and preload_job.get("executor") is executor:
+                    executor.shutdown(wait=True)
+                    preload_job["executor"] = None
+
+    def _fetch_global_endpoint_records(self, endpoint_name, progress_callback=None, expected_total=None):
+        endpoint = getattr(self.netbox.dcim, endpoint_name)
+        records = []
+        last_emit_time = time.monotonic()
+        pending_advance = 0
+
+        def flush_progress(force=False):
+            nonlocal pending_advance, last_emit_time
+            if progress_callback is None or pending_advance <= 0:
+                return
+            now = time.monotonic()
+            if force or now - last_emit_time >= 1.0:
+                progress_callback(endpoint_name, pending_advance)
+                pending_advance = 0
+                last_emit_time = now
+
+        for item in endpoint.all():
+            records.append(item)
+            pending_advance += 1
+            flush_progress()
+        flush_progress(force=True)
+        return records
+
+    def _fetch_scoped_endpoint_records(self, endpoint_name, dt_ids, progress_callback=None):
+        endpoint = getattr(self.netbox.dcim, endpoint_name)
+        records_by_dt = {}
+        for dt_id in dt_ids:
+            filter_kwargs = self._get_filter_kwargs(dt_id, "device")
+            records_by_dt[dt_id] = list(endpoint.filter(**filter_kwargs))
+            if progress_callback is not None:
+                progress_callback(endpoint_name, 1)
+        return records_by_dt
+
+    def _get_endpoint_total(self, endpoint_name):
+        endpoint = getattr(self.netbox.dcim, endpoint_name)
+        try:
+            total = endpoint.count()
+            if total is None:
+                return 0
+            return int(total)
+        except (AttributeError, TypeError, ValueError, pynetbox.RequestError):
+            return 0
+
+    @staticmethod
+    def _build_component_cache(items):
+        cache = {}
+        count = 0
+        for item in items:
+            parent_id = None
+            parent_type = None
+
+            if getattr(item, "device_type", None):
+                parent_id = item.device_type.id
+                parent_type = "device"
+            elif getattr(item, "module_type", None):
+                parent_id = item.module_type.id
+                parent_type = "module"
+
+            if not parent_id:
+                continue
+
+            key = (parent_type, parent_id)
+            if key not in cache:
                 cache[key] = {}
-                for item in ep.filter(**filter_kwargs):
-                    cache[key][item.name] = item
-                    count += 1
+            cache[key][item.name] = item
+            count += 1
 
-            self.cached_components[endpoint_name] = cache
-            self.handle.verbose_log(f"Cached {count} {label}.")
+        return cache, count
 
     def _get_filter_kwargs(self, parent_id, parent_type="device"):
         if parent_type == "device":
@@ -1120,7 +1652,7 @@ class DeviceTypes:
                 url, headers=headers, files=file_handles, verify=(not self.ignore_ssl), timeout=60
             )
             response.raise_for_status()
-            self.handle.log(f"Images {images} updated at {url}: {response.status_code}")
+            self.handle.verbose_log(f"Images {images} updated at {url}: {response.status_code}")
             self.counter["images"] += len(images)
         except OSError as e:
             self.handle.log(f"Error reading image file for device type {device_type}: {e}")
@@ -1169,7 +1701,7 @@ class DeviceTypes:
                     timeout=60,
                 )
                 response.raise_for_status()
-                self.handle.log(
+                self.handle.verbose_log(
                     f"Image attachment '{os.path.basename(image_path)}' uploaded"
                     f" for {object_type} {object_id}: {response.status_code}"
                 )
