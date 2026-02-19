@@ -944,35 +944,38 @@ class DeviceTypes:
         else:
             max_workers = max(1, min(len(components), 8))
             endpoint_totals = self._get_endpoint_totals(components)
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
-            if progress is not None:
-                progress_updates = queue.Queue()
-
-                def update_progress(endpoint_name, advance):
-                    progress_updates.put((endpoint_name, advance))
-
-                futures = {
-                    endpoint: executor.submit(
-                        self._fetch_global_endpoint_records,
-                        endpoint,
-                        update_progress,
-                        endpoint_totals.get(endpoint, 0),
-                    )
-                    for endpoint, _label in components
-                }
-            else:
-                futures = {
-                    endpoint: executor.submit(
-                        self._fetch_global_endpoint_records,
-                        endpoint,
-                        None,
-                        endpoint_totals.get(endpoint, 0),
-                    )
-                    for endpoint, _label in components
-                }
-                progress_updates = None
+            executor = None
+            futures = {}
+            progress_updates = None
 
         try:
+            if own_executor:
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+                if progress is not None:
+                    progress_updates = queue.Queue()
+
+                    def update_progress(endpoint_name, advance):
+                        progress_updates.put((endpoint_name, advance))
+
+                    futures = {
+                        endpoint: executor.submit(
+                            self._fetch_global_endpoint_records,
+                            endpoint,
+                            update_progress,
+                            endpoint_totals.get(endpoint, 0),
+                        )
+                        for endpoint, _label in components
+                    }
+                else:
+                    futures = {
+                        endpoint: executor.submit(
+                            self._fetch_global_endpoint_records,
+                            endpoint,
+                            None,
+                            endpoint_totals.get(endpoint, 0),
+                        )
+                        for endpoint, _label in components
+                    }
             records_by_endpoint = {}
             if progress is not None:
                 task_ids = preload_job.get("task_ids") if preload_job else None
@@ -1067,27 +1070,30 @@ class DeviceTypes:
             progress_updates = None
         else:
             max_workers = max(1, min(len(components), 8))
-            executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
-            if progress is not None:
-                progress_updates = queue.Queue()
-
-                def update_progress(endpoint_name, advance):
-                    progress_updates.put((endpoint_name, advance))
-
-                futures = {
-                    endpoint_name: executor.submit(
-                        self._fetch_scoped_endpoint_records, endpoint_name, dt_ids, update_progress
-                    )
-                    for endpoint_name, _label in components
-                }
-            else:
-                futures = {
-                    endpoint_name: executor.submit(self._fetch_scoped_endpoint_records, endpoint_name, dt_ids)
-                    for endpoint_name, _label in components
-                }
-                progress_updates = None
+            executor = None
+            futures = {}
+            progress_updates = None
 
         try:
+            if own_executor:
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+                if progress is not None:
+                    progress_updates = queue.Queue()
+
+                    def update_progress(endpoint_name, advance):
+                        progress_updates.put((endpoint_name, advance))
+
+                    futures = {
+                        endpoint_name: executor.submit(
+                            self._fetch_scoped_endpoint_records, endpoint_name, dt_ids, update_progress
+                        )
+                        for endpoint_name, _label in components
+                    }
+                else:
+                    futures = {
+                        endpoint_name: executor.submit(self._fetch_scoped_endpoint_records, endpoint_name, dt_ids)
+                        for endpoint_name, _label in components
+                    }
             records_by_endpoint = {}
             if progress is not None:
                 if preload_job:
