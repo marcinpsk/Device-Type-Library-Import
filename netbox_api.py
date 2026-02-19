@@ -13,6 +13,16 @@ from change_detector import COMPONENT_ALIASES, ChangeType
 # Supported image file extensions for module-type image uploads
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".svg"}
 
+# Maximum number of IDs per endpoint.filter() call to avoid excessively long URLs.
+FILTER_CHUNK_SIZE = 200
+
+
+def _chunked(seq, size):
+    """Yield successive *size*-length slices of *seq*."""
+    for i in range(0, len(seq), size):
+        yield seq[i : i + size]
+
+
 # from pynetbox import RequestError as APIRequestError
 
 
@@ -261,7 +271,10 @@ class NetBox:
                                     dt.id, dt_change.component_changes, parent_type="device"
                                 )
 
-                self.handle.verbose_log(f"Device Type Cached: {dt.manufacturer.name} - " + f"{dt.model} - {dt.id}")
+                self.handle.verbose_log(
+                    f"Device Type Cached: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
+                    "No pending updates; skipping component creation."
+                )
 
                 # Device type already exists - skip component creation
                 continue
@@ -1240,23 +1253,29 @@ class DeviceTypes:
     def _fetch_scoped_endpoint_records(self, endpoint_name, dt_ids, progress_callback=None):
         """Fetch component records for the given device-type IDs from a single endpoint.
 
-        Issues one ``filter()`` API call per device-type ID and returns results grouped by ID.
+        Issues one ``filter()`` call per chunk of up to ``FILTER_CHUNK_SIZE`` device-type IDs
+        and returns results grouped by device-type ID.
 
         Args:
             endpoint_name (str): Attribute name on ``self.netbox.dcim``.
             dt_ids (list[int]): Device-type IDs to fetch components for.
-            progress_callback (callable | None): Called with ``(endpoint_name, 1)`` after each ID.
+            progress_callback (callable | None): Called with ``(endpoint_name, advance)`` where
+                *advance* is the chunk size after each filter() call.
 
         Returns:
             dict: ``{device_type_id: list[record]}``
         """
         endpoint = getattr(self.netbox.dcim, endpoint_name)
+        filter_key = "device_type_id" if self.new_filters else "devicetype_id"
         records_by_dt = {}
-        for dt_id in dt_ids:
-            filter_kwargs = self._get_filter_kwargs(dt_id, "device")
-            records_by_dt[dt_id] = list(endpoint.filter(**filter_kwargs))
+        for chunk in _chunked(dt_ids, FILTER_CHUNK_SIZE):
+            for item in endpoint.filter(**{filter_key: chunk}):
+                dt = getattr(item, "device_type", None)
+                if dt is None:
+                    continue
+                records_by_dt.setdefault(dt.id, []).append(item)
             if progress_callback is not None:
-                progress_callback(endpoint_name, 1)
+                progress_callback(endpoint_name, len(chunk))
         return records_by_dt
 
     def _get_endpoint_total(self, endpoint_name):
@@ -1358,9 +1377,10 @@ class DeviceTypes:
         """Bulk-fetch components for module types and populate the cache.
 
         For each component endpoint referenced by *component_keys*, issues one
-        ``filter()`` call per endpoint (filtering by module_type_id=[...]) and
-        distributes the returned items into per-module-type cache entries so
-        that subsequent ``_get_cached_or_fetch`` calls hit the cache.
+        ``filter()`` call per chunk of up to ``FILTER_CHUNK_SIZE`` module-type IDs
+        (filtering by module_type_id=[...]) and distributes the returned items into
+        per-module-type cache entries so that subsequent ``_get_cached_or_fetch``
+        calls hit the cache.
         """
         if not module_type_ids:
             return
@@ -1383,12 +1403,13 @@ class DeviceTypes:
             # Pre-populate empty entries so cache hits return {} for IDs with no components
             for mid in id_list:
                 cache.setdefault(("module", mid), {})
-            for item in endpoint.filter(**{filter_key: id_list}):
-                module_type = getattr(item, "module_type", None)
-                if module_type is None:
-                    continue
-                mid = module_type.id
-                cache.setdefault(("module", mid), {})[item.name] = item
+            for chunk in _chunked(id_list, FILTER_CHUNK_SIZE):
+                for item in endpoint.filter(**{filter_key: chunk}):
+                    module_type = getattr(item, "module_type", None)
+                    if module_type is None:
+                        continue
+                    mid = module_type.id
+                    cache.setdefault(("module", mid), {})[item.name] = item
 
     def _create_generic(
         self,
