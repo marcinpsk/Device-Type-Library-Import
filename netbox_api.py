@@ -741,7 +741,11 @@ class DeviceTypes:
                 "executor": executor,
             }
 
-        endpoint_totals = self._get_endpoint_totals(components)
+        try:
+            endpoint_totals = self._get_endpoint_totals(components)
+        except Exception:
+            executor.shutdown(wait=False)
+            raise
         progress_updates = queue.Queue()
         task_ids = None
 

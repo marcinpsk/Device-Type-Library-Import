@@ -18,7 +18,8 @@ def nb_dt_import():
     module = importlib.util.module_from_spec(spec)
     sys.modules["nb_dt_import"] = module
     spec.loader.exec_module(module)
-    return module
+    yield module
+    sys.modules.pop("nb_dt_import", None)
 
 
 def test_filter_vendors_for_parsed_types_uses_parsed_subset(nb_dt_import):
