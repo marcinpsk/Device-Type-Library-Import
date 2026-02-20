@@ -409,9 +409,8 @@ def main():
 
             parse_progress = get_progress_wrapper(progress, files, desc="Parsing Device Types", on_step=on_parse_step)
 
-            if not args.only_new and not args.slugs and not args.vendors:
+            if not args.only_new:
                 cache_preload_job = netbox.device_types.start_component_preload(
-                    vendor_slugs=None,
                     progress=progress,
                 )
                 if progress is not None:
@@ -453,28 +452,16 @@ def main():
                 else:
                     handle.verbose_log("No new device types to create.")
             else:
-                # Cache NetBox data for comparison (separate step with visible progress)
+                # Cache NetBox data for comparison (concurrent preload started during parsing)
                 if device_types:
-                    if cache_preload_job:
-                        handle.verbose_log(
-                            "Caching NetBox data for comparison (concurrent API requests started during parsing)..."
-                        )
-                        netbox.device_types.preload_all_components(
-                            progress=progress,
-                            vendor_slugs=None,
-                            preload_job=cache_preload_job,
-                        )
-                        cache_preload_job = None
-                    else:
-                        handle.verbose_log("Caching NetBox data for comparison (concurrent API requests)...")
-                        scoped_ids = netbox.device_types.resolve_existing_device_type_ids(device_types)
-                        if scoped_ids:
-                            netbox.device_types.preload_all_components(
-                                progress=progress,
-                                device_type_ids=scoped_ids,
-                            )
-                        else:
-                            handle.verbose_log("No existing device types in scope. Skipping component cache preload.")
+                    handle.verbose_log(
+                        "Caching NetBox data for comparison (concurrent API requests started during parsing)..."
+                    )
+                    netbox.device_types.preload_all_components(
+                        progress=progress,
+                        preload_job=cache_preload_job,
+                    )
+                    cache_preload_job = None
                 else:
                     handle.log("No device types matched filters. Skipping NetBox cache preload.")
 
