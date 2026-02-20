@@ -216,6 +216,11 @@ class NetBox:
                             saved_images[i] = images[0]
                         else:
                             self.handle.log(f"Error locating image file using '{image_glob}'")
+                    elif device_type[i] and image_base is None:
+                        self.handle.verbose_log(
+                            f"Skipping image discovery for '{device_type.get('slug', '')}' "
+                            "because source path lacks 'device-types'."
+                        )
                     del device_type[i]
 
             # Look up by (manufacturer_slug, model), with fallback to (manufacturer_slug, slug).
@@ -1031,13 +1036,18 @@ class DeviceTypes:
                 pending = set(future_map.keys())
                 if preload_job:
                     already_done = pending & preload_job.get("finished_endpoints", set())
-                    # Collect results for endpoints already finalised by pump_preload_progress.
+                    # Collect results and stop tasks for endpoints already finalised by pump_preload_progress.
                     for endpoint_name in already_done:
                         try:
                             records_by_endpoint[endpoint_name] = future_map[endpoint_name].result()
                         except Exception as exc:
                             self.handle.log(f"Preload failed for {endpoint_name}: {exc}")
                             records_by_endpoint[endpoint_name] = []
+                        if endpoint_name in task_ids:
+                            try:
+                                progress.stop_task(task_ids[endpoint_name])
+                            except Exception:
+                                pass
                     # Exclude from pending to avoid double stop_task.
                     pending -= already_done
 
@@ -1215,7 +1225,7 @@ class DeviceTypes:
                             try:
                                 endpoint_name, advance = progress_updates.get(timeout=0.1)
                                 if endpoint_name not in pending:
-                                    progress_updates.put((endpoint_name, advance))
+                                    # Drop: endpoint already finalised; no task to advance.
                                     continue
                                 progress.update(task_ids[endpoint_name], advance=advance)
                             except queue.Empty:
