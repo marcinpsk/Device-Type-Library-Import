@@ -459,11 +459,13 @@ class TestGetModuleTypes:
                     {
                         "id": "42",
                         "model": "Linecard 1",
+                        "slug": "linecard-1",
                         "manufacturer": {"id": "20", "name": "Juniper", "slug": "juniper"},
                     },
                     {
                         "id": "43",
                         "model": "Linecard 2",
+                        "slug": "linecard-2",
                         "manufacturer": {"id": "20", "name": "Juniper", "slug": "juniper"},
                     },
                 ]
@@ -483,6 +485,7 @@ class TestGetModuleTypes:
         mt = result["juniper"]["Linecard 1"]
         assert mt.id == 42
         assert mt.model == "Linecard 1"
+        assert mt.slug == "linecard-1"
         assert mt.manufacturer.slug == "juniper"
 
     @patch("graphql_client.requests.post")

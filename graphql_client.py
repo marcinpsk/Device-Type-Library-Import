@@ -20,6 +20,7 @@ class DotDict(dict):
     """
 
     def __getattr__(self, key):
+        """Return the value for *key* using attribute-style access."""
         try:
             value = self[key]
         except KeyError:
@@ -30,9 +31,11 @@ class DotDict(dict):
         return value
 
     def __setattr__(self, key, value):
+        """Store *value* under *key* in the underlying dict."""
         self[key] = value
 
     def __str__(self):
+        """Return the ``name`` value if present, otherwise the repr of the dict."""
         return self.get("name", repr(self))
 
 
@@ -57,6 +60,21 @@ def _to_dotdict(obj):
         return [_to_dotdict(item) for item in obj]
     return obj
 
+
+# Deterministic mapping from endpoint name to its GraphQL list key.
+# Using rstrip("s") would strip multiple trailing 's' chars from hypothetical
+# future names; this mapping is explicit and safe.
+ENDPOINT_TO_LIST_KEY = {
+    "interface_templates": "interface_template_list",
+    "power_port_templates": "power_port_template_list",
+    "console_port_templates": "console_port_template_list",
+    "console_server_port_templates": "console_server_port_template_list",
+    "power_outlet_templates": "power_outlet_template_list",
+    "rear_port_templates": "rear_port_template_list",
+    "front_port_templates": "front_port_template_list",
+    "device_bay_templates": "device_bay_template_list",
+    "module_bay_templates": "module_bay_template_list",
+}
 
 # Mapping of endpoint names (as used in DeviceTypes) to their GraphQL fields.
 # Every entry also includes ``device_type { id }`` and ``module_type { id }`` automatically.
@@ -85,6 +103,7 @@ class NetBoxGraphQLClient:
     DEFAULT_PAGE_SIZE = 25000
 
     def __init__(self, url, token, ignore_ssl=False):
+        """Store connection parameters for later use in :meth:`query`."""
         self.url = url.rstrip("/")
         self.graphql_url = f"{self.url}/graphql/"
         self.token = token
@@ -233,6 +252,7 @@ class NetBoxGraphQLClient:
           module_type_list(pagination: $pagination) {
             id
             model
+            slug
             manufacturer {
               id
               name
@@ -278,7 +298,10 @@ class NetBoxGraphQLClient:
                 continue
             obj_id = item["object_id"]
             if isinstance(obj_id, str):
-                obj_id = int(obj_id)
+                try:
+                    obj_id = int(obj_id)
+                except ValueError:
+                    continue
             result.setdefault(obj_id, set()).add(name)
 
         return result
@@ -299,8 +322,7 @@ class NetBoxGraphQLClient:
             raise ValueError(f"Unknown component endpoint: {endpoint_name}")
 
         fields = COMPONENT_TEMPLATE_FIELDS[endpoint_name]
-        # GraphQL list key: "interface_templates" → "interface_template_list"
-        list_key = endpoint_name.rstrip("s") + "_list"
+        list_key = ENDPOINT_TO_LIST_KEY[endpoint_name]
         field_block = "\n            ".join(fields)
 
         # device_bay_templates has no module_type in the GraphQL schema

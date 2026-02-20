@@ -665,7 +665,7 @@ class DeviceTypes:
         """Allocate a new DeviceTypes instance using the default object allocator."""
         return super().__new__(cls)
 
-    def __init__(self, netbox, exception_handler, counter, ignore_ssl, new_filters, *, graphql=None):
+    def __init__(self, netbox, exception_handler, counter, ignore_ssl, new_filters, *, graphql):
         """Initialize the DeviceTypes cache and load all existing device types from NetBox.
 
         Args:
@@ -674,7 +674,7 @@ class DeviceTypes:
             counter (Counter): Shared operation counter updated during creation.
             ignore_ssl (bool): Whether SSL certificate verification is disabled.
             new_filters (bool): Whether to use updated filter parameter names (NetBox >= 4.1).
-            graphql (NetBoxGraphQLClient | None): GraphQL client for read queries.
+            graphql (NetBoxGraphQLClient): GraphQL client for read queries.
         """
         self.netbox = netbox
         self.handle = exception_handler
@@ -1148,9 +1148,9 @@ class DeviceTypes:
         else:
             filter_kwargs = self._get_filter_kwargs(parent_id, parent_type)
             records = list(endpoint.filter(**filter_kwargs))
-        result = {item.name: item for item in records}
-        self.cached_components.setdefault(cache_name, {})[cache_key] = result
-        return result
+            result = {item.name: item for item in records}
+            self.cached_components.setdefault(cache_name, {})[cache_key] = result
+            return result
 
     def preload_module_type_components(self, module_type_ids, component_keys):
         """Bulk-fetch components for module types and populate the cache.

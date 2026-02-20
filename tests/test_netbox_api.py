@@ -138,52 +138,72 @@ def test_redundant_image_upload(mock_settings, mock_pynetbox):
 def test_preload_global_builds_component_cache(mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client):
     mock_nb_api = mock_pynetbox.api.return_value
 
-    # First call returns device types, subsequent calls return component templates
-    mock_graphql_requests.return_value.json.side_effect = [
-        # get_device_types()
-        {
-            "data": {
-                "device_type_list": [
-                    {
-                        "id": "1",
-                        "model": "ModelA",
-                        "slug": "model-a",
-                        "manufacturer": {"id": "10", "name": "Cisco", "slug": "cisco"},
-                        "front_image": None,
-                        "rear_image": None,
-                    }
-                ]
-            }
-        },
-        # interface_templates
-        {
-            "data": {
-                "interface_template_list": [
-                    {
-                        "id": "100",
-                        "name": "eth0",
-                        "type": "1000base-t",
-                        "label": "",
-                        "mgmt_only": False,
-                        "enabled": True,
-                        "poe_mode": None,
-                        "poe_type": None,
-                        "device_type": {"id": "1"},
-                        "module_type": None,
-                    }
-                ]
-            }
-        },
-        # remaining 8 component endpoints return empty
-        {"data": {"power_port_template_list": []}},
-        {"data": {"console_port_template_list": []}},
-        {"data": {"console_server_port_template_list": []}},
-        {"data": {"power_outlet_template_list": []}},
-        {"data": {"rear_port_template_list": []}},
-        {"data": {"front_port_template_list": []}},
-        {"data": {"device_bay_template_list": []}},
-        {"data": {"module_bay_template_list": []}},
-    ]
+    # Dispatch responses per query so concurrent threads each get the right data.
+    device_type_payload = {
+        "data": {
+            "device_type_list": [
+                {
+                    "id": "1",
+                    "model": "ModelA",
+                    "slug": "model-a",
+                    "manufacturer": {"id": "10", "name": "Cisco", "slug": "cisco"},
+                    "front_image": None,
+                    "rear_image": None,
+                }
+            ]
+        }
+    }
+    interface_payload = {
+        "data": {
+            "interface_template_list": [
+                {
+                    "id": "100",
+                    "name": "eth0",
+                    "type": "1000base-t",
+                    "label": "",
+                    "mgmt_only": False,
+                    "enabled": True,
+                    "poe_mode": None,
+                    "poe_type": None,
+                    "device_type": {"id": "1"},
+                    "module_type": None,
+                }
+            ]
+        }
+    }
+
+    def dispatch(url, json=None, **kwargs):
+        query = (json or {}).get("query", "")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status = MagicMock()
+        if "device_type_list" in query:
+            resp.json.return_value = device_type_payload
+        elif "interface_template_list" in query:
+            resp.json.return_value = interface_payload
+        else:
+            # All other component endpoints: return empty
+            key = next(
+                (
+                    k
+                    for k in [
+                        "power_port_template_list",
+                        "console_port_template_list",
+                        "console_server_port_template_list",
+                        "power_outlet_template_list",
+                        "rear_port_template_list",
+                        "front_port_template_list",
+                        "device_bay_template_list",
+                        "module_bay_template_list",
+                    ]
+                    if k in query
+                ),
+                "unknown_list",
+            )
+            resp.json.return_value = {"data": {key: []}}
+        return resp
+
+    mock_graphql_requests.side_effect = dispatch
 
     dt = DeviceTypes(mock_nb_api, mock_settings.handle, MagicMock(), False, False, graphql=graphql_client)
     dt.preload_all_components(progress_wrapper=None)
@@ -288,72 +308,90 @@ def test_preload_always_global_caches_all_vendors(mock_settings, mock_pynetbox, 
     """Preload always fetches all components globally, regardless of vendor filter."""
     mock_nb_api = mock_pynetbox.api.return_value
 
-    # Call sequence: get_device_types, then 9 global component queries
-    mock_graphql_requests.return_value.json.side_effect = [
-        # get_device_types()
-        {
-            "data": {
-                "device_type_list": [
-                    {
-                        "id": "1",
-                        "model": "ModelA",
-                        "slug": "model-a",
-                        "manufacturer": {"id": "10", "name": "Cisco", "slug": "cisco"},
-                        "front_image": None,
-                        "rear_image": None,
-                    },
-                    {
-                        "id": "2",
-                        "model": "ModelB",
-                        "slug": "model-b",
-                        "manufacturer": {"id": "20", "name": "Juniper", "slug": "juniper"},
-                        "front_image": None,
-                        "rear_image": None,
-                    },
-                ]
-            }
-        },
-        # interface_templates — global fetch returns ALL device types
-        {
-            "data": {
-                "interface_template_list": [
-                    {
-                        "id": "100",
-                        "name": "eth0",
-                        "type": "1000base-t",
-                        "label": "",
-                        "mgmt_only": False,
-                        "enabled": True,
-                        "poe_mode": None,
-                        "poe_type": None,
-                        "device_type": {"id": "1"},
-                        "module_type": None,
-                    },
-                    {
-                        "id": "200",
-                        "name": "xe-0/0/0",
-                        "type": "10gbase-x-sfpp",
-                        "label": "",
-                        "mgmt_only": False,
-                        "enabled": True,
-                        "poe_mode": None,
-                        "poe_type": None,
-                        "device_type": {"id": "2"},
-                        "module_type": None,
-                    },
-                ]
-            }
-        },
-        # remaining 8 component endpoints return empty
-        {"data": {"power_port_template_list": []}},
-        {"data": {"console_port_template_list": []}},
-        {"data": {"console_server_port_template_list": []}},
-        {"data": {"power_outlet_template_list": []}},
-        {"data": {"rear_port_template_list": []}},
-        {"data": {"front_port_template_list": []}},
-        {"data": {"device_bay_template_list": []}},
-        {"data": {"module_bay_template_list": []}},
-    ]
+    device_type_payload = {
+        "data": {
+            "device_type_list": [
+                {
+                    "id": "1",
+                    "model": "ModelA",
+                    "slug": "model-a",
+                    "manufacturer": {"id": "10", "name": "Cisco", "slug": "cisco"},
+                    "front_image": None,
+                    "rear_image": None,
+                },
+                {
+                    "id": "2",
+                    "model": "ModelB",
+                    "slug": "model-b",
+                    "manufacturer": {"id": "20", "name": "Juniper", "slug": "juniper"},
+                    "front_image": None,
+                    "rear_image": None,
+                },
+            ]
+        }
+    }
+    interface_payload = {
+        "data": {
+            "interface_template_list": [
+                {
+                    "id": "100",
+                    "name": "eth0",
+                    "type": "1000base-t",
+                    "label": "",
+                    "mgmt_only": False,
+                    "enabled": True,
+                    "poe_mode": None,
+                    "poe_type": None,
+                    "device_type": {"id": "1"},
+                    "module_type": None,
+                },
+                {
+                    "id": "200",
+                    "name": "xe-0/0/0",
+                    "type": "10gbase-x-sfpp",
+                    "label": "",
+                    "mgmt_only": False,
+                    "enabled": True,
+                    "poe_mode": None,
+                    "poe_type": None,
+                    "device_type": {"id": "2"},
+                    "module_type": None,
+                },
+            ]
+        }
+    }
+
+    def dispatch(url, json=None, **kwargs):
+        query = (json or {}).get("query", "")
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status = MagicMock()
+        if "device_type_list" in query:
+            resp.json.return_value = device_type_payload
+        elif "interface_template_list" in query:
+            resp.json.return_value = interface_payload
+        else:
+            key = next(
+                (
+                    k
+                    for k in [
+                        "power_port_template_list",
+                        "console_port_template_list",
+                        "console_server_port_template_list",
+                        "power_outlet_template_list",
+                        "rear_port_template_list",
+                        "front_port_template_list",
+                        "device_bay_template_list",
+                        "module_bay_template_list",
+                    ]
+                    if k in query
+                ),
+                "unknown_list",
+            )
+            resp.json.return_value = {"data": {key: []}}
+        return resp
+
+    mock_graphql_requests.side_effect = dispatch
 
     dt = DeviceTypes(mock_nb_api, mock_settings.handle, MagicMock(), False, False, graphql=graphql_client)
     dt.preload_all_components(progress_wrapper=None)
