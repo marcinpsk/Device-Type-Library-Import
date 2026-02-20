@@ -2,6 +2,7 @@ from collections import Counter
 import concurrent.futures
 import itertools
 import queue
+import re
 import time
 import pynetbox
 import requests
@@ -96,7 +97,8 @@ class NetBox:
         for >= 4.1. Logs the detected version when the new-filter flag is enabled.
         """
         # nb.version should be the version in the form '3.2'
-        _raw = [int(x) for x in self.netbox.version.split(".")]
+        # Strip non-numeric suffixes (e.g. "4.1-beta") before converting to int.
+        _raw = [int(re.sub(r"\D.*", "", x.strip()) or "0") for x in self.netbox.version.split(".")]
         version_split = (_raw + [0, 0])[:2]  # pad to (major, minor) to guard against single-component strings
 
         # Later than 3.2
@@ -184,6 +186,12 @@ class NetBox:
         # Note: Caching is now done externally before this method via preload_all_components()
 
         iterator = progress if progress is not None else device_types_to_add
+        # Pre-index change_report for O(1) lookup instead of an O(M) scan per device type.
+        change_by_key = (
+            {(c.manufacturer_slug, c.model): c for c in change_report.modified_device_types}
+            if update and change_report
+            else {}
+        )
         for device_type in iterator:
             # Remove file base path
             src_file = device_type["src"]
@@ -247,44 +255,35 @@ class NetBox:
                     )
                     continue
 
-                dt_change = None
-                # If update mode is enabled, update device type properties and components
-                if update and change_report:
-                    # Find the matching change entry once
-                    for change in change_report.modified_device_types:
-                        if change.manufacturer_slug == manufacturer_slug and change.model == device_type.get(
-                            "model", ""
-                        ):
-                            dt_change = change
-                            break
-
-                    if dt_change:
-                        # Apply property changes (exclude image properties — uploads are handled separately)
-                        if dt_change.property_changes:
-                            updates = {
-                                pc.property_name: pc.new_value
-                                for pc in dt_change.property_changes
-                                if pc.property_name not in ("front_image", "rear_image")
-                            }
-                            if updates:
-                                try:
-                                    dt.update(updates)
-                                    self.counter.update({"properties_updated": 1})
-                                    self.handle.verbose_log(
-                                        f"Updated device type {dt.model} properties: {list(updates.keys())}"
-                                    )
-                                except pynetbox.RequestError as e:
-                                    self.handle.log(f"Error updating device type {dt.model}: {e.error}")
-
-                        # Apply component changes
-                        if dt_change.component_changes:
-                            self.device_types.update_components(
-                                device_type, dt.id, dt_change.component_changes, parent_type="device"
-                            )
-                            if remove_components:
-                                self.device_types.remove_components(
-                                    dt.id, dt_change.component_changes, parent_type="device"
+                # O(1) lookup via pre-indexed change_by_key (built before the loop).
+                dt_change = change_by_key.get((manufacturer_slug, device_type.get("model", "")))
+                if dt_change:
+                    # Apply property changes (exclude image properties — uploads are handled separately)
+                    if dt_change.property_changes:
+                        updates = {
+                            pc.property_name: pc.new_value
+                            for pc in dt_change.property_changes
+                            if pc.property_name not in ("front_image", "rear_image")
+                        }
+                        if updates:
+                            try:
+                                dt.update(updates)
+                                self.counter.update({"properties_updated": 1})
+                                self.handle.verbose_log(
+                                    f"Updated device type {dt.model} properties: {list(updates.keys())}"
                                 )
+                            except pynetbox.RequestError as e:
+                                self.handle.log(f"Error updating device type {dt.model}: {e.error}")
+
+                    # Apply component changes
+                    if dt_change.component_changes:
+                        self.device_types.update_components(
+                            device_type, dt.id, dt_change.component_changes, parent_type="device"
+                        )
+                        if remove_components:
+                            self.device_types.remove_components(
+                                dt.id, dt_change.component_changes, parent_type="device"
+                            )
 
                 if dt_change is not None:
                     self.handle.verbose_log(
@@ -1075,7 +1074,7 @@ class DeviceTypes:
                             try:
                                 endpoint_name, advance = progress_updates.get(timeout=0.1)
                                 if endpoint_name not in pending:
-                                    progress_updates.put((endpoint_name, advance))
+                                    # Drop: endpoint already finalised; no task to advance.
                                     continue
                                 task_id = task_ids.get(endpoint_name)
                                 if task_id is not None:
@@ -1504,7 +1503,7 @@ class DeviceTypes:
                 if isinstance(excep.error, list):
                     for i, error in enumerate(excep.error):
                         if error:
-                            item_name = to_create[i].get("name", "Unknown")
+                            item_name = to_create[i].get("name", "Unknown") if i < len(to_create) else f"index {i}"
                             self.handle.log(f"Failed to create {component_name} '{item_name}': {error}{context_str}")
                 else:
                     failed_items = [x["name"] for x in to_create]
