@@ -53,6 +53,7 @@ class DeviceTypeChange:
 
     @property
     def has_changes(self) -> bool:
+        """Return True if this device type is new or has any property or component changes."""
         return self.is_new or bool(self.property_changes) or bool(self.component_changes)
 
     @property
@@ -82,6 +83,10 @@ DEVICE_TYPE_PROPERTIES = [
     "comments",
 ]
 
+# Image properties: YAML uses boolean flags, NetBox stores URL strings.
+# Only existence is compared (YAML=true vs NetBox=empty).
+IMAGE_PROPERTIES = ["front_image", "rear_image"]
+
 # Component type mapping: YAML key -> (cache_key, comparable_properties)
 COMPONENT_TYPES = {
     "interfaces": ("interface_templates", ["name", "type", "mgmt_only", "label", "enabled", "poe_mode", "poe_type"]),
@@ -100,6 +105,11 @@ COMPONENT_TYPES = {
 COMPONENT_ALIASES = {
     "power-port": "power-ports",
 }
+
+# canonical key -> list of aliases
+COMPONENT_ALIASES_BY_CANONICAL = {}
+for alias, canonical_key in COMPONENT_ALIASES.items():
+    COMPONENT_ALIASES_BY_CANONICAL.setdefault(canonical_key, []).append(alias)
 
 
 class ChangeDetector:
@@ -122,13 +132,15 @@ class ChangeDetector:
 
         Args:
             device_types: List of parsed YAML device type dictionaries
-            progress: Optional iterable wrapper (e.g. tqdm) for progress display
+            progress: Optional iterable wrapper (e.g. rich.progress) for progress display
 
         Returns:
             ChangeReport with categorized changes
         """
         report = ChangeReport()
         iterable = progress if progress is not None else device_types
+        existing_by_model = self.device_types.existing_device_types
+        existing_by_slug = self.device_types.existing_device_types_by_slug
 
         for dt_data in iterable:
             manufacturer_slug = dt_data["manufacturer"]["slug"]
@@ -136,11 +148,11 @@ class ChangeDetector:
             slug = dt_data.get("slug", "")
 
             # Try to find existing device type
-            existing_dt = self.device_types.existing_device_types.get((manufacturer_slug, model))
+            existing_dt = existing_by_model.get((manufacturer_slug, model))
 
             # Fallback to slug lookup
             if existing_dt is None and slug:
-                existing_dt = self.device_types.existing_device_types_by_slug.get((manufacturer_slug, slug))
+                existing_dt = existing_by_slug.get((manufacturer_slug, slug))
 
             change = DeviceTypeChange(
                 manufacturer_slug=manufacturer_slug,
@@ -156,6 +168,7 @@ class ChangeDetector:
                 # Existing - check for changes
                 change.netbox_id = existing_dt.id
                 change.property_changes = self._compare_device_type_properties(dt_data, existing_dt)
+                change.property_changes.extend(self._compare_image_properties(dt_data, existing_dt))
                 change.component_changes = self._compare_components(dt_data, existing_dt.id)
 
                 if change.has_changes:
@@ -235,6 +248,38 @@ class ChangeDetector:
 
         return changes
 
+    @staticmethod
+    def _compare_image_properties(yaml_data: dict, netbox_dt) -> List[PropertyChange]:
+        """
+        Compare image properties between YAML and NetBox device type.
+
+        YAML uses boolean flags (front_image: true) meaning "an image should exist",
+        while NetBox stores a URL string (or None). This only flags missing images
+        (YAML=true, NetBox=empty). Omitted keys and false values are ignored.
+
+        Args:
+            yaml_data: Parsed YAML device type dictionary
+            netbox_dt: pynetbox Record object for existing device type
+
+        Returns:
+            List of PropertyChange objects for missing images
+        """
+        changes = []
+        for prop in IMAGE_PROPERTIES:
+            yaml_value = yaml_data.get(prop)
+            if yaml_value is not True:
+                continue
+            netbox_value = getattr(netbox_dt, prop, None)
+            if not netbox_value:
+                changes.append(
+                    PropertyChange(
+                        property_name=prop,
+                        old_value=None,
+                        new_value=True,
+                    )
+                )
+        return changes
+
     def _compare_components(
         self,
         yaml_data: dict,
@@ -259,7 +304,7 @@ class ChangeDetector:
             yaml_components = list(yaml_data.get(yaml_key) or [])
 
             # Check whether the canonical key or any alias is actually present in YAML
-            aliases_for_key = [a for a, canonical in COMPONENT_ALIASES.items() if canonical == yaml_key]
+            aliases_for_key = COMPONENT_ALIASES_BY_CANONICAL.get(yaml_key, [])
             key_present = yaml_key in yaml_data or any(alias in yaml_data for alias in aliases_for_key)
 
             # Merge components from any aliases that map to this canonical key
@@ -361,11 +406,43 @@ class ChangeDetector:
 
         # Summary
         self.handle.log(f"New device types: {len(report.new_device_types)}")
-        self.handle.log(f"Modified device types: {len(report.modified_device_types)}")
         self.handle.log(f"Unchanged device types: {report.unchanged_count}")
 
-        # Details for modified device types (verbose mode)
         if report.modified_device_types:
+            # Compute category counts across all modified device types
+            ct_props = 0
+            ct_images = 0
+            ct_added = 0
+            ct_changed = 0
+            ct_removed = 0
+            for dt in report.modified_device_types:
+                if any(pc.property_name not in IMAGE_PROPERTIES for pc in dt.property_changes):
+                    ct_props += 1
+                if any(pc.property_name in IMAGE_PROPERTIES for pc in dt.property_changes):
+                    ct_images += 1
+                if any(c.change_type == ChangeType.COMPONENT_ADDED for c in dt.component_changes):
+                    ct_added += 1
+                if any(c.change_type == ChangeType.COMPONENT_CHANGED for c in dt.component_changes):
+                    ct_changed += 1
+                if any(c.change_type == ChangeType.COMPONENT_REMOVED for c in dt.component_changes):
+                    ct_removed += 1
+
+            self.handle.log(f"Modified device types: {len(report.modified_device_types)}")
+            parts = []
+            if ct_props:
+                parts.append(f"{ct_props} property")
+            if ct_images:
+                parts.append(f"{ct_images} missing image")
+            if ct_added:
+                parts.append(f"{ct_added} new component")
+            if ct_changed:
+                parts.append(f"{ct_changed} changed component")
+            if ct_removed:
+                parts.append(f"{ct_removed} removed component")
+            if parts:
+                self.handle.log(f"  Breakdown: {', '.join(parts)}")
+
+            # Per-device details
             self.handle.log("-" * 60)
             self.handle.log("MODIFIED DEVICE TYPES:")
             for dt in report.modified_device_types:
@@ -382,9 +459,13 @@ class ChangeDetector:
 
                 # Property changes
                 for pc in dt.property_changes:
-                    self.handle.verbose_log(
-                        f"      Property '{pc.property_name}': '{pc.old_value}' -> '{pc.new_value}'"
-                    )
+                    if pc.property_name in IMAGE_PROPERTIES:
+                        label = pc.property_name.replace("_", " ").title()
+                        self.handle.verbose_log(f"      {label}: missing in NetBox (YAML defines image)")
+                    else:
+                        self.handle.verbose_log(
+                            f"      Property '{pc.property_name}': '{pc.old_value}' -> '{pc.new_value}'"
+                        )
 
                 if added:
                     self.handle.verbose_log(f"      + {len(added)} new component(s)")
@@ -396,5 +477,11 @@ class ChangeDetector:
                     )
                     for comp in removed:
                         self.handle.verbose_log(f"        - {comp.component_type}: {comp.component_name}")
+
+            verbose_only = len(report.modified_device_types) - ct_removed
+            if verbose_only > 0 and not self.handle.args.verbose:
+                self.handle.log(f"  ({verbose_only} more without removals — use --verbose to list)")
+        else:
+            self.handle.log("Modified device types: 0")
 
         self.handle.log("=" * 60)

@@ -76,6 +76,12 @@ def parse_single_file(file):
 
 
 class DTLRepo:
+    """Manages a local clone of the Device Type Library Git repository.
+
+    Handles cloning or updating the repository on construction, provides helpers
+    for locating YAML device and module type files, and exposes a parallel file parser.
+    """
+
     def __new__(cls, *args, **kwargs):
         """
         Allocate and return a new instance of the class using the default object allocator.
@@ -133,15 +139,23 @@ class DTLRepo:
         return os.path.join(self.cwd, self.repo_path)
 
     def get_devices_path(self):
+        """Return the absolute path to the ``device-types`` directory within the repository."""
         return os.path.join(self.get_absolute_path(), "device-types")
 
     def get_modules_path(self):
+        """Return the absolute path to the ``module-types`` directory within the repository."""
         return os.path.join(self.get_absolute_path(), "module-types")
 
     def slug_format(self, name):
+        """Convert *name* to a slug by lowercasing and replacing non-word characters with hyphens."""
         return re_sub(r"\W+", "-", name.lower())
 
     def pull_repo(self):
+        """Pull the latest changes for the configured branch from the existing local repository.
+
+        Opens the existing clone at ``self.repo_path``, validates the origin URL, pulls from
+        origin, and checks out ``self.branch``. Reports errors via the configured exception handler.
+        """
         try:
             self.handle.log(
                 "Package devicetype-library is already installed, " + f"updating {self.get_absolute_path()}"
@@ -200,41 +214,49 @@ class DTLRepo:
             if folder.casefold() != "testing":
                 discovered_vendors.append({"name": folder, "slug": self.slug_format(folder)})
                 for extension in self.yaml_extensions:
-                    files.extend(glob(base_path + folder + f"/*.{extension}"))
+                    files.extend(glob(os.path.join(base_path, folder, f"*.{extension}")))
         return files, discovered_vendors
 
     def parse_files(self, files: list, slugs: list = None, progress=None):
         """
-        Parse YAML device files into device type dictionaries, optionally filtering by vendor slugs and advancing a progress iterable.
+        Parse YAML device files into device type dictionaries, optionally filtering by slug/model and advancing a progress iterable.
 
         Parameters:
             files (Iterable[str]): Paths of YAML files to parse.
-            slugs (list[str], optional): Vendor slug substrings used to filter results; an item is included if any provided slug is a case-insensitive substring of the item's `"slug"`. If omitted, no slug filtering is applied.
+            slugs (list[str], optional): Device-type slug or model substrings used to filter results;
+                an item is included if any provided slug is a case-insensitive substring of the item's
+                ``"slug"`` or ``"model"`` field. If omitted, no slug filtering is applied.
             progress (Iterable, optional): Iterable consumed in parallel with parsing to drive an external progress display; values are ignored but the iterable should yield once per file.
 
         Returns:
-            list: Parsed device type dictionaries. Files that fail parsing (returned as strings beginning with `"Error:"`) are logged via the instance handler and excluded. Parsed items that do not match the provided slug filters are also excluded.
+            list: Parsed device type dictionaries. Files that fail parsing (returned as strings beginning with ``"Error:"``) are logged via the instance handler and excluded. Parsed items that do not match the provided slug filters are also excluded.
         """
         deviceTypes = []
 
         # Use ThreadPoolExecutor for parallel parsing
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            # executor.map preserves order and processes the same files list
-            # progress (if provided) is a tqdm wrapper over the same files list
-            # Use strict=True to catch any length mismatch instead of silent truncation
-            files_list = list(files)  # Ensure we have a concrete list
-            items_iterator = progress if progress is not None else files_list
-            results = executor.map(parse_single_file, files_list)
+            try:
+                # executor.map preserves order and processes the same files list
+                # progress (if provided) is a progress wrapper over the same files list
+                # Use strict=True to catch any length mismatch instead of silent truncation
+                files_list = list(files)  # Ensure we have a concrete list
+                items_iterator = progress if progress is not None else files_list
+                results = executor.map(parse_single_file, files_list)
 
-            for _, data in zip(items_iterator, results, strict=True):
-                if isinstance(data, str) and data.startswith("Error:"):
-                    self.handle.verbose_log(data)
-                    continue
+                for _, data in zip(items_iterator, results, strict=True):
+                    if isinstance(data, str) and data.startswith("Error:"):
+                        self.handle.verbose_log(data)
+                        continue
 
-                if slugs and True not in [True if s.casefold() in data["slug"].casefold() else False for s in slugs]:
-                    self.handle.verbose_log(f"Skipping {data['model']}")
-                    continue
+                    if slugs:
+                        slug_target = str(data.get("slug") or data.get("model") or "").casefold()
+                        if not any(s.casefold() in slug_target for s in slugs):
+                            self.handle.verbose_log(f"Skipping {data.get('model', 'Unknown')}")
+                            continue
 
-                deviceTypes.append(data)
+                    deviceTypes.append(data)
+            except KeyboardInterrupt:
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise
 
         return deviceTypes

@@ -55,3 +55,28 @@ part_number: C9300-24T-A
             # Test with non-matching slug filtering
             results_filtered_out = repo.parse_files(files, slugs=["juniper"])
             assert len(results_filtered_out) == 0
+
+
+def test_parse_files_missing_slug_does_not_crash():
+    mock_args = MagicMock()
+    mock_args.url = "http://example.com"
+    mock_args.branch = "master"
+    mock_handle = MagicMock()
+
+    with patch("os.path.isdir", return_value=True), patch("repo.Repo"):
+        repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+
+        yaml_content = """
+manufacturer: Cisco
+model: AP4431-Module
+"""
+        with patch("builtins.open", mock_open(read_data=yaml_content)):
+            files = ["/tmp/repo/cisco/module.yaml"]
+
+            # Missing slug should still allow matching by model text
+            results_filtered = repo.parse_files(files, slugs=["ap4431"])
+            assert len(results_filtered) == 1
+
+            # Non-matching filter should skip without raising KeyError
+            results_filtered_out = repo.parse_files(files, slugs=["juniper"])
+            assert len(results_filtered_out) == 0
