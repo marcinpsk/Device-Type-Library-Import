@@ -262,7 +262,7 @@ class NetBox:
 
                 # O(1) lookup via pre-indexed change_by_key (built before the loop).
                 dt_change = change_by_key.get((manufacturer_slug, device_type.get("model", "")))
-                if dt_change:
+                if dt_change is not None:
                     # Apply property changes (exclude image properties — uploads are handled separately)
                     if dt_change.property_changes:
                         updates = {
@@ -1045,6 +1045,16 @@ class DeviceTypes:
                             records_by_endpoint[endpoint_name] = []
                         if endpoint_name in task_ids:
                             try:
+                                final_total = max(
+                                    endpoint_totals.get(endpoint_name, 0),
+                                    len(records_by_endpoint[endpoint_name]),
+                                    1,
+                                )
+                                progress.update(
+                                    task_ids[endpoint_name],
+                                    total=final_total,
+                                    completed=final_total,
+                                )
                                 progress.stop_task(task_ids[endpoint_name])
                             except Exception:
                                 pass
