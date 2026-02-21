@@ -95,7 +95,7 @@ COMPONENT_TYPES = {
     "power-outlets": ("power_outlet_templates", ["name", "type", "feed_leg", "label"]),
     "console-server-ports": ("console_server_port_templates", ["name", "type", "label"]),
     "rear-ports": ("rear_port_templates", ["name", "type", "positions", "label"]),
-    "front-ports": ("front_port_templates", ["name", "type", "label"]),
+    "front-ports": ("front_port_templates", ["name", "type", "rear_port_position", "label"]),
     "device-bays": ("device_bay_templates", ["name", "label"]),
     "module-bays": ("module_bay_templates", ["name", "position", "label"]),
 }

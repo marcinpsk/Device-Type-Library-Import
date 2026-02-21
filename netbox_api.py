@@ -66,12 +66,19 @@ class NetBox:
         self.ignore_ssl = settings.IGNORE_SSL_ERRORS
         self.modules = False
         self.new_filters = False
+        self.m2m_front_ports = False  # True for NetBox >= 4.5 (M2M port mappings)
         self.graphql = NetBoxGraphQLClient(self.url, self.token, self.ignore_ssl, log_handler=self.handle)
         self.connect_api()
         self.verify_compatibility()
         self.existing_manufacturers = self.get_manufacturers()
         self.device_types = DeviceTypes(
-            self.netbox, self.handle, self.counter, self.ignore_ssl, self.new_filters, graphql=self.graphql
+            self.netbox,
+            self.handle,
+            self.counter,
+            self.ignore_ssl,
+            self.new_filters,
+            graphql=self.graphql,
+            m2m_front_ports=self.m2m_front_ports,
         )
 
     def connect_api(self):
@@ -113,6 +120,12 @@ class NetBox:
         if version_split[0] > 4 or (version_split[0] == 4 and version_split[1] >= 1):
             self.new_filters = True
             self.handle.log(f"Netbox version {self.netbox.version} found. Using new filters.")
+
+        # NetBox 4.5 replaced FrontPortTemplate.rear_port (FK) + rear_port_position (int)
+        # with a ManyToMany through table (PortMapping).  The creation and read APIs differ.
+        # https://github.com/netbox-community/netbox/issues/20564
+        if version_split[0] > 4 or (version_split[0] == 4 and version_split[1] >= 5):
+            self.m2m_front_ports = True
 
     def get_manufacturers(self):
         """Fetch all manufacturers from NetBox via GraphQL and return them indexed by name."""
@@ -645,6 +658,29 @@ ENDPOINT_CACHE_MAP = {
 }
 
 
+class _FrontPortRecord45:
+    """Thin wrapper around a pynetbox front port template record from NetBox >= 4.5.
+
+    NetBox 4.5 replaced the ``rear_port`` FK + ``rear_port_position`` integer with a
+    ManyToMany ``rear_ports`` mapping (``PortMapping`` through-table).  This wrapper
+    extracts the first mapping entry's ``rear_port_position`` and exposes it as a
+    plain attribute so that :class:`~change_detector.ChangeDetector` can compare it
+    against YAML values using the same ``getattr(record, "rear_port_position")`` call
+    as before, without any changes to the detection logic.
+    """
+
+    __slots__ = ("_record", "rear_port_position")
+
+    def __init__(self, record):
+        object.__setattr__(self, "_record", record)
+        rear_ports = list(getattr(record, "rear_ports", None) or [])
+        rp_pos = getattr(rear_ports[0], "rear_port_position", 1) if rear_ports else None
+        object.__setattr__(self, "rear_port_position", rp_pos)
+
+    def __getattr__(self, name):
+        return getattr(self._record, name)
+
+
 class DeviceTypes:
     """Manages caching and creation of device-type component templates in NetBox."""
 
@@ -652,7 +688,7 @@ class DeviceTypes:
         """Allocate a new DeviceTypes instance using the default object allocator."""
         return super().__new__(cls)
 
-    def __init__(self, netbox, exception_handler, counter, ignore_ssl, new_filters, *, graphql):
+    def __init__(self, netbox, exception_handler, counter, ignore_ssl, new_filters, *, graphql, m2m_front_ports=False):
         """Initialize the DeviceTypes cache and load all existing device types from NetBox.
 
         Args:
@@ -662,6 +698,7 @@ class DeviceTypes:
             ignore_ssl (bool): Whether SSL certificate verification is disabled.
             new_filters (bool): Whether to use updated filter parameter names (NetBox >= 4.1).
             graphql (NetBoxGraphQLClient): GraphQL client for read queries.
+            m2m_front_ports (bool): Whether NetBox uses the 4.5+ M2M port mapping model.
         """
         self.netbox = netbox
         self.handle = exception_handler
@@ -669,6 +706,7 @@ class DeviceTypes:
         self.ignore_ssl = ignore_ssl
         self.new_filters = new_filters
         self.graphql = graphql
+        self.m2m_front_ports = m2m_front_ports
         self.cached_components = {}
         self._image_progress = None
         self.existing_device_types, self.existing_device_types_by_slug = self.get_device_types()
@@ -1054,8 +1092,14 @@ class DeviceTypes:
         Most endpoints are fetched via GraphQL for speed.  Endpoints listed in
         :attr:`REST_ONLY_ENDPOINTS` are fetched via the pynetbox REST client
         instead because their GraphQL schema is missing fields that are required
-        for accurate change detection (e.g. ``rear_port_position`` on
-        ``front_port_templates``).
+        for accurate change detection.
+
+        ``front_port_templates`` is always fetched via REST when running against
+        NetBox >= 4.5 because the 4.5 M2M port mapping model stores
+        ``rear_port_position`` inside the ``rear_ports`` list rather than as a
+        direct field (GraphQL exposes neither).  Each record is wrapped in
+        :class:`_FrontPortRecord45` so change-detection sees ``rear_port_position``
+        as a regular attribute.
 
         Args:
             endpoint_name (str): Component template endpoint name (e.g. ``"interface_templates"``).
@@ -1065,9 +1109,17 @@ class DeviceTypes:
         Returns:
             list: All component template records.
         """
-        if endpoint_name in self.REST_ONLY_ENDPOINTS:
+        use_rest = endpoint_name in self.REST_ONLY_ENDPOINTS or (
+            endpoint_name == "front_port_templates" and self.m2m_front_ports
+        )
+
+        if use_rest:
             endpoint = getattr(self.netbox.dcim, endpoint_name)
-            records = list(endpoint.all())
+            raw = list(endpoint.all())
+            if endpoint_name == "front_port_templates" and self.m2m_front_ports:
+                records = [_FrontPortRecord45(r) for r in raw]
+            else:
+                records = raw
             if progress_callback is not None and records:
                 progress_callback(endpoint_name, len(records))
             return records
@@ -1574,16 +1626,22 @@ class DeviceTypes:
         )
 
     def create_front_ports(self, front_ports, device_type, context=None):
-        """
-        Create front port templates for a device type, resolving rear-port references before creation.
+        """Create front port templates for a device type, resolving rear-port references.
 
-        For each front-port entry, attempts to resolve its `rear_port` name to the corresponding rear-port ID; front ports whose `rear_port` cannot be resolved are removed and a log entry is emitted (including the optional context). After resolving and pruning entries, the function creates the remaining front-port templates in NetBox and records created items via the shared counters/handlers.
+        Resolves each ``rear_port`` name to the corresponding rear-port template ID.
+        Front ports whose ``rear_port`` cannot be resolved are skipped with a log entry.
 
-        Parameters:
-            front_ports (list[dict]): List of front-port template definitions. Each item is expected to include a "name" and a "rear_port" (the rear-port name to resolve).
-            device_type (int): ID of the device type (device_type) to which the front ports belong.
-            context (str | None): Optional context string appended to log messages for disambiguation.
+        On NetBox >= 4.5 the M2M port-mapping model is used: the resolved ID and
+        ``rear_port_position`` are sent as ``rear_ports: [{position, rear_port,
+        rear_port_position}]`` instead of the legacy ``rear_port`` / ``rear_port_position``
+        top-level fields (https://github.com/netbox-community/netbox/issues/20564).
+
+        Args:
+            front_ports (list[dict]): List of front-port template definitions.
+            device_type (int): ID of the parent device type.
+            context (str | None): Optional context string appended to log messages.
         """
+        m2m = self.m2m_front_ports
 
         def link_rear_ports(items, pid):
             existing_rp = self._get_cached_or_fetch(
@@ -1592,19 +1650,27 @@ class DeviceTypes:
 
             ports_to_remove = []
             for port in items:
-                try:
-                    rear_port = existing_rp[port["rear_port"]]
-                    port["rear_port"] = rear_port.id
-                except KeyError:
+                rp_name = port.get("rear_port")
+                if not rp_name:
+                    continue
+                rear_port = existing_rp.get(rp_name)
+                if rear_port is None:
                     available = list(existing_rp.keys()) if existing_rp else []
                     ctx = f" (Context: {context})" if context else ""
                     self.handle.log(
-                        f'Could not find Rear Port "{port["rear_port"]}" for Front Port "{port["name"]}". '
+                        f'Could not find Rear Port "{rp_name}" for Front Port "{port["name"]}". '
                         f"Available: {available}{ctx}"
                     )
                     ports_to_remove.append(port)
+                    continue
 
-            # Remove front ports with invalid rear port references
+                if m2m:
+                    rp_pos = port.pop("rear_port_position", 1)
+                    port.pop("rear_port", None)
+                    port["rear_ports"] = [{"position": 1, "rear_port": rear_port.id, "rear_port_position": rp_pos}]
+                else:
+                    port["rear_port"] = rear_port.id
+
             for port in ports_to_remove:
                 items.remove(port)
 
@@ -1762,38 +1828,46 @@ class DeviceTypes:
         )
 
     def create_module_front_ports(self, front_ports, module_type, context=None):
-        """
-        Create front-port templates for a module-type and link them to their rear ports.
+        """Create front-port templates for a module type, resolving rear-port references.
 
-        Creates any missing module front-port templates under the given module_type. If a front port references a rear port by name, the rear port name is resolved to the rear-port ID; front ports with unresolved rear-port names are removed from creation and a log message is emitted (includes `context` if provided).
+        On NetBox >= 4.5 the M2M port-mapping model is used; see :meth:`create_front_ports`
+        for details.
 
-        Parameters:
-            front_ports (list[dict]): List of front-port template definitions. Each dict must include at least "name"; items may reference a rear port by the "rear_port" key (name).
-            module_type (int | object): Module type identifier or object to associate the created front ports with.
-            context (str | None): Optional context string appended to log messages for easier debugging.
+        Args:
+            front_ports (list[dict]): List of front-port template definitions.
+            module_type (int | object): Module type identifier to associate the templates with.
+            context (str | None): Optional context string appended to log messages.
         """
+        m2m = self.m2m_front_ports
 
         def link_rear_ports(items, pid):
-            """Resolve each front-port's rear_port name to the corresponding rear-port ID for a module."""
             existing_rp = self._get_cached_or_fetch(
                 "rear_port_templates", pid, "module", self.netbox.dcim.rear_port_templates
             )
 
             ports_to_remove = []
             for port in items:
-                try:
-                    rear_port = existing_rp[port["rear_port"]]
-                    port["rear_port"] = rear_port.id
-                except KeyError:
+                rp_name = port.get("rear_port")
+                if not rp_name:
+                    continue
+                rear_port = existing_rp.get(rp_name)
+                if rear_port is None:
                     available = list(existing_rp.keys()) if existing_rp else []
                     ctx = f" (Context: {context})" if context else ""
                     self.handle.log(
-                        f'Could not find Rear Port "{port["rear_port"]}" for Front Port "{port["name"]}". '
+                        f'Could not find Rear Port "{rp_name}" for Front Port "{port["name"]}". '
                         f"Available: {available}{ctx}"
                     )
                     ports_to_remove.append(port)
+                    continue
 
-            # Remove front ports with invalid rear port references
+                if m2m:
+                    rp_pos = port.pop("rear_port_position", 1)
+                    port.pop("rear_port", None)
+                    port["rear_ports"] = [{"position": 1, "rear_port": rear_port.id, "rear_port_position": rp_pos}]
+                else:
+                    port["rear_port"] = rear_port.id
+
             for port in ports_to_remove:
                 items.remove(port)
 
