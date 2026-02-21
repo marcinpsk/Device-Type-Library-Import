@@ -1414,6 +1414,15 @@ class DeviceTypes:
             if not components_to_add:
                 continue
 
+            # Front ports require special link_rear_ports post-processing (including M2M on 4.5+).
+            # Delegate to the dedicated create methods instead of calling _create_generic directly.
+            if comp_type == "front-ports":
+                if parent_type == "device":
+                    self.create_front_ports(components_to_add, device_type_id)
+                else:
+                    self.create_module_front_ports(components_to_add, device_type_id)
+                continue
+
             # Format component name for logging (e.g. "power_port_templates" -> "Power Port")
             component_name = endpoint_attr.replace("_templates", "").replace("_", " ").title()
 
