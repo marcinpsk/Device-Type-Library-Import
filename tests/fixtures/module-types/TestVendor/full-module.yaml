@@ -1,0 +1,25 @@
+---
+manufacturer: TestVendor
+model: Test Full Module
+part_number: TFM-1
+interfaces:
+  - name: '{module}:eth0'
+    type: 1000base-t
+power-ports:
+  - name: '{module}:PSU'
+    type: iec-60320-c14
+console-ports:
+  - name: '{module}:Console'
+    type: de-9
+console-server-ports:
+  - name: '{module}:CSP1'
+    type: de-9
+rear-ports:
+  - name: '{module}:RP1'
+    type: 8p8c
+    positions: 1
+front-ports:
+  - name: '{module}:FP1'
+    type: 8p8c
+    rear_port: '{module}:RP1'
+    rear_port_position: 1

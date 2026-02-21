@@ -1,0 +1,37 @@
+---
+manufacturer: TestVendor
+model: Test Patch Panel 4-Port
+slug: testvendor-patch-panel-4
+part_number: TPP-4
+u_height: 1
+is_full_depth: false
+front-ports:
+  - name: FP1
+    type: 8p8c
+    rear_port: RP1
+    rear_port_position: 1
+  - name: FP2
+    type: 8p8c
+    rear_port: RP2
+    rear_port_position: 1
+  - name: FP3
+    type: 8p8c
+    rear_port: RP3
+    rear_port_position: 1
+  - name: FP4
+    type: 8p8c
+    rear_port: RP4
+    rear_port_position: 1
+rear-ports:
+  - name: RP1
+    type: 110-punch
+    positions: 1
+  - name: RP2
+    type: 110-punch
+    positions: 1
+  - name: RP3
+    type: 110-punch
+    positions: 1
+  - name: RP4
+    type: 110-punch
+    positions: 1

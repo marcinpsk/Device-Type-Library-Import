@@ -1,0 +1,32 @@
+---
+manufacturer: TestVendor
+model: Test Fiber Cassette 4-Port
+part_number: TFC-4
+rear-ports:
+  - name: '{module}:RP1'
+    type: splice
+    positions: 4
+  - name: '{module}:RP2'
+    type: splice
+    positions: 1
+front-ports:
+  - name: '{module}:FP1'
+    type: lc
+    rear_port: '{module}:RP1'
+    rear_port_position: 1
+  - name: '{module}:FP2'
+    type: lc
+    rear_port: '{module}:RP1'
+    rear_port_position: 2
+  - name: '{module}:FP3'
+    type: lc
+    rear_port: '{module}:RP1'
+    rear_port_position: 3
+  - name: '{module}:FP4'
+    type: lc
+    rear_port: '{module}:RP1'
+    rear_port_position: 4
+  - name: '{module}:FP5'
+    type: lc
+    rear_port: '{module}:RP2'
+    rear_port_position: 1
