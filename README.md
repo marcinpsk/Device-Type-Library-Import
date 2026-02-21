@@ -128,24 +128,6 @@ no longer present in the YAML definition.
 - Review the change detection report before enabling component removal
 - Test on a staging NetBox instance first if possible
 
-## Repair: broken front port mappings (NetBox 4.5 migration)
-
-NetBox 4.5 replaced the `FrontPortTemplate.rear_port` foreign key with a
-many-to-many mapping (`PortMapping`).  Device types imported **before** this
-importer was updated will have front port templates with `rear_ports: []`.
-
-To detect and delete those broken records so the importer can recreate them
-correctly, run:
-
-```shell
-# dry-run (reports only)
-uv run repair_front_ports.py
-
-# apply fix (deletes broken records; importer recreates them on next run)
-uv run repair_front_ports.py --fix
-uv run nb-dt-import.py --update
-```
-
 ## Docker build
 
 It's possible to use this project as a docker container.

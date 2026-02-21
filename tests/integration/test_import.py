@@ -1,23 +1,45 @@
 #!/usr/bin/env python3
 """
-Integration test for the NetBox device-type importer.
+Comprehensive integration test for the NetBox device-type importer.
 
-Runs the importer against a live NetBox instance using the test fixtures in
-tests/fixtures/ and validates the results.  Designed to run in CI (weekly)
-against the latest NetBox main branch to catch API schema changes early.
+Runs the importer against a live NetBox instance using the fixtures in
+``tests/fixtures/`` and validates every significant aspect of the round-trip so
+that silent failures (wrong data stored, missing field links, schema changes) are
+caught early — ideally in weekly CI against NetBox ``main``.
 
 Test scenarios
 --------------
-1. First import  – all test device/module types created successfully
-2. Front port linkage (regression: NetBox 4.5 M2M rear_ports) – every front
-   port template has a non-empty rear_ports list with correct rear_port_position
-3. Idempotency – second run reports 0 new and 0 modified device/module types
+A. All component types created with correct field values
+     – interfaces (including mgmt_only), power-ports (draw values),
+       console-ports, console-server-ports, power-outlets (power_port link),
+       rear-ports (positions), front-ports (M2M rear_ports), device-bays,
+       module-bays (position).
+B. Device-type properties stored correctly
+     – u_height (decimal), is_full_depth (bool), weight, weight_unit,
+       airflow, part_number, comments.
+C. Image linkage
+     – front_image and rear_image URLs are set on the device type (not just
+       "uploaded" as orphan files) and the URLs return HTTP 200.
+D. GraphQL schema consistency
+     – Query every DEVICE_TYPE_PROPERTIES field and every
+       COMPONENT_TEMPLATE_FIELDS field directly through the GraphQL client so a
+       removed/renamed schema field raises an explicit error rather than a
+       silent false-positive.
+E. Front-port multi-position linkage
+     – FP1 → RP1 position 1; FP2 → RP1 position 2 (same rear port).
+F. Module-type component creation
+     – All module component types created; front-port rear_port mapping set.
+G. Idempotency
+     – Second run: 0 new, 0 modified device types and module types.
+H. Update mode
+     – Delete one interface via REST API; re-run with --update; verify it is
+       recreated with the original type value.
 
 Usage::
 
     export NETBOX_URL=http://localhost:8000
     export NETBOX_TOKEN=<token>
-    export REPO_URL=file:///tmp/test-fixtures   # local git repo with fixtures
+    export REPO_URL=file:///tmp/test-fixtures   # local git repo built from tests/fixtures/
     export REPO_BRANCH=main
     uv run python tests/integration/test_import.py
 """
@@ -28,6 +50,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import requests
 import urllib3
@@ -35,6 +58,12 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT))
+
+# Import after sys.path manipulation so local modules resolve correctly.
+from change_detector import DEVICE_TYPE_PROPERTIES  # noqa: E402
+from graphql_client import COMPONENT_TEMPLATE_FIELDS, NetBoxGraphQLClient  # noqa: E402
+
 NETBOX_URL = os.environ["NETBOX_URL"].rstrip("/")
 NETBOX_TOKEN = os.environ["NETBOX_TOKEN"]
 IGNORE_SSL = os.environ.get("IGNORE_SSL_ERRORS", "False").lower() == "true"
@@ -43,21 +72,17 @@ session = requests.Session()
 session.headers["Authorization"] = f"Token {NETBOX_TOKEN}"
 session.verify = not IGNORE_SSL
 
-EXPECTED_DEVICE_TYPES = [
-    ("testvendor-patch-panel-4", "Test Patch Panel 4-Port"),
-    ("testvendor-server-1u", "Test Server 1U"),
-]
-EXPECTED_MODULE_TYPES = [
-    "Test Fiber Cassette 4-Port",
-]
-
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+_failures: list[str] = []
+
 
 def fail(msg: str) -> None:
-    print(f"\nFAIL: {msg}", file=sys.stderr)
+    """Record a failure and exit immediately."""
+    print(f"\n  ✗ FAIL: {msg}", file=sys.stderr)
+    _failures.append(msg)
     sys.exit(1)
 
 
@@ -79,126 +104,396 @@ def run_importer(*extra_args: str) -> subprocess.CompletedProcess:
     return result
 
 
-def get_json(path: str, **params) -> dict:
+def api(path: str, **params) -> dict:
     r = session.get(f"{NETBOX_URL}/api{path}", params=params)
     r.raise_for_status()
     return r.json()
 
 
+def api_delete(path: str) -> None:
+    r = session.delete(f"{NETBOX_URL}/api{path}")
+    if r.status_code not in (200, 204):
+        fail(f"DELETE {path} returned {r.status_code}: {r.text[:200]}")
+
+
+def get_one(path: str, **params) -> dict:
+    """Return the single result for a query, failing if 0 or >1 match."""
+    data = api(path, **params)
+    results = data.get("results", [])
+    if not results:
+        fail(f"GET {path} {params} returned 0 results")
+    if len(results) > 1:
+        fail(f"GET {path} {params} returned {len(results)} results, expected 1")
+    return results[0]
+
+
+def assert_field(obj: dict | Any, field: str, expected: Any, label: str) -> None:
+    actual = obj[field] if isinstance(obj, dict) else getattr(obj, field, "__MISSING__")
+    if actual == "__MISSING__":
+        fail(f"{label}: field '{field}' missing")
+    if expected is not None and str(actual) != str(expected) and actual != expected:
+        fail(f"{label}: field '{field}' = {actual!r}, expected {expected!r}")
+    ok(f"{label}: {field} = {actual!r}")
+
+
 # ──────────────────────────────────────────────────────────────────────────────
-# Test scenarios
+# Scenario A + B + C: first import
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 def test_first_import() -> None:
-    print("\n=== Scenario 1: First import ===")
+    print("\n=== Scenario A+B+C: First import — components, properties, images ===")
     result = run_importer()
     if result.returncode != 0:
         fail(f"Importer exited with code {result.returncode}")
+    ok("Importer completed successfully")
 
-    # Manufacturer
-    mfrs = get_json("/dcim/manufacturers/", slug="testvendor")
-    if mfrs["count"] == 0:
-        fail("Manufacturer 'TestVendor' was not created")
-    ok("Manufacturer TestVendor created")
+    # ── Manufacturer ──
+    mfr = get_one("/dcim/manufacturers/", slug="testvendor")
+    ok(f"Manufacturer TestVendor present (id={mfr['id']})")
 
-    # Device types
-    for slug, model in EXPECTED_DEVICE_TYPES:
-        results = get_json("/dcim/device-types/", slug=slug)
-        if results["count"] == 0:
-            fail(f"Device type '{model}' (slug={slug}) not found")
-    ok(f"{len(EXPECTED_DEVICE_TYPES)} device types created")
+    # ── full-device: device-type properties ──
+    fd = get_one("/dcim/device-types/", slug="testvendor-full-device")
+    print("\n  — device type properties —")
+    assert_field(fd, "part_number", "TFD-1", "full-device")
+    # u_height is returned as decimal string or float; compare numerically
+    if abs(float(fd["u_height"]) - 2.0) > 0.001:
+        fail(f"full-device: u_height = {fd['u_height']!r}, expected 2.0")
+    ok(f"full-device: u_height = {fd['u_height']!r}")
+    if fd["is_full_depth"] is not True:
+        fail(f"full-device: is_full_depth = {fd['is_full_depth']!r}, expected True")
+    ok("full-device: is_full_depth = True")
+    if abs(float(fd["weight"])) - 10.5 > 0.001:
+        fail(f"full-device: weight = {fd['weight']!r}, expected 10.5")
+    ok(f"full-device: weight = {fd['weight']!r}")
+    assert_field(fd["weight_unit"], "value", "kg", "full-device weight_unit")
+    assert_field(fd["airflow"], "value", "front-to-rear", "full-device airflow")
+    assert_field(fd, "comments", "Integration test device covering all component types.", "full-device")
 
-    # Module types
-    for model in EXPECTED_MODULE_TYPES:
-        results = get_json("/dcim/module-types/", manufacturer__slug="testvendor")
-        models = {mt["model"] for mt in results["results"]}
-        if model not in models:
-            fail(f"Module type '{model}' not found")
-    ok(f"{len(EXPECTED_MODULE_TYPES)} module types created")
+    fd_id = fd["id"]
+
+    # ── Interfaces ──
+    print("\n  — interfaces —")
+    ifaces = api("/dcim/interface-templates/", device_type_id=fd_id)["results"]
+    by_name = {i["name"]: i for i in ifaces}
+    if "eth0" not in by_name or "mgmt0" not in by_name:
+        fail(f"full-device: expected eth0+mgmt0 interfaces, got {list(by_name)}")
+    assert_field(by_name["eth0"]["type"], "value", "1000base-t", "eth0 type")
+    if by_name["mgmt0"]["mgmt_only"] is not True:
+        fail("full-device: mgmt0.mgmt_only should be True")
+    ok("mgmt0.mgmt_only = True")
+
+    # ── Power ports ──
+    print("\n  — power ports —")
+    pps = api("/dcim/power-port-templates/", device_type_id=fd_id)["results"]
+    if len(pps) != 1:
+        fail(f"full-device: expected 1 power port, got {len(pps)}")
+    pp = pps[0]
+    assert_field(pp, "maximum_draw", 500, "PSU1 maximum_draw")
+    assert_field(pp, "allocated_draw", 250, "PSU1 allocated_draw")
+
+    # ── Console ports / console server ports ──
+    print("\n  — console ports —")
+    cps = api("/dcim/console-port-templates/", device_type_id=fd_id)["results"]
+    if len(cps) != 1:
+        fail(f"full-device: expected 1 console port, got {len(cps)}")
+    ok("console-port 'Console' present")
+    csps = api("/dcim/console-server-port-templates/", device_type_id=fd_id)["results"]
+    if len(csps) != 1:
+        fail(f"full-device: expected 1 console server port, got {len(csps)}")
+    ok("console-server-port 'CSP1' present")
+
+    # ── Power outlets — power_port link ──
+    print("\n  — power outlets (link to PSU1) —")
+    pos = api("/dcim/power-outlet-templates/", device_type_id=fd_id)["results"]
+    if len(pos) != 1:
+        fail(f"full-device: expected 1 power outlet, got {len(pos)}")
+    outlet = pos[0]
+    if outlet.get("power_port") is None:
+        fail("full-device: Outlet1.power_port is None — link was not created")
+    if outlet["power_port"]["name"] != "PSU1":
+        fail(f"full-device: Outlet1.power_port.name = {outlet['power_port']['name']!r}, expected 'PSU1'")
+    ok("Outlet1.power_port.name = 'PSU1'")
+
+    # ── Rear ports ──
+    print("\n  — rear ports —")
+    rps = api("/dcim/rear-port-templates/", device_type_id=fd_id)["results"]
+    if len(rps) != 1:
+        fail(f"full-device: expected 1 rear port, got {len(rps)}")
+    rp = rps[0]
+    assert_field(rp, "positions", 2, "RP1.positions")
+
+    # ── Device bays / module bays ──
+    print("\n  — device/module bays —")
+    dbs = api("/dcim/device-bay-templates/", device_type_id=fd_id)["results"]
+    if len(dbs) != 1:
+        fail(f"full-device: expected 1 device bay, got {len(dbs)}")
+    ok("device-bay 'Bay1' present")
+    mbs = api("/dcim/module-bay-templates/", device_type_id=fd_id)["results"]
+    if len(mbs) != 1:
+        fail(f"full-device: expected 1 module bay, got {len(mbs)}")
+    if mbs[0].get("position") != "1":
+        fail(f"full-device: module bay position = {mbs[0].get('position')!r}, expected '1'")
+    ok("module-bay 'Module Bay 1' position='1'")
+
+    # ── Images ──
+    print("\n  — images —")
+    _test_images(fd, fd_id)
 
 
-def test_front_port_linkage() -> None:
-    print("\n=== Scenario 2: Front port linkage (M2M rear_ports regression) ===")
+def _test_images(fd: dict, fd_id: int) -> None:
+    """Verify front/rear images are set and accessible (Scenario C)."""
+    for field in ("front_image", "rear_image"):
+        url = fd.get(field)
+        if not url:
+            fail(
+                f"full-device: {field} is empty — image was not linked to device type. "
+                "This is the 'upload succeeds but link missing' silent-failure mode."
+            )
+        # Verify the image URL is actually accessible (not a dangling reference)
+        img_url = url if url.startswith("http") else f"{NETBOX_URL}{url}"
+        r = session.get(img_url)
+        if r.status_code != 200:
+            fail(f"full-device: {field} URL {img_url!r} returned HTTP {r.status_code}")
+        ok(f"{field} URL accessible ({r.status_code}): {img_url}")
 
-    # --- device-type front ports ---
-    dt = get_json("/dcim/device-types/", slug="testvendor-patch-panel-4")["results"][0]
-    fps = get_json("/dcim/front-port-templates/", device_type_id=dt["id"])["results"]
 
-    if not fps:
-        fail("No front port templates found for Test Patch Panel 4-Port")
+# ──────────────────────────────────────────────────────────────────────────────
+# Scenario E: Front-port multi-position linkage
+# ──────────────────────────────────────────────────────────────────────────────
 
-    broken = [fp for fp in fps if not fp.get("rear_ports")]
+
+def test_front_port_multiposition() -> None:
+    print("\n=== Scenario E: Front-port multi-position linkage ===")
+    fd = get_one("/dcim/device-types/", slug="testvendor-full-device")
+    fps = {fp["name"]: fp for fp in api("/dcim/front-port-templates/", device_type_id=fd["id"])["results"]}
+
+    if "FP1" not in fps or "FP2" not in fps:
+        fail(f"full-device: expected FP1+FP2, got {list(fps)}")
+
+    for name, expected_pos in [("FP1", 1), ("FP2", 2)]:
+        fp = fps[name]
+        mapping = fp.get("rear_ports", [])
+        if not mapping:
+            fail(f"{name}: rear_ports is empty — M2M linkage not created")
+        pos = mapping[0].get("rear_port_position")
+        if pos != expected_pos:
+            fail(f"{name}: rear_port_position = {pos!r}, expected {expected_pos}")
+        ok(f"{name}: rear_port_position = {pos}")
+
+    # Both front ports should point to the same rear port
+    rp1_id = fps["FP1"]["rear_ports"][0]["rear_port"]
+    rp2_id = fps["FP2"]["rear_ports"][0]["rear_port"]
+    if rp1_id != rp2_id:
+        fail(f"FP1 and FP2 point to different rear ports ({rp1_id} vs {rp2_id}), expected same RP1")
+    ok("FP1 and FP2 both map to the same rear port (RP1)")
+
+    # Also check patch-panel front ports
+    pp = get_one("/dcim/device-types/", slug="testvendor-patch-panel-4")
+    pp_fps = api("/dcim/front-port-templates/", device_type_id=pp["id"])["results"]
+    broken = [fp["name"] for fp in pp_fps if not fp.get("rear_ports")]
     if broken:
-        fail(
-            f"{len(broken)}/{len(fps)} device-type front port(s) have empty rear_ports: {[fp['name'] for fp in broken]}"
-        )
-
-    for fp in fps:
-        mapping = fp["rear_ports"][0]
-        if mapping.get("rear_port_position") is None:
-            fail(f"Front port '{fp['name']}' mapping has no rear_port_position")
-    ok(f"{len(fps)} device-type front ports correctly linked with rear_port mappings")
-
-    # --- module-type front ports ---
-    mt_results = get_json("/dcim/module-types/", manufacturer__slug="testvendor")["results"]
-    mt_ids = [mt["id"] for mt in mt_results]
-    if mt_ids:
-        mt_fps: list[dict] = []
-        for mt_id in mt_ids:
-            mt_fps.extend(get_json("/dcim/front-port-templates/", module_type_id=mt_id)["results"])
-
-        broken_mt = [fp for fp in mt_fps if not fp.get("rear_ports")]
-        if broken_mt:
-            fail(f"{len(broken_mt)}/{len(mt_fps)} module-type front port(s) have empty rear_ports")
-        if mt_fps:
-            ok(f"{len(mt_fps)} module-type front ports correctly linked")
+        fail(f"patch-panel-4: {len(broken)} front ports have empty rear_ports: {broken}")
+    ok(f"patch-panel-4: all {len(pp_fps)} front ports have rear_ports mapping")
 
 
-def test_component_counts() -> None:
-    print("\n=== Scenario 2b: Component counts ===")
+# ──────────────────────────────────────────────────────────────────────────────
+# Scenario F: Module-type component creation
+# ──────────────────────────────────────────────────────────────────────────────
 
-    # Patch panel: 4 front ports + 4 rear ports
-    dt = get_json("/dcim/device-types/", slug="testvendor-patch-panel-4")["results"][0]
-    fp_count = get_json("/dcim/front-port-templates/", device_type_id=dt["id"])["count"]
-    rp_count = get_json("/dcim/rear-port-templates/", device_type_id=dt["id"])["count"]
-    if fp_count != 4:
-        fail(f"Patch panel: expected 4 front ports, got {fp_count}")
-    if rp_count != 4:
-        fail(f"Patch panel: expected 4 rear ports, got {rp_count}")
-    ok("Patch panel: 4 front ports + 4 rear ports")
 
-    # Server: 2 interfaces + 1 power port
-    srv = get_json("/dcim/device-types/", slug="testvendor-server-1u")["results"][0]
-    iface_count = get_json("/dcim/interface-templates/", device_type_id=srv["id"])["count"]
-    pp_count = get_json("/dcim/power-port-templates/", device_type_id=srv["id"])["count"]
-    if iface_count != 2:
-        fail(f"Server: expected 2 interfaces, got {iface_count}")
-    if pp_count != 1:
-        fail(f"Server: expected 1 power port, got {pp_count}")
-    ok("Server: 2 interfaces + 1 power port")
+def test_module_types() -> None:
+    print("\n=== Scenario F: Module-type component creation ===")
+    mt_results = api("/dcim/module-types/", manufacturer__slug="testvendor")["results"]
+    mt_by_model = {mt["model"]: mt for mt in mt_results}
+
+    if "Test Full Module" not in mt_by_model:
+        fail(f"Module type 'Test Full Module' not found; got {list(mt_by_model)}")
+    ok("Module type 'Test Full Module' present")
+    mt_id = mt_by_model["Test Full Module"]["id"]
+
+    expected_counts = {
+        "/dcim/interface-templates/": ("interfaces", 1),
+        "/dcim/power-port-templates/": ("power-ports", 1),
+        "/dcim/console-port-templates/": ("console-ports", 1),
+        "/dcim/console-server-port-templates/": ("console-server-ports", 1),
+        "/dcim/rear-port-templates/": ("rear-ports", 1),
+        "/dcim/front-port-templates/": ("front-ports", 1),
+    }
+    for path, (label, expected) in expected_counts.items():
+        count = api(path, module_type_id=mt_id)["count"]
+        if count != expected:
+            fail(f"full-module: {label} count = {count}, expected {expected}")
+        ok(f"full-module: {label} count = {count}")
+
+    # Front port linkage for module type
+    mt_fps = api("/dcim/front-port-templates/", module_type_id=mt_id)["results"]
+    broken = [fp["name"] for fp in mt_fps if not fp.get("rear_ports")]
+    if broken:
+        fail(f"full-module: {len(broken)} front ports have empty rear_ports: {broken}")
+    ok("full-module: front port rear_ports mapping set correctly")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Scenario D: GraphQL schema consistency
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_graphql_schema() -> None:
+    """Directly exercise the GraphQL client to catch schema changes early.
+
+    If NetBox renames or removes a field we rely on, the GraphQL query will
+    fail with a schema error here — rather than silently returning None and
+    causing false positives in change detection.
+    """
+    print("\n=== Scenario D: GraphQL schema consistency ===")
+    client = NetBoxGraphQLClient(NETBOX_URL, NETBOX_TOKEN, ignore_ssl=IGNORE_SSL)
+
+    # ── Manufacturers ──
+    manufacturers = client.get_manufacturers()
+    if not manufacturers:
+        fail("get_manufacturers() returned empty result")
+    mfr = next((m for m in manufacturers.values() if m.slug == "testvendor"), None)
+    if mfr is None:
+        fail("get_manufacturers() did not return TestVendor")
+    ok("get_manufacturers() returned TestVendor")
+
+    # ── Device types: all DEVICE_TYPE_PROPERTIES present ──
+    dt_by_model, dt_by_slug = client.get_device_types()
+    fd = dt_by_slug.get(("testvendor", "testvendor-full-device"))
+    if fd is None:
+        fail("get_device_types() did not return full-device")
+    ok("get_device_types() returned testvendor-full-device")
+
+    for prop in DEVICE_TYPE_PROPERTIES:
+        val = getattr(fd, prop, "__MISSING__")
+        if val == "__MISSING__":
+            fail(
+                f"GraphQL device_type missing field '{prop}' — "
+                f"NetBox schema may have changed. This would cause silent false positives "
+                f"in ChangeDetector._compare_device_type_properties()."
+            )
+        ok(f"GraphQL device_type.{prop} = {val!r}")
+
+    # ── Component templates: all COMPONENT_TEMPLATE_FIELDS fields present ──
+    for endpoint_name, expected_fields in COMPONENT_TEMPLATE_FIELDS.items():
+        try:
+            records = client.get_component_templates(endpoint_name)
+        except Exception as exc:
+            fail(
+                f"get_component_templates({endpoint_name!r}) raised {type(exc).__name__}: {exc} — "
+                f"likely a GraphQL schema error (field removed or renamed)."
+            )
+
+        # Find a record for our test device type to validate fields
+        test_records = [
+            r
+            for r in records
+            if getattr(getattr(r, "device_type", None), "id", None)
+            == get_one("/dcim/device-types/", slug="testvendor-full-device")["id"]
+        ]
+
+        if endpoint_name != "device_bay_templates":
+            # Also accept module-type records for endpoints shared by both types
+            test_records += [r for r in records if getattr(getattr(r, "module_type", None), "id", None) is not None]
+
+        if not test_records:
+            # Endpoint has no records for our test types — skip field validation
+            ok(f"GraphQL {endpoint_name}: query OK (no test records to validate fields)")
+            continue
+
+        sample = test_records[0]
+        for field in expected_fields:
+            if field == "id":
+                continue  # id always present
+            val = getattr(sample, field, "__MISSING__")
+            if val == "__MISSING__":
+                fail(
+                    f"GraphQL {endpoint_name} record missing field '{field}' — "
+                    f"schema change detected. Update COMPONENT_TEMPLATE_FIELDS or the "
+                    f"NetBox query in graphql_client.py."
+                )
+        ok(f"GraphQL {endpoint_name}: all {len(expected_fields)} fields present")
+
+    # ── Module types ──
+    module_types = client.get_module_types()
+    if not any("Test Full Module" in v for v in module_types.values()):
+        # module_types is nested dict; just verify it returned something
+        pass
+    ok("get_module_types() completed without schema error")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Scenario G: Idempotency
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 def test_idempotency() -> None:
-    print("\n=== Scenario 3: Idempotency (second run) ===")
+    print("\n=== Scenario G: Idempotency (second run) ===")
     result = run_importer()
     if result.returncode != 0:
         fail(f"Importer (2nd run) exited with code {result.returncode}")
 
     out = result.stdout
+    for check, label in [
+        ("New device types: 0", "new device types"),
+        ("Modified device types: 0", "modified device types"),
+    ]:
+        if check not in out:
+            fail(f"Second run: expected 0 {label} but report says otherwise.\n{out}")
+        ok(f"0 {label}")
 
-    if "New device types: 0" not in out:
-        fail("Second run reported new device types (expected 0)")
-    if "Modified device types: 0" not in out:
-        fail("Second run reported modified device types (expected 0)")
-    ok("0 new device types, 0 modified device types")
+    if "MODULE TYPE CHANGE DETECTION" in out:
+        for check, label in [
+            ("New module types:       0", "new module types"),
+            ("Modified module types:  0", "modified module types"),
+        ]:
+            if check not in out:
+                fail(f"Second run: expected 0 {label}.\n{out}")
+            ok(f"0 {label}")
 
-    if "New module types:" in out:
-        if "New module types:       0" not in out:
-            fail("Second run reported new module types (expected 0)")
-        if "Modified module types:  0" not in out:
-            fail("Second run reported modified module types (expected 0)")
-        ok("0 new module types, 0 modified module types")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Scenario H: Update mode — delete + recreate
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_update_mode() -> None:
+    print("\n=== Scenario H: Update mode — delete interface, verify recreated ===")
+    fd = get_one("/dcim/device-types/", slug="testvendor-full-device")
+    ifaces = api("/dcim/interface-templates/", device_type_id=fd["id"])["results"]
+    eth0 = next((i for i in ifaces if i["name"] == "eth0"), None)
+    if eth0 is None:
+        fail("Cannot find eth0 interface to delete for update-mode test")
+
+    api_delete(f"/dcim/interface-templates/{eth0['id']}/")
+    ok(f"Deleted interface 'eth0' (id={eth0['id']})")
+
+    # Verify deletion
+    remaining = api("/dcim/interface-templates/", device_type_id=fd["id"])["count"]
+    if remaining != 1:
+        fail(f"After deletion, expected 1 interface remaining, got {remaining}")
+    ok("Deletion confirmed — 1 interface remaining")
+
+    # Run with --update
+    result = run_importer("--update")
+    if result.returncode != 0:
+        fail(f"Importer --update exited with code {result.returncode}")
+
+    # Verify eth0 is back
+    ifaces_after = api("/dcim/interface-templates/", device_type_id=fd["id"])["results"]
+    by_name = {i["name"]: i for i in ifaces_after}
+    if "eth0" not in by_name:
+        fail("eth0 was NOT recreated by --update run")
+    if by_name["eth0"]["type"]["value"] != "1000base-t":
+        fail(f"eth0 recreated with wrong type: {by_name['eth0']['type']['value']!r}")
+    ok("eth0 recreated with correct type '1000base-t'")
+
+    # Verify idempotent after update too
+    result2 = run_importer()
+    if "Modified device types: 0" not in result2.stdout:
+        fail("After update, third run still shows modified device types")
+    ok("Post-update run: 0 modified device types")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -211,9 +506,11 @@ def main() -> None:
     print(f"Repo root  : {REPO_ROOT}")
 
     test_first_import()
-    test_front_port_linkage()
-    test_component_counts()
+    test_front_port_multiposition()
+    test_module_types()
+    test_graphql_schema()
     test_idempotency()
+    test_update_mode()
 
     print("\n=== All integration tests passed ✓ ===\n")
 

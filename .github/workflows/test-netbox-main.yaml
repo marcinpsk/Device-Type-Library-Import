@@ -127,10 +127,13 @@ jobs:
         run: |
           mkdir -p /tmp/test-fixtures/device-types/TestVendor
           mkdir -p /tmp/test-fixtures/module-types/TestVendor
+          mkdir -p /tmp/test-fixtures/elevation-images/TestVendor
           cp importer/tests/fixtures/device-types/TestVendor/*.yaml \
              /tmp/test-fixtures/device-types/TestVendor/
           cp importer/tests/fixtures/module-types/TestVendor/*.yaml \
              /tmp/test-fixtures/module-types/TestVendor/
+          cp importer/tests/fixtures/elevation-images/TestVendor/*.png \
+             /tmp/test-fixtures/elevation-images/TestVendor/
           cd /tmp/test-fixtures
           git init -b main
           git config user.email "ci@test.local"
