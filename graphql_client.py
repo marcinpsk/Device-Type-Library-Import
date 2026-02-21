@@ -155,7 +155,7 @@ class NetBoxGraphQLClient:
 
         return body.get("data", {})
 
-    def query_all(self, graphql_query, list_key, page_size=None, variables=None):
+    def query_all(self, graphql_query, list_key, page_size=None, variables=None, on_page=None):
         """Auto-paginate a GraphQL list query using offset/limit.
 
         The *graphql_query* **must** accept a ``$pagination: OffsetPaginationInput``
@@ -171,6 +171,9 @@ class NetBoxGraphQLClient:
             list_key: Key in the response ``data`` dict that holds the list.
             page_size: Number of items per page (default: :data:`DEFAULT_PAGE_SIZE`).
             variables: Additional variables to merge into each request.
+            on_page: Optional callable invoked after each page with the page item
+                count as its single argument.  Useful for streaming progress
+                updates to callers without buffering the full result first.
 
         Returns:
             list: All collected items across pages.
@@ -195,6 +198,9 @@ class NetBoxGraphQLClient:
 
             all_items.extend(page)
             offset += n
+
+            if on_page is not None:
+                on_page(n)
 
             if effective_page_size is None:
                 # First non-empty page: establish the effective cap.
@@ -384,11 +390,13 @@ class NetBoxGraphQLClient:
 
         return result
 
-    def get_component_templates(self, endpoint_name):
+    def get_component_templates(self, endpoint_name, on_page=None):
         """Fetch component template records for the given endpoint.
 
         Args:
             endpoint_name: Endpoint name as used by DeviceTypes (e.g. ``"interface_templates"``).
+            on_page: Optional callable passed to :meth:`query_all` to receive the item
+                count after each page is fetched.
 
         Returns:
             list[DotDict]: All matching component template records.
@@ -417,5 +425,5 @@ class NetBoxGraphQLClient:
         }}
         """
 
-        items = self.query_all(query, list_key=list_key)
+        items = self.query_all(query, list_key=list_key, on_page=on_page)
         return [_to_dotdict(item) for item in items]

@@ -1053,9 +1053,13 @@ class DeviceTypes:
         Returns:
             list: All component template records as DotDicts.
         """
-        records = self.graphql.get_component_templates(endpoint_name)
-        if progress_callback is not None and records:
-            progress_callback(endpoint_name, len(records))
+        on_page = None
+        if progress_callback is not None:
+
+            def on_page(n):
+                progress_callback(endpoint_name, n)
+
+        records = self.graphql.get_component_templates(endpoint_name, on_page=on_page)
         return records
 
     @staticmethod
