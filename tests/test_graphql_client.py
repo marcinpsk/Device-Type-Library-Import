@@ -531,6 +531,71 @@ class TestGetDeviceTypes:
         assert by_model == {}
         assert by_slug == {}
 
+    @patch("graphql_client.requests.post")
+    def test_image_dict_flattened_to_url(self, mock_post):
+        """When GraphQL returns image fields as {url: ...} dicts they should be flattened to strings."""
+        data = {
+            "device_type_list": [
+                {
+                    "id": "5",
+                    "model": "Nexus 9000",
+                    "slug": "nexus-9000",
+                    "front_image": {"url": "http://netbox/media/nexus.front.jpg"},
+                    "rear_image": {"url": "http://netbox/media/nexus.rear.jpg"},
+                    "manufacturer": {"id": "30", "name": "Cisco", "slug": "cisco"},
+                }
+            ]
+        }
+        data_r = MagicMock()
+        data_r.status_code = 200
+        data_r.raise_for_status = MagicMock()
+        data_r.json.return_value = {"data": data}
+        empty_r = MagicMock()
+        empty_r.status_code = 200
+        empty_r.raise_for_status = MagicMock()
+        empty_r.json.return_value = {"data": {"device_type_list": []}}
+        mock_post.side_effect = [data_r, empty_r]
+
+        client = self._make_client()
+        by_model, by_slug = client.get_device_types()
+
+        dt = by_model[("cisco", "Nexus 9000")]
+        assert dt.front_image == "http://netbox/media/nexus.front.jpg"
+        assert dt.rear_image == "http://netbox/media/nexus.rear.jpg"
+        assert ("cisco", "nexus-9000") in by_slug
+
+    @patch("graphql_client.requests.post")
+    def test_image_dict_with_none_url_flattened_to_none(self, mock_post):
+        """When the image dict has url=None the record should store None."""
+        data = {
+            "device_type_list": [
+                {
+                    "id": "6",
+                    "model": "ASR 9000",
+                    "slug": "asr-9000",
+                    "front_image": {"url": None},
+                    "rear_image": None,
+                    "manufacturer": {"id": "30", "name": "Cisco", "slug": "cisco"},
+                }
+            ]
+        }
+        data_r = MagicMock()
+        data_r.status_code = 200
+        data_r.raise_for_status = MagicMock()
+        data_r.json.return_value = {"data": data}
+        empty_r = MagicMock()
+        empty_r.status_code = 200
+        empty_r.raise_for_status = MagicMock()
+        empty_r.json.return_value = {"data": {"device_type_list": []}}
+        mock_post.side_effect = [data_r, empty_r]
+
+        client = self._make_client()
+        by_model, _ = client.get_device_types()
+
+        dt = by_model[("cisco", "ASR 9000")]
+        assert dt.front_image is None
+        assert dt.rear_image is None
+
 
 class TestGetModuleTypes:
     """Tests for the get_module_types() convenience method."""

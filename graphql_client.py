@@ -405,7 +405,7 @@ class NetBoxGraphQLClient:
         Raises:
             ValueError: If *endpoint_name* is not a recognized component template endpoint.
         """
-        if endpoint_name not in COMPONENT_TEMPLATE_FIELDS:
+        if endpoint_name not in COMPONENT_TEMPLATE_FIELDS or endpoint_name not in ENDPOINT_TO_LIST_KEY:
             raise ValueError(f"Unknown component endpoint: {endpoint_name}")
 
         fields = COMPONENT_TEMPLATE_FIELDS[endpoint_name]
