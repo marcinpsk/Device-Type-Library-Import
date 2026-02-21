@@ -85,7 +85,7 @@ COMPONENT_TEMPLATE_FIELDS = {
     "console_server_port_templates": ["id", "name", "type", "label"],
     "power_outlet_templates": ["id", "name", "type", "feed_leg", "label"],
     "rear_port_templates": ["id", "name", "type", "positions", "label"],
-    "front_port_templates": ["id", "name", "type", "label"],
+    "front_port_templates": ["id", "name", "type", "label", "rear_port_position"],
     "device_bay_templates": ["id", "name", "label"],
     "module_bay_templates": ["id", "name", "position", "label"],
 }
@@ -100,7 +100,7 @@ class NetBoxGraphQLClient:
         ignore_ssl: If True, skip SSL certificate verification.
     """
 
-    DEFAULT_PAGE_SIZE = 1000
+    DEFAULT_PAGE_SIZE = 25000
 
     def __init__(self, url, token, ignore_ssl=False, log_handler=None):
         """Store connection parameters for later use in :meth:`query`.
@@ -425,5 +425,23 @@ class NetBoxGraphQLClient:
         }}
         """
 
-        items = self.query_all(query, list_key=list_key, on_page=on_page)
+        try:
+            items = self.query_all(query, list_key=list_key, on_page=on_page)
+        except GraphQLError:
+            if endpoint_name == "front_port_templates" and "rear_port_position" in fields:
+                # rear_port_position was removed in NetBox >= 4.5 (replaced by M2M rear_ports).
+                # Retry without it so the query works on both schema versions.
+                fallback_fields = [f for f in fields if f != "rear_port_position"]
+                field_block = "\n            ".join(fallback_fields)
+                query = f"""
+        query($pagination: OffsetPaginationInput) {{
+          {list_key}(pagination: $pagination) {{
+            {field_block}
+            {parent_fields}
+          }}
+        }}
+        """
+                items = self.query_all(query, list_key=list_key, on_page=on_page)
+            else:
+                raise
         return [_to_dotdict(item) for item in items]
