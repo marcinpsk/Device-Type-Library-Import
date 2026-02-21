@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, patch
 from netbox_api import NetBox, DeviceTypes
+from conftest import paginate_dispatch
 
 
 @pytest.fixture
@@ -57,12 +58,12 @@ def test_create_manufacturers(mock_settings, mock_pynetbox):
 def test_create_manufacturers_no_new_is_verbose_only(mock_settings, mock_pynetbox, mock_graphql_requests):
     mock_pynetbox.api.return_value.version = "3.5"
 
-    mock_graphql_requests.return_value.json.return_value = {
-        "data": {
+    mock_graphql_requests.side_effect = paginate_dispatch(
+        {
             "manufacturer_list": [{"id": "1", "name": "Cisco", "slug": "cisco"}],
             "device_type_list": [],
         }
-    }
+    )
 
     nb = NetBox(mock_settings, mock_settings.handle)
     mock_settings.handle.log.reset_mock()
@@ -174,9 +175,15 @@ def test_preload_global_builds_component_cache(mock_settings, mock_pynetbox, moc
 
     def dispatch(url, json=None, **kwargs):
         query = (json or {}).get("query", "")
+        variables = (json or {}).get("variables", {})
+        offset = (variables.get("pagination") or {}).get("offset", 0)
         resp = MagicMock()
         resp.status_code = 200
         resp.raise_for_status = MagicMock()
+        if offset > 0:
+            # Subsequent pages: always empty (single-page test data)
+            resp.json.return_value = {"data": {}}
+            return resp
         if "device_type_list" in query:
             resp.json.return_value = device_type_payload
         elif "interface_template_list" in query:
@@ -218,7 +225,8 @@ def test_fetch_global_endpoint_records_uses_graphql(
 ):
     mock_nb_api = mock_pynetbox.api.return_value
 
-    # First call: get_device_types (empty), second: get_component_templates
+    # First call: get_device_types (empty), second: get_component_templates,
+    # third: empty page to terminate interface_template_list pagination
     mock_graphql_requests.return_value.json.side_effect = [
         {"data": {"device_type_list": []}},
         {
@@ -263,6 +271,7 @@ def test_fetch_global_endpoint_records_uses_graphql(
                 ]
             }
         },
+        {"data": {"interface_template_list": []}},  # termination page
     ]
 
     dt = DeviceTypes(mock_nb_api, mock_settings.handle, MagicMock(), False, False, graphql=graphql_client)
@@ -363,9 +372,14 @@ def test_preload_always_global_caches_all_vendors(mock_settings, mock_pynetbox, 
 
     def dispatch(url, json=None, **kwargs):
         query = (json or {}).get("query", "")
+        variables = (json or {}).get("variables", {})
+        offset = (variables.get("pagination") or {}).get("offset", 0)
         resp = MagicMock()
         resp.status_code = 200
         resp.raise_for_status = MagicMock()
+        if offset > 0:
+            resp.json.return_value = {"data": {}}
+            return resp
         if "device_type_list" in query:
             resp.json.return_value = device_type_payload
         elif "interface_template_list" in query:
@@ -457,8 +471,8 @@ def test_filter_actionable_module_types_skips_unchanged_existing_module(
     mock_nb_api = mock_pynetbox.api.return_value
     mock_nb_api.version = "3.5"
 
-    mock_graphql_requests.return_value.json.return_value = {
-        "data": {
+    mock_graphql_requests.side_effect = paginate_dispatch(
+        {
             "manufacturer_list": [],
             "device_type_list": [],
             "module_type_list": [
@@ -470,7 +484,7 @@ def test_filter_actionable_module_types_skips_unchanged_existing_module(
             ],
             "image_attachment_list": [],
         }
-    }
+    )
 
     existing_interface = MagicMock()
     existing_interface.name = "xe-0/0/0"
@@ -504,8 +518,8 @@ def test_filter_actionable_module_types_includes_module_with_missing_component(
     mock_nb_api = mock_pynetbox.api.return_value
     mock_nb_api.version = "3.5"
 
-    mock_graphql_requests.return_value.json.return_value = {
-        "data": {
+    mock_graphql_requests.side_effect = paginate_dispatch(
+        {
             "manufacturer_list": [],
             "device_type_list": [],
             "module_type_list": [
@@ -517,7 +531,7 @@ def test_filter_actionable_module_types_includes_module_with_missing_component(
             ],
             "image_attachment_list": [],
         }
-    }
+    )
 
     mock_nb_api.dcim.interface_templates.filter.return_value = []
 

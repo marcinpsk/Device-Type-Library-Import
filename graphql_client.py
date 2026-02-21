@@ -102,12 +102,23 @@ class NetBoxGraphQLClient:
 
     DEFAULT_PAGE_SIZE = 25000
 
-    def __init__(self, url, token, ignore_ssl=False):
-        """Store connection parameters for later use in :meth:`query`."""
+    def __init__(self, url, token, ignore_ssl=False, log_handler=None):
+        """Store connection parameters for later use in :meth:`query`.
+
+        Args:
+            url: Base URL of the NetBox instance.
+            token: API authentication token.
+            ignore_ssl: If True, skip SSL certificate verification.
+            log_handler: Optional :class:`~log_handler.LogHandler` used to emit
+                warnings (e.g. server-side page-size clamping).  Falls back to
+                ``print`` when not provided.
+        """
         self.url = url.rstrip("/")
         self.graphql_url = f"{self.url}/graphql/"
         self.token = token
         self.ignore_ssl = ignore_ssl
+        self._log_handler = log_handler
+        self._page_size_clamping_warned = False
 
     # ── Low-level ──────────────────────────────────────────────────────────
 
@@ -150,6 +161,11 @@ class NetBoxGraphQLClient:
         The *graphql_query* **must** accept a ``$pagination: OffsetPaginationInput``
         variable and pass it to the list field.
 
+        Detects server-side page size clamping (``MAX_PAGE_SIZE``): if the server
+        returns fewer items than requested on the first page but more items exist
+        on subsequent pages, a warning is emitted once per client instance so the
+        operator knows performance will be reduced.
+
         Args:
             graphql_query: GraphQL query string with ``$pagination`` variable.
             list_key: Key in the response ``data`` dict that holds the list.
@@ -164,6 +180,7 @@ class NetBoxGraphQLClient:
 
         all_items = []
         offset = 0
+        effective_page_size = None  # actual cap imposed by the server
 
         while True:
             merged = dict(variables or {})
@@ -171,11 +188,40 @@ class NetBoxGraphQLClient:
 
             data = self.query(graphql_query, variables=merged)
             page = data.get(list_key, [])
-            all_items.extend(page)
+            n = len(page)
 
-            if len(page) < page_size:
+            if n == 0:
                 break
-            offset += page_size
+
+            all_items.extend(page)
+            offset += n
+
+            if effective_page_size is None:
+                # First non-empty page: establish the effective cap.
+                effective_page_size = n
+                if n < page_size:
+                    # The server may have clamped the page size.  We continue
+                    # and warn once we confirm on the next page.
+                    pass
+            elif n > 0 and not self._page_size_clamping_warned and effective_page_size < page_size:
+                # Second page arrived and the first page was smaller than
+                # requested — clamping confirmed.
+                self._page_size_clamping_warned = True
+                msg = (
+                    f"WARNING: NetBox capped the GraphQL page size at "
+                    f"{effective_page_size} (requested {page_size}). "
+                    f"Fetching all records will require more round-trips and "
+                    f"will be slower than expected. Consider raising "
+                    f"MAX_PAGE_SIZE on your NetBox server."
+                )
+                if self._log_handler is not None:
+                    self._log_handler.log(msg)
+                else:
+                    print(msg)
+
+            # Stop when we received a partial page (end of data).
+            if n < effective_page_size:
+                break
 
         return all_items
 

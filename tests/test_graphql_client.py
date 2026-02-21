@@ -226,13 +226,17 @@ class TestGraphQLQueryAll:
 
     @patch("graphql_client.requests.post")
     def test_query_all_single_page(self, mock_post):
-        """When results < page_size, no further pages are fetched."""
+        """Single page: data response followed by empty page to confirm end of data."""
         items = [{"id": "1", "name": "Cisco"}]
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {"data": {"manufacturer_list": items}}
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
+        r_data = MagicMock()
+        r_data.status_code = 200
+        r_data.json.return_value = {"data": {"manufacturer_list": items}}
+        r_data.raise_for_status = MagicMock()
+        r_empty = MagicMock()
+        r_empty.status_code = 200
+        r_empty.json.return_value = {"data": {"manufacturer_list": []}}
+        r_empty.raise_for_status = MagicMock()
+        mock_post.side_effect = [r_data, r_empty]
 
         client = self._make_client()
         result = client.query_all(
@@ -242,7 +246,7 @@ class TestGraphQLQueryAll:
         )
 
         assert result == items
-        assert mock_post.call_count == 1
+        assert mock_post.call_count == 2
 
     @patch("graphql_client.requests.post")
     def test_query_all_multiple_pages(self, mock_post):
@@ -310,6 +314,87 @@ class TestGraphQLQueryAll:
         assert sent_vars["name"] == "test"
         assert "pagination" in sent_vars
 
+    @patch("graphql_client.requests.post")
+    def test_query_all_warns_when_server_clamps_page_size(self, mock_post):
+        """Server clamping detection: warns once when effective page < requested."""
+        # Server caps at 2, we request 10; three pages total with 2+2+1 items.
+        pages = [
+            [{"id": "1"}, {"id": "2"}],
+            [{"id": "3"}, {"id": "4"}],
+            [{"id": "5"}],
+            [],  # terminal empty page
+        ]
+        responses = []
+        for page_data in pages:
+            r = MagicMock()
+            r.status_code = 200
+            r.json.return_value = {"data": {"device_type_list": page_data}}
+            r.raise_for_status = MagicMock()
+            responses.append(r)
+        mock_post.side_effect = responses
+
+        warned_msgs = []
+
+        class FakeLog:
+            def log(self, msg):
+                warned_msgs.append(msg)
+
+        from graphql_client import NetBoxGraphQLClient
+
+        client = NetBoxGraphQLClient("http://netbox.local", "tok", log_handler=FakeLog())
+        result = client.query_all(
+            "query($p: OffsetPaginationInput) { device_type_list(pagination: $p) { id } }",
+            list_key="device_type_list",
+            page_size=10,
+        )
+
+        assert len(result) == 5
+        assert len(warned_msgs) == 1
+        assert "2" in warned_msgs[0]  # effective page size in warning
+        assert "10" in warned_msgs[0]  # requested page size in warning
+
+    @patch("graphql_client.requests.post")
+    def test_query_all_clamping_warning_emitted_only_once(self, mock_post):
+        """Clamping warning is emitted at most once per client instance."""
+
+        # Two separate query_all calls, each seeing clamping.
+        def make_pages(n_pages, page_size=2):
+            pages = [[{"id": str(i * page_size + j)} for j in range(page_size)] for i in range(n_pages)]
+            pages.append([])
+            return pages
+
+        all_pages = make_pages(2) + make_pages(2)
+        responses = []
+        for page_data in all_pages:
+            r = MagicMock()
+            r.status_code = 200
+            r.json.return_value = {"data": {"device_type_list": page_data}}
+            r.raise_for_status = MagicMock()
+            responses.append(r)
+        mock_post.side_effect = responses
+
+        warned_msgs = []
+
+        class FakeLog:
+            def log(self, msg):
+                warned_msgs.append(msg)
+
+        from graphql_client import NetBoxGraphQLClient
+
+        client = NetBoxGraphQLClient("http://netbox.local", "tok", log_handler=FakeLog())
+        client.query_all(
+            "query($p: OffsetPaginationInput) { device_type_list(pagination: $p) { id } }",
+            list_key="device_type_list",
+            page_size=10,
+        )
+        client.query_all(
+            "query($p: OffsetPaginationInput) { device_type_list(pagination: $p) { id } }",
+            list_key="device_type_list",
+            page_size=10,
+        )
+
+        assert len(warned_msgs) == 1
+
 
 # ── Query method tests ─────────────────────────────────────────────────────
 
@@ -325,18 +410,21 @@ class TestGetManufacturers:
 
     @patch("graphql_client.requests.post")
     def test_returns_dict_keyed_by_name(self, mock_post):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "data": {
-                "manufacturer_list": [
-                    {"id": "1", "name": "Cisco", "slug": "cisco"},
-                    {"id": "2", "name": "Juniper", "slug": "juniper"},
-                ]
-            }
+        data = {
+            "manufacturer_list": [
+                {"id": "1", "name": "Cisco", "slug": "cisco"},
+                {"id": "2", "name": "Juniper", "slug": "juniper"},
+            ]
         }
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
+        data_r = MagicMock()
+        data_r.status_code = 200
+        data_r.raise_for_status = MagicMock()
+        data_r.json.return_value = {"data": data}
+        empty_r = MagicMock()
+        empty_r.status_code = 200
+        empty_r.raise_for_status = MagicMock()
+        empty_r.json.return_value = {"data": {"manufacturer_list": []}}
+        mock_post.side_effect = [data_r, empty_r]
 
         client = self._make_client()
         result = client.get_manufacturers()
@@ -376,32 +464,35 @@ class TestGetDeviceTypes:
 
     @patch("graphql_client.requests.post")
     def test_returns_two_indexes(self, mock_post):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "data": {
-                "device_type_list": [
-                    {
-                        "id": "1",
-                        "model": "Catalyst 9300",
-                        "slug": "catalyst-9300",
-                        "front_image": None,
-                        "rear_image": None,
-                        "manufacturer": {"id": "10", "name": "Cisco", "slug": "cisco"},
-                    },
-                    {
-                        "id": "2",
-                        "model": "MX480",
-                        "slug": "mx480",
-                        "front_image": "http://netbox/media/front.jpg",
-                        "rear_image": None,
-                        "manufacturer": {"id": "20", "name": "Juniper", "slug": "juniper"},
-                    },
-                ]
-            }
+        data = {
+            "device_type_list": [
+                {
+                    "id": "1",
+                    "model": "Catalyst 9300",
+                    "slug": "catalyst-9300",
+                    "front_image": None,
+                    "rear_image": None,
+                    "manufacturer": {"id": "10", "name": "Cisco", "slug": "cisco"},
+                },
+                {
+                    "id": "2",
+                    "model": "MX480",
+                    "slug": "mx480",
+                    "front_image": "http://netbox/media/front.jpg",
+                    "rear_image": None,
+                    "manufacturer": {"id": "20", "name": "Juniper", "slug": "juniper"},
+                },
+            ]
         }
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
+        data_r = MagicMock()
+        data_r.status_code = 200
+        data_r.raise_for_status = MagicMock()
+        data_r.json.return_value = {"data": data}
+        empty_r = MagicMock()
+        empty_r.status_code = 200
+        empty_r.raise_for_status = MagicMock()
+        empty_r.json.return_value = {"data": {"device_type_list": []}}
+        mock_post.side_effect = [data_r, empty_r]
 
         client = self._make_client()
         by_model, by_slug = client.get_device_types()
@@ -451,28 +542,31 @@ class TestGetModuleTypes:
 
     @patch("graphql_client.requests.post")
     def test_returns_nested_dict_by_manufacturer_and_model(self, mock_post):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "data": {
-                "module_type_list": [
-                    {
-                        "id": "42",
-                        "model": "Linecard 1",
-                        "slug": "linecard-1",
-                        "manufacturer": {"id": "20", "name": "Juniper", "slug": "juniper"},
-                    },
-                    {
-                        "id": "43",
-                        "model": "Linecard 2",
-                        "slug": "linecard-2",
-                        "manufacturer": {"id": "20", "name": "Juniper", "slug": "juniper"},
-                    },
-                ]
-            }
+        data = {
+            "module_type_list": [
+                {
+                    "id": "42",
+                    "model": "Linecard 1",
+                    "slug": "linecard-1",
+                    "manufacturer": {"id": "20", "name": "Juniper", "slug": "juniper"},
+                },
+                {
+                    "id": "43",
+                    "model": "Linecard 2",
+                    "slug": "linecard-2",
+                    "manufacturer": {"id": "20", "name": "Juniper", "slug": "juniper"},
+                },
+            ]
         }
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
+        data_r = MagicMock()
+        data_r.status_code = 200
+        data_r.raise_for_status = MagicMock()
+        data_r.json.return_value = {"data": data}
+        empty_r = MagicMock()
+        empty_r.status_code = 200
+        empty_r.raise_for_status = MagicMock()
+        empty_r.json.return_value = {"data": {"module_type_list": []}}
+        mock_post.side_effect = [data_r, empty_r]
 
         client = self._make_client()
         result = client.get_module_types()
@@ -512,19 +606,22 @@ class TestGetModuleTypeImages:
 
     @patch("graphql_client.requests.post")
     def test_returns_mapping_of_ids_to_name_sets(self, mock_post):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "data": {
-                "image_attachment_list": [
-                    {"id": "1", "name": "front", "object_id": 42},
-                    {"id": "2", "name": "rear", "object_id": 42},
-                    {"id": "3", "name": "top", "object_id": 43},
-                ]
-            }
+        data = {
+            "image_attachment_list": [
+                {"id": "1", "name": "front", "object_id": 42},
+                {"id": "2", "name": "rear", "object_id": 42},
+                {"id": "3", "name": "top", "object_id": 43},
+            ]
         }
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
+        data_r = MagicMock()
+        data_r.status_code = 200
+        data_r.raise_for_status = MagicMock()
+        data_r.json.return_value = {"data": data}
+        empty_r = MagicMock()
+        empty_r.status_code = 200
+        empty_r.raise_for_status = MagicMock()
+        empty_r.json.return_value = {"data": {"image_attachment_list": []}}
+        mock_post.side_effect = [data_r, empty_r]
 
         client = self._make_client()
         result = client.get_module_type_images()
@@ -534,19 +631,22 @@ class TestGetModuleTypeImages:
 
     @patch("graphql_client.requests.post")
     def test_skips_entries_without_name(self, mock_post):
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "data": {
-                "image_attachment_list": [
-                    {"id": "1", "name": "", "object_id": 42},
-                    {"id": "2", "name": None, "object_id": 42},
-                    {"id": "3", "name": "valid", "object_id": 42},
-                ]
-            }
+        data = {
+            "image_attachment_list": [
+                {"id": "1", "name": "", "object_id": 42},
+                {"id": "2", "name": None, "object_id": 42},
+                {"id": "3", "name": "valid", "object_id": 42},
+            ]
         }
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
+        data_r = MagicMock()
+        data_r.status_code = 200
+        data_r.raise_for_status = MagicMock()
+        data_r.json.return_value = {"data": data}
+        empty_r = MagicMock()
+        empty_r.status_code = 200
+        empty_r.raise_for_status = MagicMock()
+        empty_r.json.return_value = {"data": {"image_attachment_list": []}}
+        mock_post.side_effect = [data_r, empty_r]
 
         client = self._make_client()
         result = client.get_module_type_images()
@@ -596,7 +696,11 @@ class TestGetModuleTypeImages:
                 ]
             }
         }
-        mock_post.side_effect = [error_response, fallback_response]
+        empty_response = MagicMock()
+        empty_response.status_code = 200
+        empty_response.raise_for_status = MagicMock()
+        empty_response.json.return_value = {"data": {"image_attachment_list": []}}
+        mock_post.side_effect = [error_response, fallback_response, empty_response]
 
         client = self._make_client()
         result = client.get_module_type_images()
@@ -620,40 +724,43 @@ class TestGetComponentTemplates:
         """Records should be DotDicts with device_type/module_type and correct id types."""
         from graphql_client import DotDict
 
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "data": {
-                "interface_template_list": [
-                    {
-                        "id": "10",
-                        "name": "eth0",
-                        "type": "1000base-t",
-                        "label": "",
-                        "mgmt_only": False,
-                        "enabled": True,
-                        "poe_mode": None,
-                        "poe_type": None,
-                        "device_type": {"id": "1"},
-                        "module_type": None,
-                    },
-                    {
-                        "id": "11",
-                        "name": "eth1",
-                        "type": "1000base-t",
-                        "label": "uplink",
-                        "mgmt_only": False,
-                        "enabled": True,
-                        "poe_mode": None,
-                        "poe_type": None,
-                        "device_type": {"id": "1"},
-                        "module_type": None,
-                    },
-                ]
-            }
+        data = {
+            "interface_template_list": [
+                {
+                    "id": "10",
+                    "name": "eth0",
+                    "type": "1000base-t",
+                    "label": "",
+                    "mgmt_only": False,
+                    "enabled": True,
+                    "poe_mode": None,
+                    "poe_type": None,
+                    "device_type": {"id": "1"},
+                    "module_type": None,
+                },
+                {
+                    "id": "11",
+                    "name": "eth1",
+                    "type": "1000base-t",
+                    "label": "uplink",
+                    "mgmt_only": False,
+                    "enabled": True,
+                    "poe_mode": None,
+                    "poe_type": None,
+                    "device_type": {"id": "1"},
+                    "module_type": None,
+                },
+            ]
         }
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
+        data_r = MagicMock()
+        data_r.status_code = 200
+        data_r.raise_for_status = MagicMock()
+        data_r.json.return_value = {"data": data}
+        empty_r = MagicMock()
+        empty_r.status_code = 200
+        empty_r.raise_for_status = MagicMock()
+        empty_r.json.return_value = {"data": {"interface_template_list": []}}
+        mock_post.side_effect = [data_r, empty_r]
 
         client = self._make_client()
         records = client.get_component_templates("interface_templates")
@@ -707,24 +814,27 @@ class TestGetComponentTemplates:
     @patch("graphql_client.requests.post")
     def test_module_type_parent_preserved(self, mock_post):
         """Records with module_type parent should have module_type.id as int."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "data": {
-                "console_port_template_list": [
-                    {
-                        "id": "20",
-                        "name": "console0",
-                        "type": "rj-45",
-                        "label": "",
-                        "device_type": None,
-                        "module_type": {"id": "5"},
-                    },
-                ]
-            }
+        data = {
+            "console_port_template_list": [
+                {
+                    "id": "20",
+                    "name": "console0",
+                    "type": "rj-45",
+                    "label": "",
+                    "device_type": None,
+                    "module_type": {"id": "5"},
+                },
+            ]
         }
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
+        data_r = MagicMock()
+        data_r.status_code = 200
+        data_r.raise_for_status = MagicMock()
+        data_r.json.return_value = {"data": data}
+        empty_r = MagicMock()
+        empty_r.status_code = 200
+        empty_r.raise_for_status = MagicMock()
+        empty_r.json.return_value = {"data": {"console_port_template_list": []}}
+        mock_post.side_effect = [data_r, empty_r]
 
         client = self._make_client()
         records = client.get_component_templates("console_port_templates")
@@ -735,22 +845,25 @@ class TestGetComponentTemplates:
     @patch("graphql_client.requests.post")
     def test_device_bay_templates_fields(self, mock_post):
         """device_bay_templates has no 'type' field — should not error."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "data": {
-                "device_bay_template_list": [
-                    {
-                        "id": "30",
-                        "name": "Bay 1",
-                        "label": "",
-                        "device_type": {"id": "2"},
-                    },
-                ]
-            }
+        data = {
+            "device_bay_template_list": [
+                {
+                    "id": "30",
+                    "name": "Bay 1",
+                    "label": "",
+                    "device_type": {"id": "2"},
+                },
+            ]
         }
-        mock_response.raise_for_status = MagicMock()
-        mock_post.return_value = mock_response
+        data_r = MagicMock()
+        data_r.status_code = 200
+        data_r.raise_for_status = MagicMock()
+        data_r.json.return_value = {"data": data}
+        empty_r = MagicMock()
+        empty_r.status_code = 200
+        empty_r.raise_for_status = MagicMock()
+        empty_r.json.return_value = {"data": {"device_bay_template_list": []}}
+        mock_post.side_effect = [data_r, empty_r]
 
         client = self._make_client()
         records = client.get_component_templates("device_bay_templates")

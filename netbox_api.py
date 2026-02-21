@@ -66,7 +66,7 @@ class NetBox:
         self.ignore_ssl = settings.IGNORE_SSL_ERRORS
         self.modules = False
         self.new_filters = False
-        self.graphql = NetBoxGraphQLClient(self.url, self.token, self.ignore_ssl)
+        self.graphql = NetBoxGraphQLClient(self.url, self.token, self.ignore_ssl, log_handler=self.handle)
         self.connect_api()
         self.verify_compatibility()
         self.existing_manufacturers = self.get_manufacturers()
