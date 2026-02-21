@@ -213,6 +213,14 @@ class NetBoxGraphQLClient:
             id
             model
             slug
+            u_height
+            part_number
+            is_full_depth
+            subdevice_role
+            airflow
+            weight
+            weight_unit
+            comments
             front_image { url }
             rear_image { url }
             manufacturer {
@@ -233,7 +241,6 @@ class NetBoxGraphQLClient:
                 img = item.get(img_field)
                 if isinstance(img, dict):
                     item[img_field] = img.get("url") or None
-        for item in items:
             record = _to_dotdict(item)
             mfr_slug = record.manufacturer.slug
             by_model[(mfr_slug, record.model)] = record
@@ -273,14 +280,20 @@ class NetBoxGraphQLClient:
     def get_module_type_images(self):
         """Fetch image attachments for module types and return a mapping.
 
+        Uses a ``ContentTypeFilter`` to restrict results to ``dcim.moduletype``
+        attachments.  Falls back to fetching all image attachments and filtering
+        in Python when the server returns a schema error (e.g. older NetBox
+        versions with different filter syntax).
+
         Returns:
             dict: ``{module_type_id: set_of_attachment_names}``
         """
+        # ContentTypeFilter syntax (NetBox ≥ 4.x strawberry-django GraphQL)
         query = """
         query($pagination: OffsetPaginationInput) {
           image_attachment_list(
             pagination: $pagination,
-            filters: {object_type: "dcim.moduletype"}
+            filters: {object_type: {app_label: {exact: "dcim"}, model: {exact: "moduletype"}}}
           ) {
             id
             name
@@ -288,7 +301,27 @@ class NetBoxGraphQLClient:
           }
         }
         """
-        items = self.query_all(query, list_key="image_attachment_list")
+        try:
+            items = self.query_all(query, list_key="image_attachment_list")
+        except GraphQLError:
+            # Fallback: fetch all attachments and filter in Python
+            query_all = """
+            query($pagination: OffsetPaginationInput) {
+              image_attachment_list(pagination: $pagination) {
+                id
+                name
+                object_id
+                object_type { app_label model }
+              }
+            }
+            """
+            all_items = self.query_all(query_all, list_key="image_attachment_list")
+            items = [
+                i
+                for i in all_items
+                if (i.get("object_type") or {}).get("app_label") == "dcim"
+                and (i.get("object_type") or {}).get("model") == "moduletype"
+            ]
 
         result = {}
         for item in items:

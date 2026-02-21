@@ -210,6 +210,18 @@ class ChangeDetector:
         if isinstance(netbox_value, str):
             netbox_value = netbox_value.rstrip()
 
+        # Coerce numeric strings for comparison (GraphQL serializes decimal fields as strings)
+        if isinstance(yaml_value, (int, float)) and isinstance(netbox_value, str):
+            try:
+                netbox_value = float(netbox_value)
+            except (ValueError, TypeError):
+                pass
+        elif isinstance(netbox_value, (int, float)) and isinstance(yaml_value, str):
+            try:
+                yaml_value = float(yaml_value)
+            except (ValueError, TypeError):
+                pass
+
         return yaml_value, netbox_value
 
     def _compare_device_type_properties(self, yaml_data: dict, netbox_dt) -> List[PropertyChange]:

@@ -436,11 +436,10 @@ def test_upload_images_success_logs_verbose_only(mock_settings, mock_pynetbox, g
 
 def test_filter_new_module_types_returns_only_missing_items(mock_settings, mock_pynetbox):
     existing_a = MagicMock()
-    existing_a.slug = "a"
     module_types = [
-        {"manufacturer": {"slug": "cisco"}, "model": "A-Renamed", "slug": "a"},
-        {"manufacturer": {"slug": "cisco"}, "model": "B"},
-        {"manufacturer": {"slug": "juniper"}, "model": "X"},
+        {"manufacturer": {"slug": "cisco"}, "model": "A"},  # found by model
+        {"manufacturer": {"slug": "cisco"}, "model": "B"},  # not found → new
+        {"manufacturer": {"slug": "juniper"}, "model": "X"},  # not found → new
     ]
     existing = {"cisco": {"A": existing_a}}
 

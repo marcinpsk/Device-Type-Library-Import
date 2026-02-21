@@ -358,7 +358,7 @@ class NetBox:
 
     @staticmethod
     def _find_existing_module_type(module_type, all_module_types):
-        """Look up a module type in *all_module_types* by model name, with slug fallback.
+        """Look up a module type in *all_module_types* by model name.
 
         Args:
             module_type (dict): Parsed YAML module-type dict with "manufacturer" and "model" keys.
@@ -369,20 +369,7 @@ class NetBox:
         """
         manufacturer_slug = module_type["manufacturer"]["slug"]
         existing_for_vendor = all_module_types.get(manufacturer_slug, {})
-
-        existing = existing_for_vendor.get(module_type["model"])
-        if existing is not None:
-            return existing
-
-        slug = module_type.get("slug")
-        if not slug:
-            return None
-
-        for existing_module in existing_for_vendor.values():
-            if getattr(existing_module, "slug", None) == slug:
-                return existing_module
-
-        return None
+        return existing_for_vendor.get(module_type["model"])
 
     @staticmethod
     def filter_new_module_types(module_types, all_module_types):
@@ -683,6 +670,7 @@ class DeviceTypes:
         self.new_filters = new_filters
         self.graphql = graphql
         self.cached_components = {}
+        self._image_progress = None
         self.existing_device_types, self.existing_device_types_by_slug = self.get_device_types()
 
     def get_device_types(self):
@@ -739,7 +727,7 @@ class DeviceTypes:
                 task_ids = {
                     endpoint_name: progress.add_task(
                         f"Caching {label}",
-                        total=max(endpoint_totals.get(endpoint_name, 0), 1),
+                        total=None,
                     )
                     for endpoint_name, label in components
                 }
@@ -854,14 +842,17 @@ class DeviceTypes:
         )
 
         task_ids = preload_job.get("task_ids") or {}
-        endpoint_totals = preload_job.get("endpoint_totals", {})
         for endpoint_name in pending_endpoints:
             future = futures.get(endpoint_name)
             if future is None or not future.done():
                 continue
             if progress is not None and endpoint_name in task_ids:
-                total = max(endpoint_totals.get(endpoint_name, 0), 1)
-                progress.update(task_ids[endpoint_name], total=total, completed=total)
+                try:
+                    records = future.result()
+                    final_total = max(len(records), 1)
+                except Exception:
+                    final_total = 1
+                progress.update(task_ids[endpoint_name], total=final_total, completed=final_total)
                 progress.stop_task(task_ids[endpoint_name])
             finished_endpoints.add(endpoint_name)
             advanced = True
@@ -949,7 +940,7 @@ class DeviceTypes:
                     task_ids = {
                         endpoint: progress.add_task(
                             f"Caching {label}",
-                            total=max(endpoint_totals.get(endpoint, 0), 1),
+                            total=None,
                         )
                         for endpoint, label in components
                     }
@@ -1827,6 +1818,8 @@ class DeviceTypes:
             response.raise_for_status()
             self.handle.verbose_log(f"Images {images} updated at {url}: {response.status_code}")
             self.counter["images"] += len(images)
+            if self._image_progress:
+                self._image_progress(len(images))
         except OSError as e:
             self.handle.log(f"Error reading image file for device type {device_type}: {e}")
         except requests.RequestException as e:
@@ -1879,6 +1872,8 @@ class DeviceTypes:
                     f" for {object_type} {object_id}: {response.status_code}"
                 )
                 self.counter["images"] += 1
+                if self._image_progress:
+                    self._image_progress(1)
                 return True
         except OSError as e:
             self.handle.log(f"Error reading image file {image_path}: {e}")

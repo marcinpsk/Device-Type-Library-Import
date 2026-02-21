@@ -566,6 +566,43 @@ class TestGetModuleTypeImages:
 
         assert result == {}
 
+    @patch("graphql_client.requests.post")
+    def test_falls_back_to_python_filter_on_schema_error(self, mock_post):
+        """When the filtered query raises GraphQLError, fall back to fetch-all + Python filter."""
+
+        error_response = MagicMock()
+        error_response.status_code = 200
+        error_response.raise_for_status = MagicMock()
+        error_response.json.return_value = {"errors": [{"message": "Expected value of type 'ContentTypeFilter'"}]}
+
+        fallback_response = MagicMock()
+        fallback_response.status_code = 200
+        fallback_response.raise_for_status = MagicMock()
+        fallback_response.json.return_value = {
+            "data": {
+                "image_attachment_list": [
+                    {
+                        "id": "1",
+                        "name": "front",
+                        "object_id": 10,
+                        "object_type": {"app_label": "dcim", "model": "moduletype"},
+                    },
+                    {
+                        "id": "2",
+                        "name": "other",
+                        "object_id": 20,
+                        "object_type": {"app_label": "dcim", "model": "devicetype"},
+                    },
+                ]
+            }
+        }
+        mock_post.side_effect = [error_response, fallback_response]
+
+        client = self._make_client()
+        result = client.get_module_type_images()
+
+        assert result == {10: {"front"}}
+
 
 # ── get_component_templates tests ──────────────────────────────────────────
 
