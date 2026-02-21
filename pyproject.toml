@@ -34,3 +34,4 @@ timeout_method = "thread"
 testpaths = [
   "tests"
 ]
+norecursedirs = ["tests/integration"]

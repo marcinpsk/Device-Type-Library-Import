@@ -1,5 +1,11 @@
-# direnv configuration 
-# Run `direnv allow` to enable
+# direnv configuration — copy to .envrc and run `direnv allow` to enable.
+#
+# Review this file before enabling. It ONLY:
+#   1. Loads secrets from .env (NETBOX_URL, NETBOX_TOKEN, etc.) into the shell
+#   2. Creates a uv virtual environment if one does not exist
+#   3. Syncs Python dependencies via `uv sync`
+#
+# Prerequisites: direnv (https://direnv.net) and uv (https://docs.astral.sh/uv/)
 
 # Source .env file if it exists (contains secrets, not in git)
 if [[ -f .env ]]; then

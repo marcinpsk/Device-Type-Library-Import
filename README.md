@@ -1,9 +1,28 @@
 # NetBox Device Type Import
 
+[![Tests](https://github.com/marcinpsk/Device-Type-Library-Import/actions/workflows/tests.yml/badge.svg)](https://github.com/marcinpsk/Device-Type-Library-Import/actions/workflows/tests.yml)
+[![NetBox main](https://github.com/marcinpsk/Device-Type-Library-Import/actions/workflows/test-netbox-main.yaml/badge.svg)](https://github.com/marcinpsk/Device-Type-Library-Import/actions/workflows/test-netbox-main.yaml)
+[![NetBox](https://img.shields.io/badge/NetBox-3.2%2B_through_4.5%2B-blue)](https://netbox.dev)
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org)
+
 This library is intended to be your friend and help you import all the device-types defined within
 the [NetBox Device Type Library Repository](https://github.com/netbox-community/devicetype-library).
 
-> Tested working with 2.9.4, 2.10.4
+> **Tested working with NetBox 3.2 through 4.5** (weekly CI run against NetBox `main`)
+
+---
+
+> ⚠️ **direnv users** — This repo ships a `.envrc.example` file.  If you use
+> [direnv](https://direnv.net/), **review the file before enabling it**:
+>
+> ```shell
+> cp .envrc.example .envrc
+> cat .envrc          # confirm it only loads .env vars and syncs uv
+> direnv allow
+> ```
+>
+> The file exclusively loads variables from `.env` into your shell and runs
+> `uv sync` to keep dependencies up to date.  Your `.envrc` is git-ignored.
 
 ## Description
 
@@ -58,13 +77,13 @@ import devices.
 To import only device by APC, for example:
 
 ```shell
-./nb-dt-import.py --vendors apc
+uv run nb-dt-import.py --vendors apc
 ```
 
 `--vendors` can also accept a comma-separated list of vendors if you want to import multiple.
 
 ```shell
-./nb-dt-import.py --vendors apc,juniper
+uv run nb-dt-import.py --vendors apc,juniper
 ```
 
 #### Update Mode
@@ -73,7 +92,7 @@ By default, the script only creates new device types and skips existing ones. To
 existing device types:
 
 ```shell
-./nb-dt-import.py --update
+uv run nb-dt-import.py --update
 ```
 
 This will:
@@ -91,7 +110,7 @@ If you've changed a device type definition (for example, converting interfaces t
 to support SFP modules), you can remove obsolete components with:
 
 ```shell
-./nb-dt-import.py --update --remove-components
+uv run nb-dt-import.py --update --remove-components
 ```
 
 This will delete any components (interfaces, ports, bays, etc.) that exist in NetBox but are
@@ -108,6 +127,24 @@ no longer present in the YAML definition.
 - Components attached to actual device instances may prevent deletion
 - Review the change detection report before enabling component removal
 - Test on a staging NetBox instance first if possible
+
+## Repair: broken front port mappings (NetBox 4.5 migration)
+
+NetBox 4.5 replaced the `FrontPortTemplate.rear_port` foreign key with a
+many-to-many mapping (`PortMapping`).  Device types imported **before** this
+importer was updated will have front port templates with `rear_ports: []`.
+
+To detect and delete those broken records so the importer can recreate them
+correctly, run:
+
+```shell
+# dry-run (reports only)
+uv run repair_front_ports.py
+
+# apply fix (deletes broken records; importer recreates them on next run)
+uv run repair_front_ports.py --fix
+uv run nb-dt-import.py --update
+```
 
 ## Docker build
 
