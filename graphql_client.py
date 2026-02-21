@@ -144,10 +144,11 @@ class NetBoxGraphQLClient:
                 timeout=60,
             )
             response.raise_for_status()
+            body = response.json()
         except requests.RequestException as exc:
             raise GraphQLError(str(exc)) from exc
-
-        body = response.json()
+        except ValueError as exc:
+            raise GraphQLError(f"Invalid JSON response from NetBox GraphQL endpoint: {exc}") from exc
 
         if "errors" in body:
             messages = "; ".join(e.get("message", str(e)) for e in body["errors"])
@@ -427,7 +428,7 @@ class NetBoxGraphQLClient:
 
         try:
             items = self.query_all(query, list_key=list_key, on_page=on_page)
-        except GraphQLError:
+        except GraphQLError as original_exc:
             if endpoint_name == "front_port_templates" and "rear_port_position" in fields:
                 # rear_port_position was removed in NetBox >= 4.5 (replaced by M2M rear_ports).
                 # Retry without it so the query works on both schema versions.
@@ -441,7 +442,10 @@ class NetBoxGraphQLClient:
           }}
         }}
         """
-                items = self.query_all(query, list_key=list_key, on_page=on_page)
+                try:
+                    items = self.query_all(query, list_key=list_key, on_page=on_page)
+                except GraphQLError as fallback_exc:
+                    raise fallback_exc from original_exc
             else:
                 raise
         return [_to_dotdict(item) for item in items]
