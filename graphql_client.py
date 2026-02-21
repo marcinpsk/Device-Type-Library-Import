@@ -426,9 +426,10 @@ class NetBoxGraphQLClient:
         list_key = ENDPOINT_TO_LIST_KEY[endpoint_name]
         field_block = "\n            ".join(fields)
 
-        # device_bay_templates has no module_type in the GraphQL schema
+        # device_bay_templates and module_bay_templates have no module_type in the GraphQL schema
+        _NO_MODULE_TYPE = {"device_bay_templates", "module_bay_templates"}
         parent_fields = "device_type { id }"
-        if endpoint_name != "device_bay_templates":
+        if endpoint_name not in _NO_MODULE_TYPE:
             parent_fields += "\n            module_type { id }"
 
         query = f"""
@@ -448,7 +449,7 @@ class NetBoxGraphQLClient:
                 # Retry without it so the query works on both schema versions.
                 fallback_fields = [f for f in fields if f != "rear_port_position"]
                 field_block = "\n            ".join(fallback_fields)
-                query = f"""
+                fallback_query = f"""
         query($pagination: OffsetPaginationInput) {{
           {list_key}(pagination: $pagination) {{
             {field_block}
@@ -457,7 +458,7 @@ class NetBoxGraphQLClient:
         }}
         """
                 try:
-                    items = self.query_all(query, list_key=list_key, on_page=on_page)
+                    items = self.query_all(fallback_query, list_key=list_key, on_page=on_page)
                 except GraphQLError as fallback_exc:
                     raise fallback_exc from original_exc
             else:

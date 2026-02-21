@@ -950,3 +950,6 @@ class TestGetComponentTemplates:
 
         assert records[0].name == "Bay 1"
         assert records[0].id == 40
+        # Verify the generated query does not include module_type (not in schema for module_bay_templates)
+        sent_query = mock_post.call_args_list[0][1]["json"]["query"]
+        assert "module_type" not in sent_query
