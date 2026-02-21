@@ -82,7 +82,6 @@ _failures: list[str] = []
 def fail(msg: str) -> None:
     """Record a failure and exit immediately."""
     print(f"\n  ✗ FAIL: {msg}", file=sys.stderr)
-    _failures.append(msg)
     sys.exit(1)
 
 
@@ -91,13 +90,17 @@ def ok(msg: str) -> None:
 
 
 def run_importer(*extra_args: str) -> subprocess.CompletedProcess:
-    result = subprocess.run(
-        ["uv", "run", str(REPO_ROOT / "nb-dt-import.py"), *extra_args],
-        capture_output=True,
-        text=True,
-        cwd=REPO_ROOT,
-        env={**os.environ},
-    )
+    try:
+        result = subprocess.run(
+            ["uv", "run", str(REPO_ROOT / "nb-dt-import.py"), *extra_args],
+            capture_output=True,
+            text=True,
+            cwd=REPO_ROOT,
+            env={**os.environ},
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired:
+        fail("Importer timed out after 300 seconds — possible hang or deadlock")
     sys.stdout.write(result.stdout)
     if result.stderr:
         sys.stderr.write(result.stderr)
@@ -163,7 +166,7 @@ def test_first_import() -> None:
     if fd["is_full_depth"] is not True:
         fail(f"full-device: is_full_depth = {fd['is_full_depth']!r}, expected True")
     ok("full-device: is_full_depth = True")
-    if abs(float(fd["weight"])) - 10.5 > 0.001:
+    if abs(float(fd["weight"]) - 10.5) > 0.001:
         fail(f"full-device: weight = {fd['weight']!r}, expected 10.5")
     ok(f"full-device: weight = {fd['weight']!r}")
     assert_field(fd["weight_unit"], "value", "kg", "full-device weight_unit")
@@ -386,12 +389,8 @@ def test_graphql_schema() -> None:
             )
 
         # Find a record for our test device type to validate fields
-        test_records = [
-            r
-            for r in records
-            if getattr(getattr(r, "device_type", None), "id", None)
-            == get_one("/dcim/device-types/", slug="testvendor-full-device")["id"]
-        ]
+        device_type_id = get_one("/dcim/device-types/", slug="testvendor-full-device")["id"]
+        test_records = [r for r in records if getattr(getattr(r, "device_type", None), "id", None) == device_type_id]
 
         if endpoint_name != "device_bay_templates":
             # Also accept module-type records for endpoints shared by both types

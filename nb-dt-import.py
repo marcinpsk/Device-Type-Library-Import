@@ -312,6 +312,27 @@ def should_only_create_new_modules(args):
     return args.only_new or not args.update
 
 
+@contextmanager
+def _image_progress_scope(progress, device_types):
+    """Context manager that wires up image-upload progress tracking.
+
+    Creates a progress task (if *progress* is not None), assigns the advance
+    callback to ``device_types._image_progress``, and always resets it to
+    ``None`` on exit — even on exception.
+    """
+    if progress is not None:
+        _img_task = progress.add_task("Uploading Images", total=None, visible=False)
+
+        def _adv_img(count=1):
+            progress.update(_img_task, advance=count, visible=True, total=None)
+
+        device_types._image_progress = _adv_img
+    try:
+        yield
+    finally:
+        device_types._image_progress = None
+
+
 def main():
     """
     Orchestrate importing device- and module-types from a Git repository into NetBox.
@@ -500,14 +521,7 @@ def main():
                     # Update mode: create new + update existing
                     device_types_to_process = select_device_types_for_update_mode(device_types, change_report)
                     if device_types_to_process:
-                        if progress is not None:
-                            _img_task = progress.add_task("Uploading Images", total=None, visible=False)
-
-                            def _adv_img(count=1):
-                                progress.update(_img_task, advance=count, visible=True, total=None)
-
-                            netbox.device_types._image_progress = _adv_img
-                        try:
+                        with _image_progress_scope(progress, netbox.device_types):
                             netbox.create_device_types(
                                 device_types_to_process,
                                 progress=get_progress_wrapper(
@@ -518,22 +532,13 @@ def main():
                                 change_report=change_report,
                                 remove_components=args.remove_components,
                             )
-                        finally:
-                            netbox.device_types._image_progress = None
                     else:
                         handle.verbose_log("No device type changes to process.")
                 else:
                     # Default mode: only create new, log what would change
                     device_types_to_process = select_device_types_for_default_mode(device_types, change_report)
                     if device_types_to_process:
-                        if progress is not None:
-                            _img_task = progress.add_task("Uploading Images", total=None, visible=False)
-
-                            def _adv_img(count=1):
-                                progress.update(_img_task, advance=count, visible=True, total=None)
-
-                            netbox.device_types._image_progress = _adv_img
-                        try:
+                        with _image_progress_scope(progress, netbox.device_types):
                             netbox.create_device_types(
                                 device_types_to_process,
                                 progress=get_progress_wrapper(
@@ -541,8 +546,6 @@ def main():
                                 ),
                                 only_new=True,  # Skip existing devices in default mode
                             )
-                        finally:
-                            netbox.device_types._image_progress = None
                     else:
                         handle.verbose_log("No new device types or missing images to process.")
 

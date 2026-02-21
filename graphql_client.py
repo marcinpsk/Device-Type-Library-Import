@@ -100,7 +100,7 @@ class NetBoxGraphQLClient:
         ignore_ssl: If True, skip SSL certificate verification.
     """
 
-    DEFAULT_PAGE_SIZE = 25000
+    DEFAULT_PAGE_SIZE = 1000
 
     def __init__(self, url, token, ignore_ssl=False, log_handler=None):
         """Store connection parameters for later use in :meth:`query`.

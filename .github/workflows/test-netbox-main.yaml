@@ -6,6 +6,9 @@ on:
     - cron: '0 6 * * 1'  # Every Monday at 06:00 UTC
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -106,7 +109,8 @@ jobs:
       - name: Start NetBox dev server
         working-directory: netbox/netbox
         run: |
-          python manage.py runserver 0.0.0.0:8000 &
+          rm -f /tmp/netbox.log && touch /tmp/netbox.log
+          python manage.py runserver 0.0.0.0:8000 >> /tmp/netbox.log 2>&1 &
           echo $! > /tmp/netbox.pid
           # Wait up to 60 s for NetBox to respond
           for i in $(seq 1 30); do

@@ -67,9 +67,9 @@ class NetBox:
         self.modules = False
         self.new_filters = False
         self.m2m_front_ports = False  # True for NetBox >= 4.5 (M2M port mappings)
-        self.graphql = NetBoxGraphQLClient(self.url, self.token, self.ignore_ssl, log_handler=self.handle)
         self.connect_api()
         self.verify_compatibility()
+        self.graphql = NetBoxGraphQLClient(self.url, self.token, self.ignore_ssl, log_handler=self.handle)
         self.existing_manufacturers = self.get_manufacturers()
         self.device_types = DeviceTypes(
             self.netbox,
