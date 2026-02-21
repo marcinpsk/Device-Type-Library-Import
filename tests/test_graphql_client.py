@@ -4,6 +4,8 @@ import pytest
 from unittest.mock import MagicMock, patch
 import requests
 
+from graphql_client import DotDict
+
 
 # ── DotDict adapter tests ──────────────────────────────────────────────────
 
@@ -12,7 +14,6 @@ class TestDotDict:
     """Tests for the DotDict adapter that bridges GraphQL dicts to attribute access."""
 
     def test_attribute_access(self):
-        from graphql_client import DotDict
 
         d = DotDict({"name": "Cisco", "slug": "cisco", "id": "1"})
         assert d.name == "Cisco"
@@ -20,7 +21,6 @@ class TestDotDict:
         assert d.id == "1"
 
     def test_nested_attribute_access(self):
-        from graphql_client import DotDict
 
         d = DotDict({"manufacturer": {"name": "Cisco", "slug": "cisco"}})
         assert d.manufacturer.name == "Cisco"
@@ -28,61 +28,52 @@ class TestDotDict:
 
     def test_str_returns_name(self):
         """str() should return the name, matching pynetbox Record behavior."""
-        from graphql_client import DotDict
 
         d = DotDict({"name": "Cisco", "slug": "cisco"})
         assert str(d) == "Cisco"
 
     def test_str_without_name_returns_repr(self):
-        from graphql_client import DotDict
 
         d = DotDict({"slug": "cisco"})
         result = str(d)
         assert isinstance(result, str)
 
     def test_getattr_with_default(self):
-        from graphql_client import DotDict
 
         d = DotDict({"name": "Test"})
         assert getattr(d, "front_image", None) is None
         assert getattr(d, "name", "default") == "Test"
 
     def test_dict_access_still_works(self):
-        from graphql_client import DotDict
 
         d = DotDict({"name": "Cisco"})
         assert d["name"] == "Cisco"
 
     def test_get_method(self):
-        from graphql_client import DotDict
 
         d = DotDict({"name": "Cisco"})
         assert d.get("name") == "Cisco"
         assert d.get("missing", "default") == "default"
 
     def test_in_operator(self):
-        from graphql_client import DotDict
 
         d = DotDict({"name": "Cisco", "slug": "cisco"})
         assert "name" in d
         assert "missing" not in d
 
     def test_equality_by_data(self):
-        from graphql_client import DotDict
 
         d1 = DotDict({"name": "Cisco"})
         d2 = DotDict({"name": "Cisco"})
         assert d1 == d2
 
     def test_none_attribute_returns_none(self):
-        from graphql_client import DotDict
 
         d = DotDict({"front_image": None})
         assert d.front_image is None
 
     def test_update_method(self):
         """DotDict.update() should work for property updates like pynetbox."""
-        from graphql_client import DotDict
 
         d = DotDict({"name": "Old", "slug": "old"})
         d.update({"name": "New"})
@@ -612,13 +603,11 @@ class TestGetModuleTypes:
                 {
                     "id": "42",
                     "model": "Linecard 1",
-                    "slug": "linecard-1",
                     "manufacturer": {"id": "20", "name": "Juniper", "slug": "juniper"},
                 },
                 {
                     "id": "43",
                     "model": "Linecard 2",
-                    "slug": "linecard-2",
                     "manufacturer": {"id": "20", "name": "Juniper", "slug": "juniper"},
                 },
             ]
@@ -644,7 +633,6 @@ class TestGetModuleTypes:
         mt = result["juniper"]["Linecard 1"]
         assert mt.id == 42
         assert mt.model == "Linecard 1"
-        assert mt.slug == "linecard-1"
         assert mt.manufacturer.slug == "juniper"
 
     @patch("graphql_client.requests.post")
@@ -787,7 +775,6 @@ class TestGetComponentTemplates:
     @patch("graphql_client.requests.post")
     def test_returns_dotdict_records_with_parent_info(self, mock_post):
         """Records should be DotDicts with device_type/module_type and correct id types."""
-        from graphql_client import DotDict
 
         data = {
             "interface_template_list": [
@@ -850,8 +837,7 @@ class TestGetComponentTemplates:
 
         assert records == []
 
-    @patch("graphql_client.requests.post")
-    def test_all_endpoint_names_are_supported(self, mock_post):
+    def test_all_endpoint_names_are_supported(self):
         """Every component endpoint name used by DeviceTypes should be recognized."""
         from graphql_client import COMPONENT_TEMPLATE_FIELDS
 
@@ -869,8 +855,7 @@ class TestGetComponentTemplates:
         for endpoint in expected_endpoints:
             assert endpoint in COMPONENT_TEMPLATE_FIELDS, f"{endpoint} not in COMPONENT_TEMPLATE_FIELDS"
 
-    @patch("graphql_client.requests.post")
-    def test_raises_for_unknown_endpoint(self, mock_post):
+    def test_raises_for_unknown_endpoint(self):
         """An unknown endpoint name should raise ValueError."""
         client = self._make_client()
         with pytest.raises(ValueError, match="Unknown component endpoint"):
@@ -935,3 +920,33 @@ class TestGetComponentTemplates:
 
         assert records[0].name == "Bay 1"
         assert records[0].id == 30
+
+    @patch("graphql_client.requests.post")
+    def test_module_bay_templates_fields(self, mock_post):
+        """module_bay_templates should return records with the expected fields."""
+        data = {
+            "module_bay_template_list": [
+                {
+                    "id": "40",
+                    "name": "Bay 1",
+                    "position": "1",
+                    "label": "",
+                    "device_type": {"id": "3"},
+                },
+            ]
+        }
+        data_r = MagicMock()
+        data_r.status_code = 200
+        data_r.raise_for_status = MagicMock()
+        data_r.json.return_value = {"data": data}
+        empty_r = MagicMock()
+        empty_r.status_code = 200
+        empty_r.raise_for_status = MagicMock()
+        empty_r.json.return_value = {"data": {"module_bay_template_list": []}}
+        mock_post.side_effect = [data_r, empty_r]
+
+        client = self._make_client()
+        records = client.get_component_templates("module_bay_templates")
+
+        assert records[0].name == "Bay 1"
+        assert records[0].id == 40

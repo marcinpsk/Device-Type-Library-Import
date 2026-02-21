@@ -5,6 +5,8 @@ pagination, authentication, and convenience methods that return data structures
 compatible with the existing REST-based code in ``netbox_api.py``.
 """
 
+import threading
+
 import requests
 
 
@@ -98,6 +100,15 @@ class NetBoxGraphQLClient:
         url: Base URL of the NetBox instance (e.g. ``"http://netbox.local"``).
         token: API authentication token.
         ignore_ssl: If True, skip SSL certificate verification.
+
+    Notes:
+        :attr:`DEFAULT_PAGE_SIZE` is a client-side default (25 000).  Most NetBox
+        instances cap ``MAX_PAGE_SIZE`` at 1 000 by default, in which case
+        :meth:`query_all` detects the clamping and emits a one-time warning.
+        If a server is configured to *reject* oversized ``limit`` values with a
+        GraphQL validation error instead of silently clamping them, callers
+        should lower ``page_size`` by passing it explicitly to :meth:`query_all`,
+        or raise the server's ``MAX_PAGE_SIZE`` setting to match.
     """
 
     DEFAULT_PAGE_SIZE = 25000
@@ -119,6 +130,7 @@ class NetBoxGraphQLClient:
         self.ignore_ssl = ignore_ssl
         self._log_handler = log_handler
         self._page_size_clamping_warned = False
+        self._page_size_clamping_lock = threading.Lock()
 
     # ── Low-level ──────────────────────────────────────────────────────────
 
@@ -210,21 +222,23 @@ class NetBoxGraphQLClient:
                     # The server may have clamped the page size.  We continue
                     # and warn once we confirm on the next page.
                     pass
-            elif n > 0 and not self._page_size_clamping_warned and effective_page_size < page_size:
+            elif n > 0 and effective_page_size < page_size:
                 # Second page arrived and the first page was smaller than
                 # requested — clamping confirmed.
-                self._page_size_clamping_warned = True
-                msg = (
-                    f"WARNING: NetBox capped the GraphQL page size at "
-                    f"{effective_page_size} (requested {page_size}). "
-                    f"Fetching all records will require more round-trips and "
-                    f"will be slower than expected. Consider raising "
-                    f"MAX_PAGE_SIZE on your NetBox server."
-                )
-                if self._log_handler is not None:
-                    self._log_handler.log(msg)
-                else:
-                    print(msg)
+                with self._page_size_clamping_lock:
+                    if not self._page_size_clamping_warned:
+                        self._page_size_clamping_warned = True
+                        msg = (
+                            f"WARNING: NetBox capped the GraphQL page size at "
+                            f"{effective_page_size} (requested {page_size}). "
+                            f"Fetching all records will require more round-trips and "
+                            f"will be slower than expected. Consider raising "
+                            f"MAX_PAGE_SIZE on your NetBox server."
+                        )
+                        if self._log_handler is not None:
+                            self._log_handler.log(msg)
+                        else:
+                            print(msg)
 
             # Stop when we received a partial page (end of data).
             if n < effective_page_size:
