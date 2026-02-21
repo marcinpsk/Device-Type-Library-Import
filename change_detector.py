@@ -95,7 +95,7 @@ COMPONENT_TYPES = {
     "power-outlets": ("power_outlet_templates", ["name", "type", "feed_leg", "label"]),
     "console-server-ports": ("console_server_port_templates", ["name", "type", "label"]),
     "rear-ports": ("rear_port_templates", ["name", "type", "positions", "label"]),
-    "front-ports": ("front_port_templates", ["name", "type", "rear_port_position", "label"]),
+    "front-ports": ("front_port_templates", ["name", "type", "label"]),
     "device-bays": ("device_bay_templates", ["name", "label"]),
     "module-bays": ("module_bay_templates", ["name", "position", "label"]),
 }
@@ -210,13 +210,19 @@ class ChangeDetector:
         if isinstance(netbox_value, str):
             netbox_value = netbox_value.rstrip()
 
-        # Coerce numeric strings for comparison (GraphQL serializes decimal fields as strings)
-        if isinstance(yaml_value, (int, float)) and isinstance(netbox_value, str):
+        # Coerce numeric strings for comparison (GraphQL serializes decimal fields as strings).
+        # Guard against bool since bool is a subclass of int; boolean fields (is_full_depth,
+        # mgmt_only, enabled) must never be coerced to float.
+        if isinstance(yaml_value, (int, float)) and not isinstance(yaml_value, bool) and isinstance(netbox_value, str):
             try:
                 netbox_value = float(netbox_value)
             except (ValueError, TypeError):
                 pass
-        elif isinstance(netbox_value, (int, float)) and isinstance(yaml_value, str):
+        elif (
+            isinstance(netbox_value, (int, float))
+            and not isinstance(netbox_value, bool)
+            and isinstance(yaml_value, str)
+        ):
             try:
                 yaml_value = float(yaml_value)
             except (ValueError, TypeError):

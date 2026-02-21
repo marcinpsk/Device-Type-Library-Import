@@ -507,17 +507,19 @@ def main():
                                 progress.update(_img_task, advance=count, visible=True, total=None)
 
                             netbox.device_types._image_progress = _adv_img
-                        netbox.create_device_types(
-                            device_types_to_process,
-                            progress=get_progress_wrapper(
-                                progress, device_types_to_process, desc="Processing Device Types"
-                            ),
-                            only_new=False,
-                            update=True,
-                            change_report=change_report,
-                            remove_components=args.remove_components,
-                        )
-                        netbox.device_types._image_progress = None
+                        try:
+                            netbox.create_device_types(
+                                device_types_to_process,
+                                progress=get_progress_wrapper(
+                                    progress, device_types_to_process, desc="Processing Device Types"
+                                ),
+                                only_new=False,
+                                update=True,
+                                change_report=change_report,
+                                remove_components=args.remove_components,
+                            )
+                        finally:
+                            netbox.device_types._image_progress = None
                     else:
                         handle.verbose_log("No device type changes to process.")
                 else:
@@ -531,14 +533,16 @@ def main():
                                 progress.update(_img_task, advance=count, visible=True, total=None)
 
                             netbox.device_types._image_progress = _adv_img
-                        netbox.create_device_types(
-                            device_types_to_process,
-                            progress=get_progress_wrapper(
-                                progress, device_types_to_process, desc="Creating Device Types"
-                            ),
-                            only_new=True,  # Skip existing devices in default mode
-                        )
-                        netbox.device_types._image_progress = None
+                        try:
+                            netbox.create_device_types(
+                                device_types_to_process,
+                                progress=get_progress_wrapper(
+                                    progress, device_types_to_process, desc="Creating Device Types"
+                                ),
+                                only_new=True,  # Skip existing devices in default mode
+                            )
+                        finally:
+                            netbox.device_types._image_progress = None
                     else:
                         handle.verbose_log("No new device types or missing images to process.")
 

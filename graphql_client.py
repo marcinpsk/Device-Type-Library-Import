@@ -85,7 +85,7 @@ COMPONENT_TEMPLATE_FIELDS = {
     "console_server_port_templates": ["id", "name", "type", "label"],
     "power_outlet_templates": ["id", "name", "type", "feed_leg", "label"],
     "rear_port_templates": ["id", "name", "type", "positions", "label"],
-    "front_port_templates": ["id", "name", "type", "rear_port_position", "label"],
+    "front_port_templates": ["id", "name", "type", "label"],
     "device_bay_templates": ["id", "name", "label"],
     "module_bay_templates": ["id", "name", "position", "label"],
 }
