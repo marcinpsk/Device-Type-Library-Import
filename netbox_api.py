@@ -683,6 +683,12 @@ class DeviceTypes:
         """
         return self.graphql.get_device_types()
 
+    # Endpoints whose GraphQL schema is missing fields required for accurate
+    # change detection and where the REST API provides the missing data.
+    # Add endpoint names here if a future NetBox version drops a field from
+    # GraphQL but keeps it in REST (or vice-versa).
+    REST_ONLY_ENDPOINTS: frozenset = frozenset()
+
     @staticmethod
     def _component_preload_targets():
         """Return the list of ``(endpoint_attr, display_label)`` pairs used for component preloading."""
@@ -1043,16 +1049,29 @@ class DeviceTypes:
                     preload_job["executor"] = None
 
     def _fetch_global_endpoint_records(self, endpoint_name, progress_callback=None, expected_total=None):
-        """Fetch all records for *endpoint_name* from NetBox via GraphQL.
+        """Fetch all records for *endpoint_name* from NetBox.
+
+        Most endpoints are fetched via GraphQL for speed.  Endpoints listed in
+        :attr:`REST_ONLY_ENDPOINTS` are fetched via the pynetbox REST client
+        instead because their GraphQL schema is missing fields that are required
+        for accurate change detection (e.g. ``rear_port_position`` on
+        ``front_port_templates``).
 
         Args:
             endpoint_name (str): Component template endpoint name (e.g. ``"interface_templates"``).
-            progress_callback (callable | None): Called with ``(endpoint_name, advance)`` periodically.
+            progress_callback (callable | None): Called with ``(endpoint_name, advance)`` once when done.
             expected_total (int | None): Expected record count; reserved for callers, unused here.
 
         Returns:
-            list: All component template records as DotDicts.
+            list: All component template records.
         """
+        if endpoint_name in self.REST_ONLY_ENDPOINTS:
+            endpoint = getattr(self.netbox.dcim, endpoint_name)
+            records = list(endpoint.all())
+            if progress_callback is not None and records:
+                progress_callback(endpoint_name, len(records))
+            return records
+
         on_page = None
         if progress_callback is not None:
 
