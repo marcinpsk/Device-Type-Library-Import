@@ -1123,34 +1123,34 @@ class DeviceTypes:
             return {key: parent_id}
 
     def _get_cached_or_fetch(self, cache_name, parent_id, parent_type, endpoint):
-        """Return cached components or fall back to fetching via GraphQL/REST.
+        """Return cached components or fall back to a targeted REST filter.
+
+        The global preload (``preload_all_components``) populates most entries before
+        any create/update operations.  A cache miss therefore occurs only for newly
+        created device types (not yet in the preload snapshot) or after a cache entry
+        has been invalidated following a mutation.  In both cases a targeted
+        ``endpoint.filter()`` call is fast and returns only the relevant records.
 
         Args:
             cache_name: Key in self.cached_components (e.g. "rear_port_templates")
             parent_id: Device type or module type ID
             parent_type: "device" or "module"
-            endpoint: pynetbox endpoint proxy (used for module type fallback)
+            endpoint: pynetbox endpoint proxy used for the targeted REST filter
 
         Returns:
-            Dict mapping component name -> DotDict record
+            Dict mapping component name -> record
         """
         cache_key = (parent_type, parent_id)
         if cache_name in self.cached_components:
             if cache_key in self.cached_components[cache_name]:
                 return self.cached_components[cache_name][cache_key]
 
-        if parent_type == "device":
-            # Fetch all records globally and rebuild cache for this endpoint
-            records = self.graphql.get_component_templates(cache_name)
-            cache, _count = self._build_component_cache(records)
-            self.cached_components.setdefault(cache_name, {}).update(cache)
-            return self.cached_components.get(cache_name, {}).get(cache_key, {})
-        else:
-            filter_kwargs = self._get_filter_kwargs(parent_id, parent_type)
-            records = list(endpoint.filter(**filter_kwargs))
-            result = {item.name: item for item in records}
-            self.cached_components.setdefault(cache_name, {})[cache_key] = result
-            return result
+        # Cache miss: targeted REST filter (fast for both device and module types)
+        filter_kwargs = self._get_filter_kwargs(parent_id, parent_type)
+        records = list(endpoint.filter(**filter_kwargs))
+        result = {item.name: item for item in records}
+        self.cached_components.setdefault(cache_name, {})[cache_key] = result
+        return result
 
     def preload_module_type_components(self, module_type_ids, component_keys):
         """Bulk-fetch components for module types and populate the cache.

@@ -252,7 +252,6 @@ class NetBoxGraphQLClient:
           module_type_list(pagination: $pagination) {
             id
             model
-            slug
             manufacturer {
               id
               name
