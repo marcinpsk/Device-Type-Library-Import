@@ -65,26 +65,29 @@ jobs:
 
       - name: Configure NetBox
         run: |
-          cat > netbox/netbox/configuration.py << 'EOF'
-          ALLOWED_HOSTS = ['*']
-          DATABASE = {
-              'NAME': 'netbox',
-              'USER': 'netbox',
-              'PASSWORD': 'netbox',
-              'HOST': 'localhost',
-              'PORT': '5432',
-              'CONN_MAX_AGE': 300,
-              'ENGINE': 'django.db.backends.postgresql',
-          }
-          REDIS = {
-              'tasks':   {'HOST': 'localhost', 'PORT': 6379, 'DATABASE': 0, 'SSL': False},
-              'caching': {'HOST': 'localhost', 'PORT': 6379, 'DATABASE': 1, 'SSL': False},
-          }
-          SECRET_KEY = 'test-secret-key-not-for-production-1234567890123456'  # checkov:skip=CKV_SECRET_6
-          API_TOKEN_PEPPERS = {0: 'a' * 64}  # checkov:skip=CKV_SECRET_6
-          DEBUG = True
-          LOGIN_REQUIRED = False
-          EOF
+          python3 -c "
+          import textwrap, pathlib
+          pathlib.Path('netbox/netbox/netbox/configuration.py').write_text(textwrap.dedent('''
+              ALLOWED_HOSTS = ['*']
+              DATABASE = {
+                  'NAME': 'netbox',
+                  'USER': 'netbox',
+                  'PASSWORD': 'netbox',
+                  'HOST': 'localhost',
+                  'PORT': '5432',
+                  'CONN_MAX_AGE': 300,
+                  'ENGINE': 'django.db.backends.postgresql',
+              }
+              REDIS = {
+                  'tasks':   {'HOST': 'localhost', 'PORT': 6379, 'DATABASE': 0, 'SSL': False},
+                  'caching': {'HOST': 'localhost', 'PORT': 6379, 'DATABASE': 1, 'SSL': False},
+              }
+              SECRET_KEY = 'test-secret-key-not-for-production-1234567890123456'  # checkov:skip=CKV_SECRET_6
+              API_TOKEN_PEPPERS = {0: 'a' * 64}  # checkov:skip=CKV_SECRET_6
+              DEBUG = True
+              LOGIN_REQUIRED = False
+          ''').lstrip(), encoding='utf-8')
+          "
 
       - name: Run NetBox migrations
         working-directory: netbox/netbox
