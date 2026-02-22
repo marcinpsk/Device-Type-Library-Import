@@ -9,6 +9,7 @@ dependencies = [
     "pynetbox>=7.5.0",
     "python-dotenv>=1.2.1",
     "pyyaml>=6.0.3",
+    "requests>=2.32.5",
     "rich>=14.0.0",
 ]
 
@@ -34,3 +35,4 @@ timeout_method = "thread"
 testpaths = [
   "tests"
 ]
+norecursedirs = ["tests/integration"]

@@ -1,0 +1,162 @@
+# SPDX-License-Identifier: MIT
+name: Weekly test against NetBox main
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # Every Monday at 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  integration-test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: netbox
+          POSTGRES_USER: netbox
+          POSTGRES_PASSWORD: netbox
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+      - name: Checkout importer
+        uses: actions/checkout@v6
+        with:
+          path: importer
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Checkout NetBox main
+        uses: actions/checkout@v6
+        with:
+          repository: netbox-community/netbox
+          path: netbox
+          ref: main
+
+      - name: Install NetBox dependencies
+        run: pip install -r netbox/requirements.txt
+
+      - name: Configure NetBox
+        run: |
+          cat > netbox/netbox/configuration.py << 'EOF'
+          ALLOWED_HOSTS = ['*']
+          DATABASE = {
+              'NAME': 'netbox',
+              'USER': 'netbox',
+              'PASSWORD': 'netbox',
+              'HOST': 'localhost',
+              'PORT': '5432',
+              'CONN_MAX_AGE': 300,
+              'ENGINE': 'django.db.backends.postgresql',
+          }
+          REDIS = {
+              'tasks':   {'HOST': 'localhost', 'PORT': 6379, 'DATABASE': 0, 'SSL': False},
+              'caching': {'HOST': 'localhost', 'PORT': 6379, 'DATABASE': 1, 'SSL': False},
+          }
+          SECRET_KEY = 'test-secret-key-not-for-production-1234567890123456'  # checkov:skip=CKV_SECRET_6
+          API_TOKEN_PEPPERS = {0: 'a' * 64}  # checkov:skip=CKV_SECRET_6
+          DEBUG = True
+          LOGIN_REQUIRED = False
+          EOF
+
+      - name: Run NetBox migrations
+        working-directory: netbox/netbox
+        run: python manage.py migrate --no-input
+
+      - name: Create admin user and API token
+        working-directory: netbox/netbox
+        run: |
+          DJANGO_SUPERUSER_PASSWORD=admin python manage.py createsuperuser \
+            --username=admin --email=admin@example.com --no-input
+          TOKEN=$(python manage.py shell -c "
+          from django.apps import apps
+          Token = apps.get_model('users', 'Token')
+          from django.contrib.auth import get_user_model
+          user = get_user_model().objects.get(username='admin')
+          t = Token.objects.create(user=user)
+          print(t.key)
+          ")
+          echo "NETBOX_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          echo "Created API token"
+
+      - name: Start NetBox dev server
+        working-directory: netbox/netbox
+        run: |
+          rm -f /tmp/netbox.log && touch /tmp/netbox.log
+          python manage.py runserver 0.0.0.0:8000 >> /tmp/netbox.log 2>&1 &
+          echo $! > /tmp/netbox.pid
+          # Wait up to 60 s for NetBox to respond
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8000/api/ > /dev/null 2>&1; then
+              echo "NetBox is ready (attempt $i)"
+              break
+            fi
+            echo "Waiting for NetBox... ($i/30)"
+            sleep 2
+          done
+          curl -sf http://localhost:8000/api/ > /dev/null || { echo "NetBox did not start"; exit 1; }
+
+      - name: Install importer dependencies
+        working-directory: importer
+        run: uv sync
+
+      - name: Set up test-fixtures git repo
+        run: |
+          mkdir -p /tmp/test-fixtures/device-types/TestVendor
+          mkdir -p /tmp/test-fixtures/module-types/TestVendor
+          mkdir -p /tmp/test-fixtures/elevation-images/TestVendor
+          cp importer/tests/fixtures/device-types/TestVendor/*.yaml \
+             /tmp/test-fixtures/device-types/TestVendor/
+          cp importer/tests/fixtures/module-types/TestVendor/*.yaml \
+             /tmp/test-fixtures/module-types/TestVendor/
+          cp importer/tests/fixtures/elevation-images/TestVendor/*.png \
+             /tmp/test-fixtures/elevation-images/TestVendor/
+          cd /tmp/test-fixtures
+          git init -b main
+          git config user.email "ci@test.local"
+          git config user.name "CI"
+          git add .
+          git commit -m "test fixtures"
+
+      - name: Run integration tests
+        working-directory: importer
+        env:
+          NETBOX_URL: http://localhost:8000
+          NETBOX_TOKEN: ${{ env.NETBOX_TOKEN }}
+          REPO_URL: file:///tmp/test-fixtures
+          REPO_BRANCH: main
+        run: uv run python tests/integration/test_import.py
+
+      - name: Print NetBox version on failure
+        if: failure()
+        run: |
+          curl -s http://localhost:8000/api/status/ | python3 -m json.tool || true
+          echo "--- NetBox server log ---"
+          cat /tmp/netbox.log 2>/dev/null | tail -50 || true

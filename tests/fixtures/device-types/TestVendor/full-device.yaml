@@ -1,0 +1,52 @@
+---
+manufacturer: TestVendor
+model: Test Full Device
+slug: testvendor-full-device
+part_number: TFD-1
+u_height: 2
+is_full_depth: true
+weight: 10.5
+weight_unit: kg
+airflow: front-to-rear
+comments: Integration test device covering all component types.
+front_image: true
+rear_image: true
+interfaces:
+  - name: eth0
+    type: 1000base-t
+  - name: mgmt0
+    type: 1000base-t
+    mgmt_only: true
+power-ports:
+  - name: PSU1
+    type: iec-60320-c14
+    maximum_draw: 500
+    allocated_draw: 250
+console-ports:
+  - name: Console
+    type: de-9
+console-server-ports:
+  - name: CSP1
+    type: de-9
+power-outlets:
+  - name: Outlet1
+    type: iec-60320-c13
+    power_port: PSU1
+rear-ports:
+  - name: RP1
+    type: 8p8c
+    positions: 2
+front-ports:
+  - name: FP1
+    type: 8p8c
+    rear_port: RP1
+    rear_port_position: 1
+  - name: FP2
+    type: 8p8c
+    rear_port: RP1
+    rear_port_position: 2
+device-bays:
+  - name: Bay1
+module-bays:
+  - name: Module Bay 1
+    position: 1
