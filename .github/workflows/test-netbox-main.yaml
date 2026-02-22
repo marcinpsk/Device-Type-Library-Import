@@ -82,11 +82,11 @@ jobs:
                   'tasks':   {'HOST': 'localhost', 'PORT': 6379, 'DATABASE': 0, 'SSL': False},
                   'caching': {'HOST': 'localhost', 'PORT': 6379, 'DATABASE': 1, 'SSL': False},
               }
-              SECRET_KEY = 'test-secret-key-not-for-production-1234567890123456'
-              API_TOKEN_PEPPERS = {0: 'a' * 64}
+              SECRET_KEY = 'test-secret-key-not-for-production-1234567890123456'  # checkov:skip=CKV_SECRET_6
+              API_TOKEN_PEPPERS = {0: 'a' * 64}  # checkov:skip=CKV_SECRET_6
               DEBUG = True
               LOGIN_REQUIRED = False
-          ''').lstrip())
+          ''').lstrip(), encoding='utf-8')
           "
 
       - name: Run NetBox migrations
