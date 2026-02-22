@@ -1,0 +1,15 @@
+---
+manufacturer: TestVendor
+model: Test Server 1U
+slug: testvendor-server-1u
+part_number: TSR-1U
+u_height: 1
+is_full_depth: true
+interfaces:
+  - name: eth0
+    type: 1000base-t
+  - name: eth1
+    type: 1000base-t
+power-ports:
+  - name: PSU1
+    type: iec-60320-c14
