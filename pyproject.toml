@@ -40,6 +40,8 @@ norecursedirs = ["tests/integration"]
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
-branch = "main"
 commit_message = "chore(release): v{version}"
 build_command = ""
+
+[tool.semantic_release.branches.main]
+match = "(main|master)"

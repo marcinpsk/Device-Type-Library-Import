@@ -9,7 +9,7 @@ import concurrent.futures
 
 def validate_git_url(url):
     """
-    Determine whether a Git remote URL is allowed (HTTPS or SSH).
+    Determine whether a Git remote URL is allowed (HTTPS, SSH, or file://).
 
     Parameters:
         url (str): Git remote URL to validate. Accepted formats are HTTPS URLs with a hostname (e.g., https://host/...),
