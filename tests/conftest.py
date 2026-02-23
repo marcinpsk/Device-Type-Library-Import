@@ -1,10 +1,6 @@
 import os
-import sys
 import pytest
 from unittest.mock import MagicMock, patch
-
-# Ensure the project root is in sys.path
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
 @pytest.fixture(autouse=True)
@@ -27,8 +23,7 @@ def mock_env_vars():
 @pytest.fixture(autouse=True)
 def mock_git_repo():
     """Mock git.Repo to prevent actual git operations during settings import."""
-    with patch("repo.Repo") as mock_repo:
-        # Mock the remote origin logic
+    with patch("core.repo.Repo") as mock_repo:
         mock_remote = MagicMock()
         mock_remote.url = "https://example.com/repo.git"
         mock_repo.return_value.remotes.origin = mock_remote
@@ -39,7 +34,7 @@ def mock_git_repo():
 @pytest.fixture
 def mock_pynetbox():
     """Mock pynetbox to prevent API calls."""
-    with patch("netbox_api.pynetbox") as mock_nb:
+    with patch("core.netbox_api.pynetbox") as mock_nb:
         yield mock_nb
 
 
@@ -47,12 +42,11 @@ def mock_pynetbox():
 def mock_graphql_requests():
     """Mock the HTTP session used by NetBoxGraphQLClient to prevent real calls.
 
-    Patches ``requests.Session`` in ``graphql_client`` so any client created
+    Patches ``requests.Session`` in ``core.graphql_client`` so any client created
     during a test uses a mock session.  Returns empty lists for all GraphQL
-    list queries by default.  Tests that need specific data can override via
-    ``mock_graphql_requests.side_effect`` or ``.return_value``.
+    list queries by default.
     """
-    with patch("graphql_client.requests.Session") as MockSession:
+    with patch("core.graphql_client.requests.Session") as MockSession:
         mock_session = MockSession.return_value
         response = MagicMock()
         response.status_code = 200
@@ -71,23 +65,13 @@ def mock_graphql_requests():
 
 @pytest.fixture
 def mock_post(mock_graphql_requests):
-    """Alias for mock_graphql_requests — the mock session.post callable.
-
-    Allows test_graphql_client.py methods to accept ``mock_post`` as a fixture
-    parameter with the same interface as the old ``@patch`` decorator provided.
-    """
+    """Alias for mock_graphql_requests — the mock session.post callable."""
     return mock_graphql_requests
 
 
 @pytest.fixture
 def graphql_client():
-    """Provide a NetBoxGraphQLClient instance for tests that need one.
-
-    Relies on the ``mock_graphql_requests`` fixture (autouse=True) which patches
-    ``graphql_client.requests.Session`` so that no real HTTP calls are made.
-    Tests using this fixture can override mock_graphql_requests.side_effect or
-    mock_graphql_requests.return_value to supply custom GraphQL responses.
-    """
-    from graphql_client import NetBoxGraphQLClient
+    """Provide a NetBoxGraphQLClient instance backed by the mock session."""
+    from core.graphql_client import NetBoxGraphQLClient
 
     return NetBoxGraphQLClient("http://netbox.local", "dummy_token")

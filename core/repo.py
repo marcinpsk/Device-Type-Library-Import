@@ -13,7 +13,8 @@ def validate_git_url(url):
 
     Parameters:
         url (str): Git remote URL to validate. Accepted formats are HTTPS URLs with a hostname (e.g., https://host/...),
-            SSH scp-like form beginning with `git@host:` (e.g., git@host:org/repo.git), or ssh URLs starting with `ssh://`.
+            SSH scp-like form beginning with `git@host:` (e.g., git@host:org/repo.git), ssh URLs starting with `ssh://`,
+            or file:// URLs for local repositories (CI/testing).
 
     Returns:
         (bool, str or None): `True, None` if the URL is allowed; otherwise `False` and a short error message explaining why.
@@ -46,7 +47,11 @@ def validate_git_url(url):
             return True, None
         return False, "Invalid SSH URL"
 
-    return False, "URL must use HTTPS or SSH protocol"
+    # Allow file:// URLs for local repos (CI / testing)
+    if url.startswith("file://"):
+        return True, None
+
+    return False, "URL must use HTTPS, SSH, or file protocol"
 
 
 def parse_single_file(file):
@@ -111,7 +116,7 @@ class DTLRepo:
         self.cwd = os.getcwd()
 
         if os.path.isdir(self.repo_path):
-            # Repo exists, pull from existing remote (no URL validation needed)
+            # Repo exists; pull from existing remote (pull_repo validates origin URL)
             self.pull_repo()
         else:
             # Validate URL only when cloning a new repo
@@ -161,12 +166,10 @@ class DTLRepo:
                 "Package devicetype-library is already installed, " + f"updating {self.get_absolute_path()}"
             )
             self.repo = Repo(self.repo_path)
-            if not self.repo.remotes.origin.url.endswith(".git"):
-                self.handle.exception(
-                    "GitInvalidRepositoryError",
-                    self.repo.remotes.origin.url,
-                    f"Origin URL {self.repo.remotes.origin.url} does not end with .git",
-                )
+            origin_url = self.repo.remotes.origin.url
+            is_valid, error_msg = validate_git_url(origin_url)
+            if not is_valid:
+                self.handle.exception("InvalidGitURL", origin_url, error_msg)
             self.repo.remotes.origin.pull()
             self.repo.git.checkout(self.branch)
             self.handle.verbose_log(f"Pulled Repo {self.repo.remotes.origin.url}")

@@ -140,9 +140,12 @@ class NetBoxGraphQLClient:
         self._page_size_clamping_lock = threading.Lock()
 
         self._session = requests.Session()
+        # v2 tokens start with "nbt_" prefix (format: nbt_<key>.<secret>);
+        # v1 tokens are plain 40-char hex strings using legacy Token auth.
+        auth_scheme = "Bearer" if self.token.startswith("nbt_") else "Token"
         self._session.headers.update(
             {
-                "Authorization": f"Token {self.token}",
+                "Authorization": f"{auth_scheme} {self.token}",
                 "Content-Type": "application/json",
             }
         )

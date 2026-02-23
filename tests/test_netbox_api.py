@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
-from netbox_api import NetBox, DeviceTypes
+from core.netbox_api import NetBox, DeviceTypes
 from helpers import paginate_dispatch
 
 # All component list keys used by the GraphQL client for empty-response fallback.
@@ -420,7 +420,7 @@ def test_upload_images_success_logs_verbose_only(mock_settings, mock_pynetbox, g
     mock_settings.handle.log.reset_mock()
     mock_settings.handle.verbose_log.reset_mock()
 
-    with patch("netbox_api.requests.patch") as mock_patch:
+    with patch("core.netbox_api.requests.patch") as mock_patch:
         response = MagicMock()
         response.status_code = 200
         response.raise_for_status.return_value = None
@@ -540,7 +540,7 @@ def test_filter_actionable_module_types_includes_module_with_missing_component(
 
 def test_update_components_m2m_front_port_position(mock_settings, mock_pynetbox, graphql_client):
     """On NetBox 4.5+, rear_port_position updates should use the M2M rear_ports array format."""
-    from change_detector import ChangeType, ComponentChange, PropertyChange
+    from core.change_detector import ChangeType, ComponentChange, PropertyChange
 
     mock_nb_api = MagicMock()
     dt = DeviceTypes(mock_nb_api, mock_settings.handle, MagicMock(), False, False, graphql=graphql_client)
@@ -585,7 +585,7 @@ def test_update_components_m2m_front_port_position(mock_settings, mock_pynetbox,
 
 def test_update_components_m2m_no_mapping_warns(mock_settings, mock_pynetbox, graphql_client):
     """On NetBox 4.5+, a rear_port_position update with no existing M2M mapping should warn, not update."""
-    from change_detector import ChangeType, ComponentChange, PropertyChange
+    from core.change_detector import ChangeType, ComponentChange, PropertyChange
 
     mock_nb_api = MagicMock()
     dt = DeviceTypes(mock_nb_api, mock_settings.handle, MagicMock(), False, False, graphql=graphql_client)

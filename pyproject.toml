@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "gitpython>=3.1.45",
-    "pynetbox>=7.5.0",
+    "pynetbox>=7.6.0",
     "python-dotenv>=1.2.1",
     "pyyaml>=6.0.3",
     "requests>=2.32.5",
@@ -32,7 +32,14 @@ line-length = 120
 [tool.pytest.ini_options]
 timeout = 20
 timeout_method = "thread"
+pythonpath = ["."]
 testpaths = [
   "tests"
 ]
 norecursedirs = ["tests/integration"]
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+branch = "main"
+commit_message = "chore(release): v{version}"
+build_command = ""

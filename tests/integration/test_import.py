@@ -71,8 +71,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 # Import after sys.path manipulation so local modules resolve correctly.
-from change_detector import DEVICE_TYPE_PROPERTIES  # noqa: E402
-from graphql_client import COMPONENT_TEMPLATE_FIELDS, NetBoxGraphQLClient, _NO_MODULE_TYPE  # noqa: E402
+from core.change_detector import DEVICE_TYPE_PROPERTIES  # noqa: E402
+from core.graphql_client import COMPONENT_TEMPLATE_FIELDS, NetBoxGraphQLClient, _NO_MODULE_TYPE  # noqa: E402
 
 NETBOX_URL = (os.environ.get("NETBOX_URL") or "").rstrip("/") or None
 NETBOX_TOKEN = os.environ.get("NETBOX_TOKEN")
@@ -80,7 +80,9 @@ IGNORE_SSL = os.environ.get("IGNORE_SSL_ERRORS", "False").lower() == "true"
 
 session = requests.Session()
 if NETBOX_TOKEN:
-    session.headers["Authorization"] = f"Token {NETBOX_TOKEN}"
+    # v2 tokens (nbt_ prefix) require Bearer auth; v1 tokens use legacy Token auth
+    auth_scheme = "Bearer" if NETBOX_TOKEN.startswith("nbt_") else "Token"
+    session.headers["Authorization"] = f"{auth_scheme} {NETBOX_TOKEN}"
 session.verify = not IGNORE_SSL
 
 # ──────────────────────────────────────────────────────────────────────────────

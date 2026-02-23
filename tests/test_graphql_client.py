@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import MagicMock
 import requests
 
-from graphql_client import DotDict
+from core.graphql_client import DotDict
 
 
 def _make_paged_responses(data, list_key):
@@ -105,7 +105,7 @@ class TestNetBoxGraphQLClient:
     """Tests for NetBoxGraphQLClient initialization and configuration."""
 
     def test_init_stores_config(self):
-        from graphql_client import NetBoxGraphQLClient
+        from core.graphql_client import NetBoxGraphQLClient
 
         client = NetBoxGraphQLClient("http://netbox.local", "mytoken", ignore_ssl=True)
         assert client.url == "http://netbox.local"
@@ -114,23 +114,39 @@ class TestNetBoxGraphQLClient:
         assert client.ignore_ssl is True
 
     def test_init_strips_trailing_slash(self):
-        from graphql_client import NetBoxGraphQLClient
+        from core.graphql_client import NetBoxGraphQLClient
 
         client = NetBoxGraphQLClient("http://netbox.local/", "tok")
         assert client.graphql_url == "http://netbox.local/graphql/"
 
     def test_init_defaults_ignore_ssl_false(self):
-        from graphql_client import NetBoxGraphQLClient
+        from core.graphql_client import NetBoxGraphQLClient
 
         client = NetBoxGraphQLClient("http://netbox.local", "tok")
         assert client.ignore_ssl is False
+
+    def test_v1_token_uses_token_auth(self):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        client = NetBoxGraphQLClient("http://netbox.local", "abcdef1234567890abcdef1234567890abcdef12")
+        client._session.headers.update.assert_called_once_with(
+            {"Authorization": "Token abcdef1234567890abcdef1234567890abcdef12", "Content-Type": "application/json"}
+        )
+
+    def test_v2_token_uses_bearer_auth(self):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        client = NetBoxGraphQLClient("http://netbox.local", "nbt_abc123.secrettoken")
+        client._session.headers.update.assert_called_once_with(
+            {"Authorization": "Bearer nbt_abc123.secrettoken", "Content-Type": "application/json"}
+        )
 
 
 class TestGraphQLQuery:
     """Tests for the low-level query() method."""
 
     def _make_client(self, **kwargs):
-        from graphql_client import NetBoxGraphQLClient
+        from core.graphql_client import NetBoxGraphQLClient
 
         return NetBoxGraphQLClient("http://netbox.local", "testtoken", **kwargs)
 
@@ -208,7 +224,7 @@ class TestGraphQLQuery:
         assert client._session.verify is True
 
     def test_query_raises_on_http_error(self, mock_post):
-        from graphql_client import GraphQLError
+        from core.graphql_client import GraphQLError
 
         mock_response = MagicMock()
         mock_response.status_code = 500
@@ -220,7 +236,7 @@ class TestGraphQLQuery:
             client.query("{ manufacturer_list { id } }")
 
     def test_query_raises_on_graphql_errors(self, mock_post):
-        from graphql_client import GraphQLError
+        from core.graphql_client import GraphQLError
 
         mock_response = MagicMock()
         mock_response.status_code = 200
@@ -239,7 +255,7 @@ class TestGraphQLQueryAll:
     """Tests for paginated query_all() method."""
 
     def _make_client(self):
-        from graphql_client import NetBoxGraphQLClient
+        from core.graphql_client import NetBoxGraphQLClient
 
         return NetBoxGraphQLClient("http://netbox.local", "tok")
 
@@ -354,7 +370,7 @@ class TestGraphQLQueryAll:
             def log(self, msg):
                 warned_msgs.append(msg)
 
-        from graphql_client import NetBoxGraphQLClient
+        from core.graphql_client import NetBoxGraphQLClient
 
         client = NetBoxGraphQLClient("http://netbox.local", "tok", log_handler=FakeLog())
         result = client.query_all(
@@ -394,7 +410,7 @@ class TestGraphQLQueryAll:
             def log(self, msg):
                 warned_msgs.append(msg)
 
-        from graphql_client import NetBoxGraphQLClient
+        from core.graphql_client import NetBoxGraphQLClient
 
         client = NetBoxGraphQLClient("http://netbox.local", "tok", log_handler=FakeLog())
         client.query_all(
@@ -419,7 +435,7 @@ class TestGetManufacturers:
     """Tests for the get_manufacturers() convenience method."""
 
     def _make_client(self):
-        from graphql_client import NetBoxGraphQLClient
+        from core.graphql_client import NetBoxGraphQLClient
 
         client = NetBoxGraphQLClient("http://netbox.local", "tok")
         return client
@@ -464,7 +480,7 @@ class TestGetDeviceTypes:
     """Tests for the get_device_types() convenience method."""
 
     def _make_client(self):
-        from graphql_client import NetBoxGraphQLClient
+        from core.graphql_client import NetBoxGraphQLClient
 
         return NetBoxGraphQLClient("http://netbox.local", "tok")
 
@@ -579,7 +595,7 @@ class TestGetModuleTypes:
     """Tests for the get_module_types() convenience method."""
 
     def _make_client(self):
-        from graphql_client import NetBoxGraphQLClient
+        from core.graphql_client import NetBoxGraphQLClient
 
         return NetBoxGraphQLClient("http://netbox.local", "tok")
 
@@ -630,7 +646,7 @@ class TestGetModuleTypeImages:
     """Tests for the get_module_type_images() convenience method."""
 
     def _make_client(self):
-        from graphql_client import NetBoxGraphQLClient
+        from core.graphql_client import NetBoxGraphQLClient
 
         return NetBoxGraphQLClient("http://netbox.local", "tok")
 
@@ -725,7 +741,7 @@ class TestGetComponentTemplates:
     """Tests for the get_component_templates() convenience method."""
 
     def _make_client(self):
-        from graphql_client import NetBoxGraphQLClient
+        from core.graphql_client import NetBoxGraphQLClient
 
         return NetBoxGraphQLClient("http://netbox.local", "tok")
 
@@ -786,7 +802,7 @@ class TestGetComponentTemplates:
 
     def test_all_endpoint_names_are_supported(self):
         """Every component endpoint name used by DeviceTypes should be recognized."""
-        from graphql_client import COMPONENT_TEMPLATE_FIELDS
+        from core.graphql_client import COMPONENT_TEMPLATE_FIELDS
 
         expected_endpoints = [
             "interface_templates",
@@ -882,13 +898,13 @@ class TestCustomPageSize:
         assert graphql_client.DEFAULT_PAGE_SIZE == 5000
 
     def test_custom_page_size(self):
-        from graphql_client import NetBoxGraphQLClient
+        from core.graphql_client import NetBoxGraphQLClient
 
         client = NetBoxGraphQLClient("http://netbox.local", "tok", page_size=500)
         assert client.DEFAULT_PAGE_SIZE == 500
 
     def test_custom_page_size_used_in_query_all(self, mock_post):
-        from graphql_client import NetBoxGraphQLClient
+        from core.graphql_client import NetBoxGraphQLClient
 
         client = NetBoxGraphQLClient("http://netbox.local", "tok", page_size=100)
         mock_post.return_value.json.return_value = {"data": {"items": []}}

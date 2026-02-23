@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock
 
-from change_detector import ChangeDetector
+from core.change_detector import ChangeDetector
 
 
 class TestCompareImageProperties:
