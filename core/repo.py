@@ -49,7 +49,10 @@ def validate_git_url(url):
 
     # Allow file:// URLs for local repos (CI / testing)
     if url.startswith("file://"):
-        return True, None
+        parsed = urlparse(url)
+        if parsed.path or parsed.netloc:
+            return True, None
+        return False, "Invalid file:// URL: path is empty"
 
     return False, "URL must use HTTPS, SSH, or file protocol"
 
