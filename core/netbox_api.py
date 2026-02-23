@@ -9,8 +9,15 @@ import os
 import glob
 from pathlib import Path
 
-from change_detector import COMPONENT_ALIASES, ChangeType
-from graphql_client import NetBoxGraphQLClient
+from core.change_detector import COMPONENT_ALIASES, ChangeType
+from core.graphql_client import NetBoxGraphQLClient
+
+
+def _build_auth_header(token):
+    """Return the Authorization header value for the given API token."""
+    scheme = "Bearer" if token.startswith("nbt_") else "Token"
+    return f"{scheme} {token}"
+
 
 # Supported image file extensions for module-type image uploads
 IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".svg"}
@@ -1911,7 +1918,7 @@ class DeviceTypes:
             device_type (int | str): Identifier of the device type to update in NetBox (used in the endpoint URL).
         """
         url = f"{baseurl}/api/dcim/device-types/{device_type}/"
-        headers = {"Authorization": f"Token {token}"}
+        headers = {"Authorization": _build_auth_header(token)}
 
         # Open files with proper cleanup to avoid resource leaks
         file_handles = {}
@@ -1954,7 +1961,7 @@ class DeviceTypes:
             bool: True if the upload succeeded, False on any error.
         """
         url = f"{baseurl}/api/extras/image-attachments/"
-        headers = {"Authorization": f"Token {token}"}
+        headers = {"Authorization": _build_auth_header(token)}
         data = {
             "object_type": object_type,
             "object_id": str(object_id),

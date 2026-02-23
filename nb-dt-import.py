@@ -5,11 +5,11 @@ import os
 from argparse import ArgumentParser
 from contextlib import contextmanager
 
-import settings
-from netbox_api import NetBox
-from log_handler import LogHandler
-from repo import DTLRepo
-from change_detector import ChangeDetector, IMAGE_PROPERTIES
+from core import settings
+from core.netbox_api import NetBox
+from core.log_handler import LogHandler
+from core.repo import DTLRepo
+from core.change_detector import ChangeDetector, IMAGE_PROPERTIES
 
 
 import sys

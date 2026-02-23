@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Only run on squash-merge commits, skip release commits from this workflow
+    if: "!startsWith(github.event.head_commit.message, 'chore(release):')"
+
+    concurrency:
+      group: release
+      cancel-in-progress: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_PAT }}
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version-file: "pyproject.toml"
+
+      - name: Install python-semantic-release
+        run: uv pip install python-semantic-release --system
+
+      - name: Semantic Release
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+        run: semantic-release version --changelog --push --tag --vcs-release

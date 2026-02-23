@@ -40,7 +40,7 @@ class LogHandler:
             "SSLError": f"SSL verification failed. IGNORE_SSL_ERRORS is {exception}. Set IGNORE_SSL_ERRORS to True if you want to ignore this error. EXITING.",
             "GitCommandError": f'The repo "{exception}" is not a valid git repo.',
             "GitInvalidRepositoryError": f'The repo "{exception}" is not a valid git repo.',
-            "InvalidGitURL": f"Invalid Git URL: {exception}. URL must use HTTPS or SSH protocol.",
+            "InvalidGitURL": f"Invalid Git URL: {exception}. URL must use HTTPS, SSH, or file protocol.",
             "Exception": f'An unknown error occurred: "{exception}"',
         }
 

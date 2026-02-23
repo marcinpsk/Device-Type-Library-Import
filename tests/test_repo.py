@@ -1,5 +1,5 @@
 from unittest.mock import MagicMock, mock_open, patch
-from repo import DTLRepo
+from core.repo import DTLRepo
 
 
 def test_slug_format():
@@ -14,7 +14,7 @@ def test_slug_format():
     mock_handle = MagicMock()
 
     # We mock 'os.path.isdir' to avoid git operations in __init__
-    with patch("os.path.isdir", return_value=True), patch("repo.Repo"):
+    with patch("os.path.isdir", return_value=True), patch("core.repo.Repo"):
         repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
 
         assert repo.slug_format("Cisco Systems") == "cisco-systems"
@@ -28,7 +28,7 @@ def test_parse_files():
     mock_args.branch = "master"
     mock_handle = MagicMock()
 
-    with patch("os.path.isdir", return_value=True), patch("repo.Repo"):
+    with patch("os.path.isdir", return_value=True), patch("core.repo.Repo"):
         repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
 
         # Mock file content
@@ -63,7 +63,7 @@ def test_parse_files_missing_slug_does_not_crash():
     mock_args.branch = "master"
     mock_handle = MagicMock()
 
-    with patch("os.path.isdir", return_value=True), patch("repo.Repo"):
+    with patch("os.path.isdir", return_value=True), patch("core.repo.Repo"):
         repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
 
         yaml_content = """

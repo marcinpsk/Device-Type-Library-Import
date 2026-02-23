@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from log_handler import LogHandler
+from core.log_handler import LogHandler
 
 
 def test_progress_group_buffers_logs_until_end():

@@ -99,13 +99,14 @@ jobs:
           DJANGO_SUPERUSER_PASSWORD=admin python manage.py createsuperuser \
             --username=admin --email=admin@example.com --no-input
           TOKEN=$(python manage.py shell -c "
-          from django.apps import apps
-          Token = apps.get_model('users', 'Token')
+          from users.models import Token
           from django.contrib.auth import get_user_model
           user = get_user_model().objects.get(username='admin')
-          t = Token.objects.create(user=user)
-          print(t.key)
-          ")
+          t = Token(user=user)
+          t.save()
+          # v2 token credential: nbt_<key>.<plaintext> (plaintext only available right after save)
+          print(f'nbt_{t.key}.{t.token}')
+          " 2>/dev/null | tail -1)
           echo "NETBOX_TOKEN=$TOKEN" >> "$GITHUB_ENV"
           echo "Created API token"
 
