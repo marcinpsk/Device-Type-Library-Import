@@ -27,7 +27,7 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Copy source code
 COPY *.py ./
 
-COPY core/ .
+COPY core/ core/
 
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
