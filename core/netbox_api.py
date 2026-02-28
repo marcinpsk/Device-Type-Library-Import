@@ -589,19 +589,21 @@ class NetBox:
                     curr_mt["front-ports"], module_type_res.id, context=src_file
                 )
 
-    @staticmethod
-    def count_device_type_images(device_types_to_add):
-        """Pre-count the total number of device type images that may be uploaded.
+    def count_device_type_images(self, device_types_to_add):
+        """Pre-count the number of device type images that will actually be uploaded.
 
-        Scans all device types for front_image/rear_image flags and checks
-        whether the corresponding image files exist on disk.
+        Scans all device types for front_image/rear_image flags, checks whether the
+        corresponding image files exist on disk, and excludes images that already
+        exist in NetBox for known device types.
 
         Args:
             device_types_to_add (list[dict]): Parsed YAML device-type dicts.
 
         Returns:
-            int: Total number of image files found.
+            int: Number of image files that will be uploaded.
         """
+        existing_dt = self.device_types.existing_device_types
+        existing_dt_by_slug = self.device_types.existing_device_types_by_slug
         count = 0
         for device_type in device_types_to_add:
             src_file = device_type.get("src", "")
@@ -615,29 +617,69 @@ class NetBox:
                 image_base = str(Path(*_parts))
             except ValueError:
                 continue
+
+            manufacturer_slug = device_type.get("manufacturer", {}).get("slug", "")
+            device_slug = device_type.get("slug", "")
+
+            # Look up existing device type the same way create_device_types does
+            dt = existing_dt.get((manufacturer_slug, device_type.get("model", "")))
+            if dt is None and device_slug:
+                dt = existing_dt_by_slug.get((manufacturer_slug, device_slug))
+
             for i in ["front_image", "rear_image"]:
                 if device_type.get(i):
-                    image_glob = f"{image_base}/{device_type.get('slug', '')}.{i.split('_')[0]}.*"
+                    # Skip if existing device type already has this image
+                    if dt is not None and getattr(dt, i, None):
+                        continue
+                    image_glob = f"{image_base}/{device_slug}.{i.split('_')[0]}.*"
                     if glob.glob(image_glob, recursive=False):
                         count += 1
         return count
 
     @staticmethod
-    def count_module_type_images(module_types):
-        """Pre-count the total number of module type images that may be uploaded.
+    def count_module_type_images(module_types, all_module_types=None, module_type_existing_images=None):
+        """Pre-count the number of module type images that will actually be uploaded.
 
-        Scans all module types for associated image files in the module-images directory.
+        Scans all module types for associated image files in the module-images directory
+        and excludes images that already exist in NetBox.
 
         Args:
             module_types (list[dict]): Parsed YAML module-type dicts.
+            all_module_types (dict | None): Existing module types cache
+                (``{manufacturer_slug: {model: record}}``).
+            module_type_existing_images (dict | None): Existing image map
+                (``{module_type_id: set_of_image_names}``).
 
         Returns:
-            int: Total number of image files found.
+            int: Number of image files that will be uploaded.
         """
+        if all_module_types is None:
+            all_module_types = {}
+        if module_type_existing_images is None:
+            module_type_existing_images = {}
+
         count = 0
         for mt in module_types:
             src_file = mt.get("src", "")
-            count += len(NetBox._discover_module_image_files(src_file))
+            image_files = NetBox._discover_module_image_files(src_file)
+            if not image_files:
+                continue
+
+            # Find existing module type to check for already-uploaded images
+            manufacturer_slug = mt.get("manufacturer", {}).get("slug", "")
+            model = mt.get("model", "")
+            manufacturer_mts = all_module_types.get(manufacturer_slug, {})
+            existing_mt = manufacturer_mts.get(model)
+
+            if existing_mt is not None:
+                existing_names = module_type_existing_images.get(existing_mt.id, set())
+                for img_path in image_files:
+                    img_name = os.path.splitext(os.path.basename(img_path))[0]
+                    if img_name not in existing_names:
+                        count += 1
+            else:
+                # New module type — all images will be uploaded
+                count += len(image_files)
         return count
 
     @staticmethod

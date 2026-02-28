@@ -611,7 +611,9 @@ def main():
 
                 if module_types_to_process:
                     netbox.create_manufacturers(module_vendors)
-                    module_image_total = netbox.count_module_type_images(module_types_to_process)
+                    module_image_total = netbox.count_module_type_images(
+                        module_types_to_process, existing_module_types, module_type_existing_images
+                    )
                     with _image_progress_scope(progress, netbox.device_types, total=module_image_total):
                         netbox.create_module_types(
                             module_types_to_process,
