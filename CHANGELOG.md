@@ -2,6 +2,14 @@
 
 <!-- version list -->
 
+## v1.0.1 (2026-02-28)
+
+### Bug Fixes
+
+- Use python directly instead of uv run in Dockerfile CMD
+  ([`3d8a808`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/3d8a8089cff8a0bde716864bbe5dc15ad9a0085d))
+
+
 ## v1.0.0 (2026-02-23)
 
 ### Bug Fixes
