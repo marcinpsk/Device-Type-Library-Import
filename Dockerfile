@@ -27,8 +27,12 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Copy source code
 COPY *.py ./
 
+COPY core/ core/
+
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
 # Set the command
-CMD ["uv", "run", "nb-dt-import.py"]
+# venv is already on PATH, no need for `uv run` overhead
+# -u for unbuffered stdout/stderr (important for Docker logging)
+CMD ["python", "-u", "nb-dt-import.py"]
