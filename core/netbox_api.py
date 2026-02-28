@@ -136,6 +136,7 @@ class NetBox:
         # https://github.com/netbox-community/netbox/issues/20564
         if version_split[0] > 4 or (version_split[0] == 4 and version_split[1] >= 5):
             self.m2m_front_ports = True
+            self.handle.log(f"Netbox version {self.netbox.version} found. Using M2M front/rear port mappings.")
 
     def get_manufacturers(self):
         """Fetch all manufacturers from NetBox via GraphQL and return them indexed by name."""
@@ -587,6 +588,57 @@ class NetBox:
                 self.device_types.create_module_front_ports(
                     curr_mt["front-ports"], module_type_res.id, context=src_file
                 )
+
+    @staticmethod
+    def count_device_type_images(device_types_to_add):
+        """Pre-count the total number of device type images that may be uploaded.
+
+        Scans all device types for front_image/rear_image flags and checks
+        whether the corresponding image files exist on disk.
+
+        Args:
+            device_types_to_add (list[dict]): Parsed YAML device-type dicts.
+
+        Returns:
+            int: Total number of image files found.
+        """
+        count = 0
+        for device_type in device_types_to_add:
+            src_file = device_type.get("src", "")
+            if not src_file:
+                continue
+            _src = Path(src_file)
+            _parts = list(_src.parent.parts)
+            try:
+                _idx = len(_parts) - 1 - _parts[::-1].index("device-types")
+                _parts[_idx] = "elevation-images"
+                image_base = str(Path(*_parts))
+            except ValueError:
+                continue
+            for i in ["front_image", "rear_image"]:
+                if device_type.get(i):
+                    image_glob = f"{image_base}/{device_type.get('slug', '')}.{i.split('_')[0]}.*"
+                    if glob.glob(image_glob, recursive=False):
+                        count += 1
+        return count
+
+    @staticmethod
+    def count_module_type_images(module_types):
+        """Pre-count the total number of module type images that may be uploaded.
+
+        Scans all module types for associated image files in the module-images directory.
+
+        Args:
+            module_types (list[dict]): Parsed YAML module-type dicts.
+
+        Returns:
+            int: Total number of image files found.
+        """
+        count = 0
+        for mt in module_types:
+            src_file = mt.get("src", "")
+            count += len(NetBox._discover_module_image_files(src_file))
+        return count
 
     @staticmethod
     def _discover_module_image_files(src_file):

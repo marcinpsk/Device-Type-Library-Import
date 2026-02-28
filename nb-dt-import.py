@@ -313,18 +313,23 @@ def should_only_create_new_modules(args):
 
 
 @contextmanager
-def _image_progress_scope(progress, device_types):
+def _image_progress_scope(progress, device_types, total=0):
     """Context manager that wires up image-upload progress tracking.
 
-    Creates a progress task (if *progress* is not None), assigns the advance
-    callback to ``device_types._image_progress``, and always resets it to
-    ``None`` on exit — even on exception.
+    Creates a progress task (if *progress* is not None and *total* > 0),
+    assigns the advance callback to ``device_types._image_progress``, and
+    always resets it to ``None`` on exit — even on exception.
+
+    Args:
+        progress: Rich Progress instance, or None.
+        device_types: ``DeviceTypes`` helper whose ``_image_progress`` callback is set.
+        total (int): Pre-counted number of images to upload. If 0, no progress bar is shown.
     """
-    if progress is not None:
-        _img_task = progress.add_task("Uploading Images", total=None, visible=False)
+    if progress is not None and total > 0:
+        _img_task = progress.add_task("Uploading Images", total=total)
 
         def _adv_img(count=1):
-            progress.update(_img_task, advance=count, visible=True, total=None)
+            progress.update(_img_task, advance=count)
 
         device_types._image_progress = _adv_img
     try:
@@ -486,7 +491,8 @@ def main():
                     netbox.device_types.existing_device_types_by_slug,
                 )
                 if new_device_types:
-                    with _image_progress_scope(progress, netbox.device_types):
+                    image_total = netbox.count_device_type_images(new_device_types)
+                    with _image_progress_scope(progress, netbox.device_types, total=image_total):
                         netbox.create_device_types(
                             new_device_types,
                             progress=get_progress_wrapper(progress, new_device_types, desc="Creating Device Types"),
@@ -520,7 +526,8 @@ def main():
                     # Update mode: create new + update existing
                     device_types_to_process = select_device_types_for_update_mode(device_types, change_report)
                     if device_types_to_process:
-                        with _image_progress_scope(progress, netbox.device_types):
+                        image_total = netbox.count_device_type_images(device_types_to_process)
+                        with _image_progress_scope(progress, netbox.device_types, total=image_total):
                             netbox.create_device_types(
                                 device_types_to_process,
                                 progress=get_progress_wrapper(
@@ -537,7 +544,8 @@ def main():
                     # Default mode: only create new, log what would change
                     device_types_to_process = select_device_types_for_default_mode(device_types, change_report)
                     if device_types_to_process:
-                        with _image_progress_scope(progress, netbox.device_types):
+                        image_total = netbox.count_device_type_images(device_types_to_process)
+                        with _image_progress_scope(progress, netbox.device_types, total=image_total):
                             netbox.create_device_types(
                                 device_types_to_process,
                                 progress=get_progress_wrapper(
@@ -603,15 +611,17 @@ def main():
 
                 if module_types_to_process:
                     netbox.create_manufacturers(module_vendors)
-                    netbox.create_module_types(
-                        module_types_to_process,
-                        progress=get_progress_wrapper(
-                            progress, module_types_to_process, desc="Processing Module Types"
-                        ),
-                        only_new=module_only_new,
-                        all_module_types=existing_module_types,
-                        module_type_existing_images=module_type_existing_images,
-                    )
+                    module_image_total = netbox.count_module_type_images(module_types_to_process)
+                    with _image_progress_scope(progress, netbox.device_types, total=module_image_total):
+                        netbox.create_module_types(
+                            module_types_to_process,
+                            progress=get_progress_wrapper(
+                                progress, module_types_to_process, desc="Processing Module Types"
+                            ),
+                            only_new=module_only_new,
+                            all_module_types=existing_module_types,
+                            module_type_existing_images=module_type_existing_images,
+                        )
                 else:
                     handle.verbose_log("No module type changes to process.")
         finally:
