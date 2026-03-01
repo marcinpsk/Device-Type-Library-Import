@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Comprehensive integration test for the NetBox device-type importer.
+"""Comprehensive integration test for the NetBox device-type importer.
 
 Runs the importer against a live NetBox instance using the fixtures in
 ``tests/fixtures/`` and validates every significant aspect of the round-trip so

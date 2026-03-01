@@ -45,7 +45,6 @@ class TestDotDict:
 
     def test_str_returns_name(self):
         """str() should return the name, matching pynetbox Record behavior."""
-
         d = DotDict({"name": "Cisco", "slug": "cisco"})
         assert str(d) == "Cisco"
 
@@ -91,7 +90,6 @@ class TestDotDict:
 
     def test_update_method(self):
         """DotDict.update() should work for property updates like pynetbox."""
-
         d = DotDict({"name": "Old", "slug": "old"})
         d.update({"name": "New"})
         assert d.name == "New"
@@ -336,7 +334,8 @@ class TestGraphQLQueryAll:
 
         client = self._make_client()
         client.query_all(
-            "query($pagination: OffsetPaginationInput, $name: String) { device_type_list(pagination: $pagination, filters: {name: $name}) { id } }",
+            "query($pagination: OffsetPaginationInput, $name: String) { "
+            "device_type_list(pagination: $pagination, filters: {name: $name}) { id } }",
             list_key="device_type_list",
             variables={"name": "test"},
         )
@@ -695,7 +694,6 @@ class TestGetModuleTypeImages:
 
     def test_falls_back_to_python_filter_on_schema_error(self, mock_post):
         """When the filtered query raises GraphQLError, fall back to fetch-all + Python filter."""
-
         error_response = MagicMock()
         error_response.status_code = 200
         error_response.raise_for_status = MagicMock()
@@ -747,7 +745,6 @@ class TestGetComponentTemplates:
 
     def test_returns_dotdict_records_with_parent_info(self, mock_post):
         """Records should be DotDicts with device_type/module_type and correct id types."""
-
         data = {
             "interface_template_list": [
                 {

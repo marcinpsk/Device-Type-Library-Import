@@ -1,5 +1,4 @@
-"""
-Change detection module for comparing YAML device types against NetBox data.
+"""Change detection module for comparing YAML device types against NetBox data.
 
 Provides functionality to detect differences between device type definitions
 in the repository and existing data in NetBox, supporting the --update workflow.
@@ -116,8 +115,7 @@ class ChangeDetector:
     """Detects changes between YAML device types and NetBox cached data."""
 
     def __init__(self, device_types_instance, handle):
-        """
-        Initialize the change detector.
+        """Initialize the change detector.
 
         Args:
             device_types_instance: DeviceTypes instance with cached data
@@ -127,8 +125,7 @@ class ChangeDetector:
         self.handle = handle
 
     def detect_changes(self, device_types: List[dict], progress=None) -> ChangeReport:
-        """
-        Analyze all device types and generate a change report.
+        """Analyze all device types and generate a change report.
 
         Args:
             device_types: List of parsed YAML device type dictionaries
@@ -180,8 +177,7 @@ class ChangeDetector:
 
     @staticmethod
     def _normalize_values(yaml_value, netbox_value):
-        """
-        Normalize a pair of values for comparison.
+        """Normalize a pair of values for comparison.
 
         Converts NetBox choice objects by reading .value, normalizes empty
         strings to None on both sides, and strips trailing whitespace from
@@ -231,8 +227,7 @@ class ChangeDetector:
         return yaml_value, netbox_value
 
     def _compare_device_type_properties(self, yaml_data: dict, netbox_dt) -> List[PropertyChange]:
-        """
-        Compare YAML device type properties against NetBox device type.
+        """Compare YAML device type properties against NetBox device type.
 
         Args:
             yaml_data: Parsed YAML device type dictionary
@@ -268,8 +263,7 @@ class ChangeDetector:
 
     @staticmethod
     def _compare_image_properties(yaml_data: dict, netbox_dt) -> List[PropertyChange]:
-        """
-        Compare image properties between YAML and NetBox device type.
+        """Compare image properties between YAML and NetBox device type.
 
         YAML uses boolean flags (front_image: true) meaning "an image should exist",
         while NetBox stores a URL string (or None). This only flags missing images
@@ -304,8 +298,7 @@ class ChangeDetector:
         device_type_id: int,
         parent_type: str = "device",
     ) -> List[ComponentChange]:
-        """
-        Compare all components between YAML and cached NetBox data.
+        """Compare all components between YAML and cached NetBox data.
 
         Args:
             yaml_data: Parsed YAML device type dictionary

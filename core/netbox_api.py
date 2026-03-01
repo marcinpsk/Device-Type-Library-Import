@@ -283,7 +283,8 @@ class NetBox:
 
                 if only_new:
                     self.handle.verbose_log(
-                        f"Device Type Cached: {dt.manufacturer.name} - {dt.model} - {dt.id}. Skipping updates (images already handled)."
+                        f"Device Type Cached: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
+                        f"Skipping updates (images already handled)."
                     )
                     continue
 
@@ -722,7 +723,7 @@ class NetBox:
         Only uploads images whose name (basename without extension) is not already
         present in module_type_existing_images for this module type.
 
-        Parameters:
+        Args:
             module_type_res: pynetbox Record for the module type.
             src_file (str): Source YAML file path used to derive the image directory.
             module_type_existing_images (dict): module_type_id -> set of attachment names.
@@ -1437,8 +1438,7 @@ class DeviceTypes:
                     )
 
     def update_components(self, yaml_data, device_type_id, component_changes, parent_type="device"):
-        """
-        Update existing components and add new components based on detected changes.
+        """Update existing components and add new components based on detected changes.
 
         Args:
             yaml_data: YAML device type data containing component definitions
@@ -1579,8 +1579,7 @@ class DeviceTypes:
             )
 
     def remove_components(self, device_type_id, component_changes, parent_type="device"):
-        """
-        Remove components that exist in NetBox but not in YAML.
+        """Remove components that exist in NetBox but not in YAML.
 
         Args:
             device_type_id: ID of the device type in NetBox
@@ -1729,7 +1728,8 @@ class DeviceTypes:
                     available = list(existing_pp.keys()) if existing_pp else []
                     ctx = f" (Context: {context})" if context else ""
                     self.handle.log(
-                        f'Could not find Power Port "{outlet["power_port"]}" for Power Outlet "{outlet.get("name", "Unknown")}". '
+                        f'Could not find Power Port "{outlet["power_port"]}" for '
+                        f'Power Outlet "{outlet.get("name", "Unknown")}". '
                         f"Available: {available}{ctx}"
                     )
                     outlets_to_remove.append(outlet)
@@ -1742,7 +1742,8 @@ class DeviceTypes:
                 skipped_names = [o["name"] for o in outlets_to_remove]
                 ctx = f" (Context: {context})" if context else ""
                 self.handle.log(
-                    f"Skipped {len(outlets_to_remove)} power outlet(s) with invalid power port refs: {skipped_names}{ctx}"
+                    f"Skipped {len(outlets_to_remove)} power outlet(s) with invalid power port refs: "
+                    f"{skipped_names}{ctx}"
                 )
 
         self._create_generic(
@@ -1833,7 +1834,8 @@ class DeviceTypes:
                 skipped_names = [p["name"] for p in ports_to_remove]
                 ctx = f" (Context: {context})" if context else ""
                 self.handle.log(
-                    f"Skipped {len(ports_to_remove)} {label.lower()}(s) with invalid rear port refs: {skipped_names}{ctx}"
+                    f"Skipped {len(ports_to_remove)} {label.lower()}(s) with invalid rear port refs: "
+                    f"{skipped_names}{ctx}"
                 )
 
         return link_rear_ports
@@ -1928,7 +1930,8 @@ class DeviceTypes:
                     available = list(existing_pp.keys()) if existing_pp else []
                     ctx = f" (Context: {context})" if context else ""
                     self.handle.log(
-                        f'Could not find Power Port "{outlet["power_port"]}" for Module Power Outlet "{outlet.get("name", "Unknown")}". '
+                        f'Could not find Power Port "{outlet["power_port"]}" for '
+                        f'Module Power Outlet "{outlet.get("name", "Unknown")}". '
                         f"Available: {available}{ctx}"
                     )
                     outlets_to_remove.append(outlet)
@@ -1940,7 +1943,8 @@ class DeviceTypes:
                 skipped_names = [o["name"] for o in outlets_to_remove]
                 ctx = f" (Context: {context})" if context else ""
                 self.handle.log(
-                    f"Skipped {len(outlets_to_remove)} module power outlet(s) with invalid power port refs: {skipped_names}{ctx}"
+                    f"Skipped {len(outlets_to_remove)} module power outlet(s) with invalid power port refs: "
+                    f"{skipped_names}{ctx}"
                 )
 
         self._create_generic(
@@ -1967,13 +1971,14 @@ class DeviceTypes:
         )
 
     def create_module_rear_ports(self, rear_ports, module_type, context=None):
-        """
-        Create rear-port templates for a module type in NetBox.
+        """Create rear-port templates for a module type in NetBox.
 
         Adds any rear port templates from `rear_ports` that do not already exist for the specified `module_type`.
-        Parameters:
-            rear_ports (list[dict]): List of rear-port template definitions to create; each item must include a `name` and any other template fields required by NetBox.
-            module_type (int|object): The module type identifier or object used to associate created templates with the parent module type.
+        Args:
+            rear_ports (list[dict]): List of rear-port template definitions to create; each item
+                must include a `name` and any other template fields required by NetBox.
+            module_type (int|object): The module type identifier or object used to associate
+                created templates with the parent module type.
             context (str, optional): Optional context string used for logging to identify the source of these templates.
         """
         self._create_generic(
@@ -2000,15 +2005,17 @@ class DeviceTypes:
         )
 
     def upload_images(self, baseurl, token, images, device_type):
-        """
-        Upload front and/or rear image files to the specified NetBox device type.
+        """Upload front and/or rear image files to the specified NetBox device type.
 
-        Sends a PATCH request to the device-type endpoint attaching the provided image files, increments self.counter["images"] by the number of files sent, and ensures all opened file handles are closed. Respects self.ignore_ssl to determine SSL verification behavior.
+        Sends a PATCH request to the device-type endpoint attaching the provided image files,
+        increments self.counter["images"] by the number of files sent, and ensures all opened
+        file handles are closed. Respects self.ignore_ssl to determine SSL verification behavior.
 
-        Parameters:
+        Args:
             baseurl (str): Base URL of the NetBox instance (e.g. "https://netbox.example.com").
             token (str): API token used for the Authorization header.
-            images (dict): Mapping of form field name to local file path (e.g. {"front_image": "/path/front.jpg", "rear_image": "/path/rear.jpg"}).
+            images (dict): Mapping of form field name to local file path (e.g.
+                {"front_image": "/path/front.jpg", "rear_image": "/path/rear.jpg"}).
             device_type (int | str): Identifier of the device type to update in NetBox (used in the endpoint URL).
         """
         url = f"{baseurl}/api/dcim/device-types/{device_type}/"
@@ -2044,7 +2051,7 @@ class DeviceTypes:
         Uses POST /api/extras/image-attachments/ to attach an image to any
         NetBox object type (e.g. module types which lack built-in image fields).
 
-        Parameters:
+        Args:
             baseurl (str): Base URL of the NetBox instance.
             token (str): API token for authorization.
             image_path (str): Local file path of the image to upload.

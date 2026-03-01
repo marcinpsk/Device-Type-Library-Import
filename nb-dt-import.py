@@ -301,7 +301,8 @@ def log_run_mode(handle, args):
             handle.log("Mode: --remove-components enabled; missing components will be removed from existing models.")
         else:
             handle.log(
-                "Mode: will not remove components from existing models; use --remove-components with --update to change this."
+                "Mode: will not remove components from existing models; use --remove-components with "
+                "--update to change this."
             )
     else:
         handle.log("Mode: --update not set; changed properties/components will not be applied (use --update).")
@@ -339,8 +340,7 @@ def _image_progress_scope(progress, device_types, total=0):
 
 
 def main():
-    """
-    Orchestrate importing device- and module-types from a Git repository into NetBox.
+    """Orchestrate importing device- and module-types from a Git repository into NetBox.
 
     Parses CLI arguments, validates environment variables, clones/pulls the DTL repo,
     parses YAML files, and creates manufacturers, device types, and module types in NetBox.
@@ -376,13 +376,15 @@ def main():
         "--update",
         action="store_true",
         default=False,
-        help="Update existing device types with changes from repository (add missing components, modify changed properties)",
+        help="Update existing device types with changes from repository (add missing components, modify "
+        "changed properties)",
     )
     parser.add_argument(
         "--remove-components",
         action="store_true",
         default=False,
-        help="Remove components from NetBox that no longer exist in YAML (use with --update). WARNING: May affect existing device instances.",
+        help="Remove components from NetBox that no longer exist in YAML (use with --update). "
+        "WARNING: May affect existing device instances.",
     )
 
     args = parser.parse_args()

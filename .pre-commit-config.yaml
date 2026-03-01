@@ -19,7 +19,7 @@ repos:
         require_serial: true
       - id: pytest
         name: pytest
-        entry: uv run pytest
+        entry: uv run pytest --cov --cov-report=term-missing
         language: system
         types: [python]
         pass_filenames: false
