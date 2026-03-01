@@ -26,6 +26,27 @@ IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".
 FILTER_CHUNK_SIZE = 200
 
 
+def _values_equal(yaml_val, nb_val):
+    """Compare a YAML value with a NetBox/GraphQL value with normalization.
+
+    Handles type mismatches common between YAML and GraphQL responses:
+    numeric strings vs ints/floats, and empty string vs None.
+    """
+    # Normalize empty string to None
+    if yaml_val == "":
+        yaml_val = None
+    if nb_val == "":
+        nb_val = None
+    # Coerce numeric strings (GraphQL serializes some fields as strings, e.g. "166.00" for int 166)
+    if isinstance(yaml_val, (int, float)) and not isinstance(yaml_val, bool) and isinstance(nb_val, str):
+        try:
+            # Go via float first so "166.00" can be coerced to int 166
+            nb_val = type(yaml_val)(float(nb_val))
+        except (ValueError, TypeError):
+            pass
+    return yaml_val == nb_val
+
+
 def _chunked(iterable, size):
     """Yield successive *size*-length chunks from *iterable*.
 
@@ -511,13 +532,16 @@ class NetBox:
                 updates = {
                     field: rack_type[field]
                     for field in fields_to_compare
-                    if field in rack_type and rack_type[field] != getattr(existing, field, None)
+                    if field in rack_type and not _values_equal(rack_type[field], getattr(existing, field, None))
                 }
                 if updates:
                     try:
                         self.netbox.dcim.rack_types.update([{"id": existing.id, **updates}])
                         self.counter.update({"rack_type_updated": 1})
-                        self.handle.verbose_log(f"Rack Type Updated: {manufacturer_slug} - {model} - {existing.id}")
+                        self.handle.verbose_log(
+                            f"Rack Type Updated: {manufacturer_slug} - {model} - {existing.id} "
+                            f"(changed: {list(updates.keys())})"
+                        )
                     except pynetbox.RequestError as e:
                         self.handle.log(f"Error updating Rack Type {model}: {e.error} (Context: {src_file})")
                 else:
