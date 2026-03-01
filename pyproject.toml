@@ -23,14 +23,11 @@ dev = [
     "ruff>=0.14.9",
 ]
 
-[tool.black]
-line-length = 120
-
 [tool.ruff]
 line-length = 120
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "D"]
+select = ["E", "F", "W", "D", "C901"]
 ignore = [
     # Docstring style choices (pick D211+D212 convention)
     "D203",  # no-blank-line-before-class (incompatible with D211)
@@ -67,7 +64,7 @@ source = ["core", "."]
 omit = ["tests/*", "setup.py", "conftest.py"]
 
 [tool.coverage.report]
-fail_under = 80
+fail_under = 96
 
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]

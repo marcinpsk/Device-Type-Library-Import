@@ -409,85 +409,96 @@ class ChangeDetector:
 
         return changes
 
+    def _log_modified_summary(self, report: ChangeReport) -> int:
+        """Compute category counts and log the summary section for modified device types.
+
+        Args:
+            report: The ChangeReport containing modified_device_types to summarise.
+
+        Returns:
+            The count of device types that have removed components.
+        """
+        ct_props = 0
+        ct_images = 0
+        ct_added = 0
+        ct_changed = 0
+        ct_removed = 0
+        for dt in report.modified_device_types:
+            if any(pc.property_name not in IMAGE_PROPERTIES for pc in dt.property_changes):
+                ct_props += 1
+            if any(pc.property_name in IMAGE_PROPERTIES for pc in dt.property_changes):
+                ct_images += 1
+            if any(c.change_type == ChangeType.COMPONENT_ADDED for c in dt.component_changes):
+                ct_added += 1
+            if any(c.change_type == ChangeType.COMPONENT_CHANGED for c in dt.component_changes):
+                ct_changed += 1
+            if any(c.change_type == ChangeType.COMPONENT_REMOVED for c in dt.component_changes):
+                ct_removed += 1
+
+        self.handle.log(f"Modified device types: {len(report.modified_device_types)}")
+        parts = []
+        if ct_props:
+            parts.append(f"{ct_props} property")
+        if ct_images:
+            parts.append(f"{ct_images} missing image")
+        if ct_added:
+            parts.append(f"{ct_added} new component")
+        if ct_changed:
+            parts.append(f"{ct_changed} changed component")
+        if ct_removed:
+            parts.append(f"{ct_removed} removed component")
+        if parts:
+            self.handle.log(f"  Breakdown: {', '.join(parts)}")
+
+        return ct_removed
+
+    def _log_modified_device_details(self, dt: DeviceTypeChange):
+        """Log the per-device detail section for a single modified device type.
+
+        Args:
+            dt: The DeviceTypeChange whose changes should be logged.
+        """
+        added = [c for c in dt.component_changes if c.change_type == ChangeType.COMPONENT_ADDED]
+        changed = [c for c in dt.component_changes if c.change_type == ChangeType.COMPONENT_CHANGED]
+        removed = [c for c in dt.component_changes if c.change_type == ChangeType.COMPONENT_REMOVED]
+
+        if removed:
+            self.handle.log(f"  ~ {dt.manufacturer_slug}/{dt.model}")
+        else:
+            self.handle.verbose_log(f"  ~ {dt.manufacturer_slug}/{dt.model}")
+
+        for pc in dt.property_changes:
+            if pc.property_name in IMAGE_PROPERTIES:
+                label = pc.property_name.replace("_", " ").title()
+                self.handle.verbose_log(f"      {label}: missing in NetBox (YAML defines image)")
+            else:
+                self.handle.verbose_log(f"      Property '{pc.property_name}': '{pc.old_value}' -> '{pc.new_value}'")
+
+        if added:
+            self.handle.verbose_log(f"      + {len(added)} new component(s)")
+        if changed:
+            self.handle.verbose_log(f"      ~ {len(changed)} changed component(s)")
+        if removed:
+            self.handle.log(f"      - {len(removed)} removed component(s) (not deleted without --remove-components)")
+            for comp in removed:
+                self.handle.verbose_log(f"        - {comp.component_type}: {comp.component_name}")
+
     def log_change_report(self, report: ChangeReport):
         """Log the change report in a clear, readable format."""
         self.handle.log("=" * 60)
         self.handle.log("CHANGE DETECTION REPORT")
         self.handle.log("=" * 60)
 
-        # Summary
         self.handle.log(f"New device types: {len(report.new_device_types)}")
         self.handle.log(f"Unchanged device types: {report.unchanged_count}")
 
         if report.modified_device_types:
-            # Compute category counts across all modified device types
-            ct_props = 0
-            ct_images = 0
-            ct_added = 0
-            ct_changed = 0
-            ct_removed = 0
-            for dt in report.modified_device_types:
-                if any(pc.property_name not in IMAGE_PROPERTIES for pc in dt.property_changes):
-                    ct_props += 1
-                if any(pc.property_name in IMAGE_PROPERTIES for pc in dt.property_changes):
-                    ct_images += 1
-                if any(c.change_type == ChangeType.COMPONENT_ADDED for c in dt.component_changes):
-                    ct_added += 1
-                if any(c.change_type == ChangeType.COMPONENT_CHANGED for c in dt.component_changes):
-                    ct_changed += 1
-                if any(c.change_type == ChangeType.COMPONENT_REMOVED for c in dt.component_changes):
-                    ct_removed += 1
+            ct_removed = self._log_modified_summary(report)
 
-            self.handle.log(f"Modified device types: {len(report.modified_device_types)}")
-            parts = []
-            if ct_props:
-                parts.append(f"{ct_props} property")
-            if ct_images:
-                parts.append(f"{ct_images} missing image")
-            if ct_added:
-                parts.append(f"{ct_added} new component")
-            if ct_changed:
-                parts.append(f"{ct_changed} changed component")
-            if ct_removed:
-                parts.append(f"{ct_removed} removed component")
-            if parts:
-                self.handle.log(f"  Breakdown: {', '.join(parts)}")
-
-            # Per-device details
             self.handle.log("-" * 60)
             self.handle.log("MODIFIED DEVICE TYPES:")
             for dt in report.modified_device_types:
-                # Component changes
-                added = [c for c in dt.component_changes if c.change_type == ChangeType.COMPONENT_ADDED]
-                changed = [c for c in dt.component_changes if c.change_type == ChangeType.COMPONENT_CHANGED]
-                removed = [c for c in dt.component_changes if c.change_type == ChangeType.COMPONENT_REMOVED]
-
-                # Log device identity: always when there are removals, verbose-only otherwise
-                if removed:
-                    self.handle.log(f"  ~ {dt.manufacturer_slug}/{dt.model}")
-                else:
-                    self.handle.verbose_log(f"  ~ {dt.manufacturer_slug}/{dt.model}")
-
-                # Property changes
-                for pc in dt.property_changes:
-                    if pc.property_name in IMAGE_PROPERTIES:
-                        label = pc.property_name.replace("_", " ").title()
-                        self.handle.verbose_log(f"      {label}: missing in NetBox (YAML defines image)")
-                    else:
-                        self.handle.verbose_log(
-                            f"      Property '{pc.property_name}': '{pc.old_value}' -> '{pc.new_value}'"
-                        )
-
-                if added:
-                    self.handle.verbose_log(f"      + {len(added)} new component(s)")
-                if changed:
-                    self.handle.verbose_log(f"      ~ {len(changed)} changed component(s)")
-                if removed:
-                    self.handle.log(
-                        f"      - {len(removed)} removed component(s) (not deleted without --remove-components)"
-                    )
-                    for comp in removed:
-                        self.handle.verbose_log(f"        - {comp.component_type}: {comp.component_name}")
+                self._log_modified_device_details(dt)
 
             verbose_only = len(report.modified_device_types) - ct_removed
             if verbose_only > 0 and not self.handle.args.verbose:
