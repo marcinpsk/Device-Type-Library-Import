@@ -1,8 +1,46 @@
 import queue
 import pytest
 from unittest.mock import MagicMock, patch
-from core.netbox_api import NetBox, DeviceTypes, _FrontPortRecord45
+from core.netbox_api import NetBox, DeviceTypes, _FrontPortRecord45, _values_equal
 from helpers import paginate_dispatch
+
+
+class TestValuesEqual:
+    """Tests for the _values_equal normalization helper."""
+
+    def test_equal_strings(self):
+        assert _values_equal("abc", "abc")
+
+    def test_unequal_strings(self):
+        assert not _values_equal("abc", "xyz")
+
+    def test_none_vs_empty_string(self):
+        assert _values_equal(None, "")
+
+    def test_empty_string_vs_none(self):
+        assert _values_equal("", None)
+
+    def test_int_vs_float_string(self):
+        """NetBox returns weight as '166.00'; YAML has int 166."""
+        assert _values_equal(166, "166.00")
+
+    def test_float_vs_float_string(self):
+        assert _values_equal(26.1, "26.10")
+
+    def test_int_vs_float_string_different(self):
+        assert not _values_equal(166, "167.00")
+
+    def test_yaml_literal_block_trailing_newline(self):
+        """YAML '|' blocks append a trailing newline; NetBox strips it."""
+        assert _values_equal("line1\nline2\n", "line1\nline2")
+
+    def test_both_have_trailing_newline(self):
+        assert _values_equal("line1\n", "line1\n")
+
+    def test_bool_not_coerced(self):
+        assert _values_equal(True, True)
+        assert not _values_equal(True, False)
+
 
 # All component list keys used by the GraphQL client for empty-response fallback.
 _ALL_COMPONENT_KEYS = [

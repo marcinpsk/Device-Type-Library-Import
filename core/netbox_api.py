@@ -30,13 +30,19 @@ def _values_equal(yaml_val, nb_val):
     """Compare a YAML value with a NetBox/GraphQL value with normalization.
 
     Handles type mismatches common between YAML and GraphQL responses:
-    numeric strings vs ints/floats, and empty string vs None.
+    numeric strings vs ints/floats, empty string vs None, and trailing
+    whitespace/newlines added by YAML literal-block scalars (``|``).
     """
     # Normalize empty string to None
     if yaml_val == "":
         yaml_val = None
     if nb_val == "":
         nb_val = None
+    # YAML literal-block scalars (|) append a trailing newline; NetBox strips it
+    if isinstance(yaml_val, str):
+        yaml_val = yaml_val.rstrip("\n")
+    if isinstance(nb_val, str):
+        nb_val = nb_val.rstrip("\n")
     # Coerce numeric strings (GraphQL serializes some fields as strings, e.g. "166.00" for int 166)
     if isinstance(yaml_val, (int, float)) and not isinstance(yaml_val, bool) and isinstance(nb_val, str):
         try:
