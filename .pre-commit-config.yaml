@@ -5,7 +5,7 @@ repos:
       - id: markdownlint
   - repo: local
     hooks:
-      - id: ruff
+      - id: ruff-check
         name: ruff
         entry: uv run ruff check --fix
         language: system
