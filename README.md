@@ -55,8 +55,21 @@ into the NetBox UI.
 ## Usage
 
 Running the script clones (or updates) the `netbox-community/devicetype-library` repository
-into the `repo` subdirectory, then loops over every manufacturer and device, creating anything
-that is missing from NetBox while skipping entries that already exist.
+into the `repo` subdirectory (configurable via `REPO_PATH`), then loops over every manufacturer
+and device, creating anything that is missing from NetBox while skipping entries that already exist.
+
+### Environment Variables
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `NETBOX_URL` | ✅ | — | URL of your NetBox instance |
+| `NETBOX_TOKEN` | ✅ | — | API token with write access |
+| `REPO_URL` | ✅ | community library | Git URL of the device-type library to clone |
+| `REPO_BRANCH` | | `master` | Branch to check out |
+| `REPO_PATH` | | `./repo` | Local path where the library is cloned. Accepts absolute or relative paths. |
+| `IGNORE_SSL_ERRORS` | | `False` | Set `True` to skip TLS verification (dev only) |
+| `GRAPHQL_PAGE_SIZE` | | `5000` | Items per GraphQL page |
+| `PRELOAD_THREADS` | | `8` | Threads for concurrent component preloading |
 
 ### Arguments
 

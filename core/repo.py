@@ -58,6 +58,34 @@ def validate_git_url(url):
     return False, "URL must use HTTPS, SSH, or file protocol"
 
 
+def validate_repo_path(repo_path):
+    """Check whether *repo_path* is usable for a git clone or pull operation.
+
+    If the path already exists it must be a directory; the parent directory
+    must be writable when the path does not yet exist so that a new clone can
+    be created there.
+
+    Args:
+        repo_path (str): Filesystem path intended for the local repository clone.
+
+    Returns:
+        tuple[bool, str]: ``(True, "")`` when the path is usable, or
+            ``(False, reason)`` with a human-readable explanation otherwise.
+    """
+    if os.path.exists(repo_path):
+        if not os.path.isdir(repo_path):
+            return False, f"REPO_PATH '{repo_path}' exists but is not a directory"
+        if not os.access(repo_path, os.W_OK):
+            return False, f"REPO_PATH '{repo_path}' is not writable"
+    else:
+        parent = os.path.dirname(os.path.abspath(repo_path)) or "."
+        if not os.path.isdir(parent):
+            return False, f"REPO_PATH parent directory '{parent}' does not exist"
+        if not os.access(parent, os.W_OK):
+            return False, f"REPO_PATH parent directory '{parent}' is not writable"
+    return True, ""
+
+
 def parse_single_file(file):
     """Load a YAML device mapping, convert its `manufacturer` to a slug dictionary, and record the source path.
 
@@ -125,6 +153,10 @@ class DTLRepo:
         self.repo = None
         self.cwd = os.getcwd()
 
+        is_path_valid, path_error = validate_repo_path(self.repo_path)
+        if not is_path_valid:
+            self.handle.exception("InvalidRepoPath", self.repo_path, path_error)
+
         if os.path.isdir(self.repo_path):
             # Repo exists; pull from existing remote (pull_repo validates origin URL)
             self.pull_repo()
@@ -159,6 +191,10 @@ class DTLRepo:
     def get_modules_path(self):
         """Return the absolute path to the ``module-types`` directory within the repository."""
         return os.path.join(self.get_absolute_path(), "module-types")
+
+    def get_racks_path(self):
+        """Return the absolute path to the ``rack-types`` directory within the repository."""
+        return os.path.join(self.get_absolute_path(), "rack-types")
 
     def slug_format(self, name):
         """Convert *name* to a slug by lowercasing and replacing non-word characters with hyphens."""
