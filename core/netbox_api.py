@@ -563,7 +563,7 @@ class NetBox:
                     all_rack_types.setdefault(manufacturer_slug, {})[model] = rt
                     self.handle.verbose_log(f"Rack Type Created: {manufacturer_slug} - {model} - {rt.id}")
                 except pynetbox.RequestError as excep:
-                    self.handle.log(f"Error creating Rack Type: {excep} (Context: {src_file})")
+                    self.handle.log(f"Error creating Rack Type: {excep.error} (Context: {src_file})")
 
     @staticmethod
     def _find_existing_module_type(module_type, all_module_types):
@@ -1344,8 +1344,10 @@ class DeviceTypes:
                     len(records_by_endpoint[endpoint_name]),
                     1,
                 )
-                progress.update(task_ids[endpoint_name], total=final_total, completed=final_total)
-                progress.stop_task(task_ids[endpoint_name])
+                task_id = task_ids.get(endpoint_name)
+                if task_id is not None:
+                    progress.update(task_id, total=final_total, completed=final_total)
+                    progress.stop_task(task_id)
             if pending and not had_updates:
                 if progress_updates is not None:
                     try:

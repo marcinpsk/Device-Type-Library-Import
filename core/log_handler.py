@@ -27,9 +27,9 @@ class LogHandler:
         Args:
             exception_type (str): Key identifying the error category (expected keys include
                 "EnvironmentError", "SSLError", "GitCommandError", "GitInvalidRepositoryError",
-                "InvalidGitURL", "Exception").
+                "InvalidGitURL", "InvalidRepoPath", "Exception").
             exception (str): Value used to populate the chosen error message (e.g., environment
-                variable name, repo name, or raw error text).
+                variable name, repo name, raw error text, or invalid path for "InvalidRepoPath").
             stack_trace (str | None): Optional stack trace or additional context. If provided and
                 the instance was constructed with verbose enabled, the stack trace is printed.
 
@@ -45,7 +45,7 @@ class LogHandler:
             "GitCommandError": f'The repo "{exception}" is not a valid git repo.',
             "GitInvalidRepositoryError": f'The repo "{exception}" is not a valid git repo.',
             "InvalidGitURL": f"Invalid Git URL: {exception}. URL must use HTTPS, SSH, or file protocol.",
-            "InvalidRepoPath": f'Invalid repository path "{exception}": {stack_trace}',
+            "InvalidRepoPath": f'Invalid repository path "{exception}".',
             "Exception": f'An unknown error occurred: "{exception}"',
         }
 
