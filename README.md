@@ -64,7 +64,7 @@ and device, creating anything that is missing from NetBox while skipping entries
 | --- | --- | --- | --- |
 | `NETBOX_URL` | ✅ | — | URL of your NetBox instance |
 | `NETBOX_TOKEN` | ✅ | — | API token with write access |
-| `REPO_URL` | ✅ | community library | Git URL of the device-type library to clone |
+| `REPO_URL` | | community library | Git URL of the device-type library to clone |
 | `REPO_BRANCH` | | `master` | Branch to check out |
 | `REPO_PATH` | | `./repo` | Local path where the library is cloned. Accepts absolute or relative paths. |
 | `IGNORE_SSL_ERRORS` | | `False` | Set `True` to skip TLS verification (dev only) |

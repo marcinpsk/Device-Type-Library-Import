@@ -46,8 +46,12 @@ def _values_equal(yaml_val, nb_val):
     # Coerce numeric strings (GraphQL serializes some fields as strings, e.g. "166.00" for int 166)
     if isinstance(yaml_val, (int, float)) and not isinstance(yaml_val, bool) and isinstance(nb_val, str):
         try:
-            # Go via float first so "166.00" can be coerced to int 166
-            nb_val = type(yaml_val)(float(nb_val))
+            tmp = float(nb_val)
+            # Only cast to int if the float value is integral (avoid truncating "19.5" to 19)
+            if isinstance(yaml_val, int):
+                nb_val = int(tmp) if tmp.is_integer() else tmp
+            else:
+                nb_val = tmp
         except (ValueError, TypeError):
             pass
     return yaml_val == nb_val
@@ -243,7 +247,7 @@ class NetBox:
             if i in device_type:
                 if device_type[i] and image_base is not None and device_type.get("slug"):
                     image_glob = f"{image_base}/{device_type['slug']}.{i.split('_')[0]}.*"
-                    images = glob.glob(image_glob, recursive=False)
+                    images = sorted(glob.glob(image_glob, recursive=False))
                     if images:
                         saved_images[i] = images[0]
                     else:

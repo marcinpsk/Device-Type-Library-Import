@@ -45,6 +45,7 @@ class LogHandler:
             "GitCommandError": f'The repo "{exception}" is not a valid git repo.',
             "GitInvalidRepositoryError": f'The repo "{exception}" is not a valid git repo.',
             "InvalidGitURL": f"Invalid Git URL: {exception}. URL must use HTTPS, SSH, or file protocol.",
+            "InvalidRepoPath": f'Invalid repository path "{exception}": {stack_trace}',
             "Exception": f'An unknown error occurred: "{exception}"',
         }
 
