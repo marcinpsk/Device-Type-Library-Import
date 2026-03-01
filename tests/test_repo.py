@@ -1,10 +1,11 @@
+import pytest
 from unittest.mock import MagicMock, mock_open, patch
 from git import exc as git_exc
 from core.repo import DTLRepo, validate_git_url
 
 
 class TestValidateGitUrl:
-    """Tests for TestValidateGitUrl."""
+    """Tests for Git URL validation logic (HTTPS, SSH, file://, and invalid cases)."""
 
     def test_https_valid(self):
         ok, err = validate_git_url("https://github.com/org/repo.git")
@@ -54,7 +55,7 @@ class TestValidateGitUrl:
 
 
 class TestDTLRepoInit:
-    """Tests for TestDTLRepoInit."""
+    """Tests for DTLRepo initialisation: path validation, clone vs pull branching."""
 
     def _make_repo(self, isdir=True, mock_repo=None):
         mock_args = MagicMock()
@@ -104,7 +105,7 @@ class TestDTLRepoInit:
 
 
 class TestDTLRepoPathMethods:
-    """Tests for TestDTLRepoPathMethods."""
+    """Tests for DTLRepo path helper methods (get_relative_path, get_absolute_path, etc.)."""
 
     def _make_repo(self):
         mock_args = MagicMock()
@@ -132,7 +133,7 @@ class TestDTLRepoPathMethods:
 
 
 class TestPullRepo:
-    """Tests for TestPullRepo."""
+    """Tests for DTLRepo.pull_repo(): origin URL validation, pull success, and error handling."""
 
     def test_pull_repo_invalid_origin_calls_exception(self):
         mock_args = MagicMock()
@@ -174,7 +175,7 @@ class TestPullRepo:
 
 
 class TestCloneRepo:
-    """Tests for TestCloneRepo."""
+    """Tests for DTLRepo.clone_repo(): successful clone and git error handling."""
 
     def test_clone_repo_git_error_calls_exception(self):
         mock_args = MagicMock()
@@ -198,7 +199,7 @@ class TestCloneRepo:
 
 
 class TestGetDevices:
-    """Tests for TestGetDevices."""
+    """Tests for DTLRepo.get_devices(): vendor filtering, YAML file discovery, and testing folder exclusion."""
 
     def _make_repo(self):
         mock_args = MagicMock()
@@ -234,7 +235,7 @@ class TestGetDevices:
 
 
 class TestParseFilesExtended:
-    """Tests for TestParseFilesExtended."""
+    """Tests for DTLRepo.parse_files(): parallel parsing, slug filtering, error handling, and progress iteration."""
 
     def _make_repo(self):
         mock_args = MagicMock()
@@ -259,8 +260,11 @@ class TestParseFilesExtended:
     def test_progress_iterable_consumed(self):
         repo, _ = self._make_repo()
         yaml_content = "manufacturer: Cisco\nmodel: Switch\nslug: switch\n"
+        it = iter([None])
         with patch("builtins.open", mock_open(read_data=yaml_content)):
-            repo.parse_files(["/tmp/repo/cisco/switch.yaml"], progress=iter([None]))
+            repo.parse_files(["/tmp/repo/cisco/switch.yaml"], progress=it)
+        with pytest.raises(StopIteration):
+            next(it)
 
 
 def test_slug_format():

@@ -809,6 +809,7 @@ class TestMain:
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
             patch("nb_dt_import.ChangeDetector") as MockDetector,
+            patch("nb_dt_import.LogHandler") as MockLogHandler,
             patch("sys.stdout") as mock_stdout,
             patch("nb_dt_import.MyProgress", MockMyProgress),
         ):
@@ -816,11 +817,12 @@ class TestMain:
             MockRepo.return_value = _make_mock_repo()
             MockNetBox.return_value = _make_mock_netbox()
             MockDetector.return_value.detect_changes.return_value = _empty_change_report()
+            mock_handle = MockLogHandler.return_value
 
             nb_dt_import.main()
 
-            # handle.set_console(progress.console) was called
-            mock_prog.console.__bool__.assert_not_called()  # console object exists
+            # handle.set_console(progress.console) must have been called
+            mock_handle.set_console.assert_any_call(mock_prog.console)
 
     def test_future_cancel_and_executor_shutdown_in_finally(self, nb_dt_import):
         """An exception during future.result() triggers cancel() and shutdown() in finally."""

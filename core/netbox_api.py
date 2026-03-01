@@ -214,7 +214,7 @@ class NetBox:
             image_base = None  # "device-types" not in path; skip image discovery
         for i in ["front_image", "rear_image"]:
             if i in device_type:
-                if device_type[i] and image_base is not None:
+                if device_type[i] and image_base is not None and device_type.get("slug"):
                     image_glob = f"{image_base}/{device_type['slug']}.{i.split('_')[0]}.*"
                     images = glob.glob(image_glob, recursive=False)
                     if images:
@@ -330,6 +330,7 @@ class NetBox:
             self.handle.log(
                 f"Error {e.error} creating device type:"
                 f" {device_type.get('manufacturer', {}).get('slug', '')} {device_type.get('model', '')}"
+                f" (Context: {src_file})"
             )
             return None, True
 

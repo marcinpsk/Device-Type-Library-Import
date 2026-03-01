@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 
 class TestParsePositiveInt:
-    """Tests for TestParsePositiveInt."""
+    """Tests for _parse_positive_int environment variable parsing and validation."""
 
     def test_returns_default_when_unset(self):
         from core.settings import _parse_positive_int

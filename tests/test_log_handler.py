@@ -6,7 +6,7 @@ from core.log_handler import LogHandler
 
 
 class TestException:
-    """Tests for TestException."""
+    """Tests for LogHandler.exception() error handling and SystemExit behaviour."""
 
     def test_environment_error_exits(self):
         handle = LogHandler(SimpleNamespace(verbose=False))

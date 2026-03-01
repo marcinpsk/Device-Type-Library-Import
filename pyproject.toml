@@ -60,7 +60,7 @@ testpaths = [
 norecursedirs = ["tests/integration"]
 
 [tool.coverage.run]
-source = ["core", "."]
+source = ["."]
 omit = ["tests/*", "setup.py", "conftest.py"]
 
 [tool.coverage.report]

@@ -348,11 +348,12 @@ def _check_env_vars(handle):
         handle (LogHandler): Logging handler used to report and exit on error.
     """
     for var in settings.MANDATORY_ENV_VARS:
-        if var not in os.environ:
+        if not os.environ.get(var, "").strip():
             handle.exception(
                 "EnvironmentError",
                 var,
-                f'Environment variable "{var}" is not set.\n\nMANDATORY_ENV_VARS: {str(settings.MANDATORY_ENV_VARS)}\n',
+                f'Environment variable "{var}" is not set or is empty.'
+                f"\n\nMANDATORY_ENV_VARS: {str(settings.MANDATORY_ENV_VARS)}\n",
             )
 
 
@@ -505,7 +506,8 @@ def _process_module_types(
     """
     if module_parse_future is not None:
         module_files, discovered_module_vendors, module_types = module_parse_future.result()
-        module_parse_executor.shutdown(wait=False)
+        if module_parse_executor is not None:
+            module_parse_executor.shutdown(wait=False)
         if not module_files:
             module_types = []
     else:
