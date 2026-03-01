@@ -70,5 +70,8 @@ version_toml = ["pyproject.toml:project.version"]
 commit_message = "chore(release): v{version}"
 build_command = ""
 
+[tool.semantic_release.changelog]
+template_dir = "templates"
+
 [tool.semantic_release.branches.main]
 match = "(main|master)"
