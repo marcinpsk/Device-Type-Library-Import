@@ -566,6 +566,93 @@ def _process_module_types(
         handle.verbose_log("No module type changes to process.")
 
 
+def _process_rack_types(args, netbox, dtl_repo, handle, progress, selected_vendor_slugs):
+    """Discover, parse, and import rack types from the repository into NetBox.
+
+    Soft-skips with a warning when the connected NetBox instance is older than 4.1.
+    Honors ``--vendors`` and ``--slugs`` filters.
+
+    Args:
+        args: Parsed CLI arguments; inspects ``vendors``, ``slugs``, and ``only_new``.
+        netbox (NetBox): NetBox API wrapper instance.
+        dtl_repo (DTLRepo): Repository helper for file discovery and YAML parsing.
+        handle (LogHandler): Logging handler used to emit progress messages.
+        progress: Rich Progress instance for progress display, or None.
+        selected_vendor_slugs (set[str]): Vendor slugs derived from parsed device
+            types, used to scope rack-type discovery when ``--slugs`` is set.
+    """
+    if not netbox.rack_types:
+        handle.log("Rack types require NetBox >= 4.1. Skipping rack type import.")
+        return
+
+    racks_path = dtl_repo.get_racks_path()
+    if not os.path.isdir(racks_path):
+        handle.verbose_log("No rack-types directory found in repository. Skipping.")
+        return
+
+    rack_vendor_filter = args.vendors
+    if args.slugs and not args.vendors:
+        rack_vendor_filter = sorted(selected_vendor_slugs)
+
+    rack_files, discovered_rack_vendors = dtl_repo.get_devices(racks_path, rack_vendor_filter)
+    if not rack_files:
+        handle.verbose_log("No rack-type files found for the selected vendors/slugs.")
+        return
+
+    rack_parse_progress = get_progress_wrapper(progress, rack_files, desc="Parsing Rack Types")
+    rack_types = dtl_repo.parse_files(rack_files, slugs=args.slugs, progress=rack_parse_progress)
+
+    rack_vendors, _ = filter_vendors_for_parsed_types(discovered_rack_vendors, rack_types)
+    handle.verbose_log(f"{len(rack_vendors)} Rack Vendors Found")
+    handle.verbose_log(f"{len(rack_types)} Rack-Types Found")
+
+    all_rack_types = netbox.get_existing_rack_types()
+    new_count = sum(
+        1
+        for rt in rack_types
+        if all_rack_types.get(rt.get("manufacturer", {}).get("slug", ""), {}).get(rt.get("model")) is None
+    )
+    existing_count = len(rack_types) - new_count
+
+    handle.log("============================================================")
+    handle.log(f"New rack types:       {new_count}")
+    handle.log(f"Existing rack types:  {existing_count}")
+    handle.log("============================================================")
+
+    if rack_types:
+        netbox.create_manufacturers(rack_vendors)
+        netbox.create_rack_types(
+            rack_types,
+            progress=get_progress_wrapper(progress, rack_types, desc="Processing Rack Types"),
+            only_new=args.only_new,
+            all_rack_types=all_rack_types,
+        )
+
+
+def _log_run_summary(handle, netbox, start_time):
+    """Log the final import summary counters to *handle*.
+
+    Args:
+        handle (LogHandler): Logging handler for output.
+        netbox (NetBox): NetBox API wrapper whose ``counter`` is read.
+        start_time (datetime): Timestamp from the start of the run for elapsed-time reporting.
+    """
+    handle.log("---")
+    handle.verbose_log(f"Script took {(datetime.now() - start_time)} to run")
+    handle.log(f"{netbox.counter['added']} device types created")
+    handle.log(f"{netbox.counter['properties_updated']} device types updated")
+    handle.log(f"{netbox.counter['components_updated']} components updated")
+    handle.log(f"{netbox.counter['components_added']} components added")
+    handle.log(f"{netbox.counter['components_removed']} components removed")
+    handle.verbose_log(f"{netbox.counter['images']} images uploaded")
+    handle.log(f"{netbox.counter['manufacturer']} manufacturers created")
+    if settings.NETBOX_FEATURES["modules"]:
+        handle.log(f"{netbox.counter['module_added']} modules created")
+    if netbox.rack_types:
+        handle.log(f"{netbox.counter['rack_type_added']} rack types created")
+        handle.log(f"{netbox.counter['rack_type_updated']} rack types updated")
+
+
 def main():
     """Orchestrate importing device- and module-types from a Git repository into NetBox.
 
@@ -705,6 +792,7 @@ def main():
                 )
                 _module_parse_future = None
                 _module_parse_executor = None
+            _process_rack_types(args, netbox, dtl_repo, handle, progress, selected_vendor_slugs)
         finally:
             if cache_preload_job:
                 netbox.device_types.stop_component_preload(cache_preload_job)
@@ -714,17 +802,7 @@ def main():
                 _module_parse_executor.shutdown(wait=False, cancel_futures=True)
             handle.set_console(None)
 
-    handle.log("---")
-    handle.verbose_log(f"Script took {(datetime.now() - startTime)} to run")
-    handle.log(f"{netbox.counter['added']} device types created")
-    handle.log(f"{netbox.counter['properties_updated']} device types updated")
-    handle.log(f"{netbox.counter['components_updated']} components updated")
-    handle.log(f"{netbox.counter['components_added']} components added")
-    handle.log(f"{netbox.counter['components_removed']} components removed")
-    handle.verbose_log(f"{netbox.counter['images']} images uploaded")
-    handle.log(f"{netbox.counter['manufacturer']} manufacturers created")
-    if settings.NETBOX_FEATURES["modules"]:
-        handle.log(f"{netbox.counter['module_added']} modules created")
+    _log_run_summary(handle, netbox, startTime)
 
 
 if __name__ == "__main__":

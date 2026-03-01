@@ -61,6 +61,8 @@ class NetBox:
             components_added=0,
             manufacturer=0,
             module_added=0,
+            rack_type_added=0,
+            rack_type_updated=0,
             images=0,
             properties_updated=0,
             components_updated=0,
@@ -74,6 +76,7 @@ class NetBox:
         self.modules = False
         self.new_filters = False
         self.m2m_front_ports = False  # True for NetBox >= 4.5 (M2M port mappings)
+        self.rack_types = False
         self.connect_api()
         self.verify_compatibility()
         self.graphql = NetBoxGraphQLClient(
@@ -129,6 +132,7 @@ class NetBox:
         # check if version >= 4.1 in order to use new filter names (https://github.com/netbox-community/netbox/issues/15410)
         if version_split[0] > 4 or (version_split[0] == 4 and version_split[1] >= 1):
             self.new_filters = True
+            self.rack_types = True
             self.handle.log(f"Netbox version {self.netbox.version} found. Using new filters.")
 
         # NetBox 4.5 replaced FrontPortTemplate.rear_port (FK) + rear_port_position (int)
@@ -442,6 +446,89 @@ class NetBox:
             dict: ``{manufacturer_slug: {model: DotDict_record}}``
         """
         return self.graphql.get_module_types()
+
+    def get_existing_rack_types(self):
+        """Fetch all rack types from NetBox via GraphQL and return them indexed by manufacturer slug and model.
+
+        Returns:
+            dict: ``{manufacturer_slug: {model: record}}``
+        """
+        return self.graphql.get_rack_types()
+
+    def create_rack_types(self, rack_types, progress=None, only_new=False, all_rack_types=None):
+        """Create or update rack types in NetBox from parsed YAML definitions.
+
+        For each rack type: looks up by (manufacturer_slug, model). If it already exists and
+        ``only_new`` is True, skips it. Otherwise compares scalar fields and issues a bulk
+        update for any changed values. If it does not exist, creates it.
+
+        Args:
+            rack_types (list[dict]): Parsed YAML rack-type dicts to process.
+            progress: Optional progress iterator wrapping ``rack_types``.
+            only_new (bool): If True, skip updates for existing rack types.
+            all_rack_types (dict | None): Existing rack types cache; fetched if None.
+        """
+        if not rack_types:
+            return
+
+        if all_rack_types is None:
+            all_rack_types = self.get_existing_rack_types()
+
+        iterator = progress if progress is not None else rack_types
+        for rack_type in iterator:
+            src_file = rack_type.get("src", "Unknown")
+            if "src" in rack_type:
+                del rack_type["src"]
+
+            manufacturer_slug = rack_type.get("manufacturer", {}).get("slug", "")
+            model = rack_type.get("model", "")
+            existing = all_rack_types.get(manufacturer_slug, {}).get(model)
+
+            if existing is not None:
+                self.handle.verbose_log(f"Rack Type Cached: {manufacturer_slug} - {model} - {existing.id}")
+                if only_new:
+                    continue
+
+                fields_to_compare = [
+                    "slug",
+                    "form_factor",
+                    "width",
+                    "u_height",
+                    "starting_unit",
+                    "outer_width",
+                    "outer_height",
+                    "outer_depth",
+                    "outer_unit",
+                    "mounting_depth",
+                    "weight",
+                    "max_weight",
+                    "weight_unit",
+                    "desc_units",
+                    "comments",
+                    "description",
+                ]
+                updates = {
+                    field: rack_type[field]
+                    for field in fields_to_compare
+                    if field in rack_type and rack_type[field] != getattr(existing, field, None)
+                }
+                if updates:
+                    try:
+                        self.netbox.dcim.rack_types.update([{"id": existing.id, **updates}])
+                        self.counter.update({"rack_type_updated": 1})
+                        self.handle.verbose_log(f"Rack Type Updated: {manufacturer_slug} - {model} - {existing.id}")
+                    except pynetbox.RequestError as e:
+                        self.handle.log(f"Error updating Rack Type {model}: {e.error} (Context: {src_file})")
+                else:
+                    self.handle.verbose_log(f"Rack Type Unchanged: {manufacturer_slug} - {model} - {existing.id}")
+            else:
+                try:
+                    rt = self.netbox.dcim.rack_types.create(rack_type)
+                    self.counter.update({"rack_type_added": 1})
+                    all_rack_types.setdefault(manufacturer_slug, {})[model] = rt
+                    self.handle.verbose_log(f"Rack Type Created: {manufacturer_slug} - {model} - {rt.id}")
+                except pynetbox.RequestError as excep:
+                    self.handle.log(f"Error creating Rack Type: {excep} (Context: {src_file})")
 
     @staticmethod
     def _find_existing_module_type(module_type, all_module_types):

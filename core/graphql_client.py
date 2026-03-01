@@ -368,6 +368,49 @@ class NetBoxGraphQLClient:
 
         return result
 
+    def get_rack_types(self):
+        """Fetch all rack types and return them indexed by manufacturer slug and model.
+
+        Returns:
+            dict: ``{manufacturer_slug: {model: record}}``
+        """
+        query = """
+        query($pagination: OffsetPaginationInput) {
+          rack_type_list(pagination: $pagination) {
+            id
+            model
+            slug
+            form_factor
+            width
+            u_height
+            starting_unit
+            outer_width
+            outer_height
+            outer_depth
+            outer_unit
+            mounting_depth
+            weight
+            max_weight
+            weight_unit
+            desc_units
+            comments
+            description
+            manufacturer {
+              id
+              name
+              slug
+            }
+          }
+        }
+        """
+        items = self.query_all(query, list_key="rack_type_list")
+        result = {}
+        for item in items:
+            record = _to_dotdict(item)
+            mfr_slug = record.manufacturer.slug
+            result.setdefault(mfr_slug, {})[record.model] = record
+        return result
+
     def get_module_type_images(self):
         """Fetch image attachments for module types and return a mapping.
 

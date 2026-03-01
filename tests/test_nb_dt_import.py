@@ -288,20 +288,23 @@ def _make_mock_repo(device_types=None):
     mock_repo.get_devices.return_value = ([], [])
     mock_repo.get_devices_path.return_value = "/tmp/devices"
     mock_repo.get_modules_path.return_value = "/tmp/modules"
+    mock_repo.get_racks_path.return_value = "/tmp/rack-types"
     mock_repo.parse_files.return_value = device_types if device_types is not None else []
     return mock_repo
 
 
-def _make_mock_netbox(modules=False):
+def _make_mock_netbox(modules=False, rack_types=False):
     """Return a pre-configured NetBox mock."""
     mock_nb = MagicMock()
     mock_nb.modules = modules
+    mock_nb.rack_types = rack_types
     mock_nb.device_types.existing_device_types = {}
     mock_nb.device_types.existing_device_types_by_slug = {}
     mock_nb.count_device_type_images.return_value = 0
     mock_nb.count_module_type_images.return_value = 0
     mock_nb.filter_actionable_module_types.return_value = ([], [])
     mock_nb.get_existing_module_types.return_value = {}
+    mock_nb.get_existing_rack_types.return_value = {}
     return mock_nb
 
 
@@ -843,6 +846,116 @@ class TestMain:
 
         mock_future.cancel.assert_called_once()
         mock_executor.shutdown.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# _process_rack_types
+# ---------------------------------------------------------------------------
+
+
+class TestProcessRackTypes:
+    """Tests for the _process_rack_types() helper function."""
+
+    def _make_args(self, vendors=None, slugs=None, only_new=False):
+        return SimpleNamespace(vendors=vendors, slugs=slugs, only_new=only_new)
+
+    def test_rack_types_disabled_logs_warning_and_returns(self, nb_dt_import):
+        """netbox.rack_types=False: warning logged, no further processing."""
+        handle = MagicMock()
+        netbox = MagicMock()
+        netbox.rack_types = False
+        dtl_repo = MagicMock()
+
+        nb_dt_import._process_rack_types(self._make_args(), netbox, dtl_repo, handle, None, set())
+
+        handle.log.assert_called_once()
+        assert "4.1" in handle.log.call_args[0][0]
+        dtl_repo.get_racks_path.assert_not_called()
+
+    def test_rack_types_dir_not_exist_verbose_log_and_returns(self, nb_dt_import, tmp_path):
+        """rack_types=True but racks_path is not a directory: verbose_log + return."""
+        handle = MagicMock()
+        netbox = MagicMock()
+        netbox.rack_types = True
+        dtl_repo = MagicMock()
+        dtl_repo.get_racks_path.return_value = str(tmp_path / "nonexistent")
+
+        nb_dt_import._process_rack_types(self._make_args(), netbox, dtl_repo, handle, None, set())
+
+        handle.verbose_log.assert_called()
+        assert "No rack-types directory" in handle.verbose_log.call_args[0][0]
+        dtl_repo.get_devices.assert_not_called()
+
+    def test_no_rack_files_verbose_log_and_returns(self, nb_dt_import, tmp_path):
+        """racks_path exists but no files discovered: verbose_log + return."""
+        handle = MagicMock()
+        netbox = MagicMock()
+        netbox.rack_types = True
+        dtl_repo = MagicMock()
+        racks_dir = tmp_path / "rack-types"
+        racks_dir.mkdir()
+        dtl_repo.get_racks_path.return_value = str(racks_dir)
+        dtl_repo.get_devices.return_value = ([], [])
+
+        nb_dt_import._process_rack_types(self._make_args(), netbox, dtl_repo, handle, None, set())
+
+        handle.verbose_log.assert_called()
+        assert "No rack-type files" in handle.verbose_log.call_args[0][0]
+        dtl_repo.parse_files.assert_not_called()
+
+    def test_full_flow_calls_create_rack_types(self, nb_dt_import, tmp_path):
+        """Full flow: files found, parse_files called, create_rack_types called."""
+        handle = MagicMock()
+        netbox = MagicMock()
+        netbox.rack_types = True
+        netbox.get_existing_rack_types.return_value = {}
+
+        racks_dir = tmp_path / "rack-types"
+        racks_dir.mkdir()
+        dtl_repo = MagicMock()
+        dtl_repo.get_racks_path.return_value = str(racks_dir)
+        dtl_repo.get_devices.return_value = (
+            [str(racks_dir / "apc-ar1300.yaml")],
+            [{"name": "APC", "slug": "apc"}],
+        )
+        rack_type = {"manufacturer": {"slug": "apc"}, "model": "AR1300", "slug": "apc-ar1300"}
+        dtl_repo.parse_files.return_value = [rack_type]
+
+        nb_dt_import._process_rack_types(self._make_args(), netbox, dtl_repo, handle, None, set())
+
+        dtl_repo.parse_files.assert_called_once()
+        netbox.create_rack_types.assert_called_once()
+
+    def test_vendor_filter_from_selected_vendor_slugs_when_slugs_set(self, nb_dt_import, tmp_path):
+        """When args.slugs set and no args.vendors, rack_vendor_filter uses selected_vendor_slugs."""
+        handle = MagicMock()
+        netbox = MagicMock()
+        netbox.rack_types = True
+        netbox.get_existing_rack_types.return_value = {}
+
+        racks_dir = tmp_path / "rack-types"
+        racks_dir.mkdir()
+        dtl_repo = MagicMock()
+        dtl_repo.get_racks_path.return_value = str(racks_dir)
+
+        captured_vendor_filter = {}
+
+        def _get_devices_se(path, vendors):
+            captured_vendor_filter["vendors"] = vendors
+            return ([], [])
+
+        dtl_repo.get_devices.side_effect = _get_devices_se
+
+        nb_dt_import._process_rack_types(
+            self._make_args(vendors=None, slugs=["apc-ar1300"]),
+            netbox,
+            dtl_repo,
+            handle,
+            None,
+            {"apc"},
+        )
+
+        assert captured_vendor_filter["vendors"] == ["apc"]
 
 
 # ---------------------------------------------------------------------------

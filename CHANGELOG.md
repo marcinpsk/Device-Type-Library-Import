@@ -19,7 +19,6 @@
 - Updated dependencies ([#24](https://github.com/marcinpsk/Device-Type-Library-Import/pull/24),
   [`a7c8d9b`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/a7c8d9b5021046432248e5e46309479dcaaaac4a))
 
-
 ## v1.0.1 (2026-02-28)
 
 ### Bug Fixes

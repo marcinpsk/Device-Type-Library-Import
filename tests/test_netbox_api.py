@@ -3851,3 +3851,192 @@ class TestUploadImagesRequestException:
             dt.upload_images("http://nb", "tok", {"front_image": str(img)}, 99)
 
         assert mock_settings.handle.log.called
+
+
+# ---------------------------------------------------------------------------
+# TestGetExistingRackTypes
+# ---------------------------------------------------------------------------
+
+
+class TestGetExistingRackTypes:
+    """Tests for NetBox.get_existing_rack_types()."""
+
+    def test_delegates_to_graphql(self, mock_settings, mock_pynetbox, graphql_client):
+        """get_existing_rack_types() returns whatever graphql.get_rack_types() returns."""
+        mock_pynetbox.api.return_value.version = "4.1"
+        nb = NetBox(mock_settings, mock_settings.handle)
+        nb.graphql = graphql_client
+        expected = {"apc": {"AR1300": MagicMock()}}
+        graphql_client.get_rack_types = MagicMock(return_value=expected)
+
+        result = nb.get_existing_rack_types()
+
+        graphql_client.get_rack_types.assert_called_once()
+        assert result is expected
+
+
+# ---------------------------------------------------------------------------
+# TestCreateRackTypes
+# ---------------------------------------------------------------------------
+
+
+class TestCreateRackTypes:
+    """Tests for NetBox.create_rack_types()."""
+
+    def _make_nb(self, mock_settings, mock_pynetbox):
+        mock_pynetbox.api.return_value.version = "4.1"
+        return NetBox(mock_settings, mock_settings.handle)
+
+    def test_empty_list_returns_immediately(self, mock_settings, mock_pynetbox):
+        nb = self._make_nb(mock_settings, mock_pynetbox)
+        nb.create_rack_types([])
+        mock_pynetbox.api.return_value.dcim.rack_types.create.assert_not_called()
+
+    def test_existing_rack_type_only_new_skips(self, mock_settings, mock_pynetbox):
+        """only_new=True with an existing rack type: verbose_log called, no create/update."""
+        from core.graphql_client import DotDict
+
+        nb = self._make_nb(mock_settings, mock_pynetbox)
+        existing = DotDict({"id": 1, "model": "AR1300", "slug": "apc-ar1300"})
+        all_rack_types = {"apc": {"AR1300": existing}}
+
+        rack_type = {"manufacturer": {"slug": "apc"}, "model": "AR1300", "slug": "apc-ar1300"}
+        nb.create_rack_types([rack_type], only_new=True, all_rack_types=all_rack_types)
+
+        mock_settings.handle.verbose_log.assert_called()
+        mock_pynetbox.api.return_value.dcim.rack_types.create.assert_not_called()
+        mock_pynetbox.api.return_value.dcim.rack_types.update.assert_not_called()
+
+    def test_existing_rack_type_fields_match_logs_unchanged(self, mock_settings, mock_pynetbox):
+        """Existing rack type with identical fields logs 'Unchanged', no update called."""
+        from core.graphql_client import DotDict
+
+        nb = self._make_nb(mock_settings, mock_pynetbox)
+        existing = DotDict({"id": 2, "model": "AR1300", "slug": "apc-ar1300", "u_height": 42})
+        all_rack_types = {"apc": {"AR1300": existing}}
+
+        rack_type = {
+            "manufacturer": {"slug": "apc"},
+            "model": "AR1300",
+            "slug": "apc-ar1300",
+            "u_height": 42,
+        }
+        nb.create_rack_types([rack_type], only_new=False, all_rack_types=all_rack_types)
+
+        verbose_calls = [str(c) for c in mock_settings.handle.verbose_log.call_args_list]
+        assert any("Unchanged" in c for c in verbose_calls)
+        mock_pynetbox.api.return_value.dcim.rack_types.update.assert_not_called()
+
+    def test_existing_rack_type_fields_differ_calls_update(self, mock_settings, mock_pynetbox):
+        """Existing rack type with a changed field calls update and increments counter."""
+        from core.graphql_client import DotDict
+
+        nb = self._make_nb(mock_settings, mock_pynetbox)
+        existing = DotDict({"id": 3, "model": "AR1300", "slug": "apc-ar1300", "u_height": 40})
+        all_rack_types = {"apc": {"AR1300": existing}}
+
+        rack_type = {
+            "manufacturer": {"slug": "apc"},
+            "model": "AR1300",
+            "slug": "apc-ar1300",
+            "u_height": 42,
+        }
+        nb.create_rack_types([rack_type], only_new=False, all_rack_types=all_rack_types)
+
+        mock_pynetbox.api.return_value.dcim.rack_types.update.assert_called_once()
+        assert nb.counter["rack_type_updated"] == 1
+
+    def test_new_rack_type_calls_create(self, mock_settings, mock_pynetbox):
+        """Non-existing rack type: create called, counter incremented, added to cache."""
+        mock_pynetbox.api.return_value.version = "4.1"
+        created_rt = MagicMock()
+        created_rt.id = 99
+        mock_pynetbox.api.return_value.dcim.rack_types.create.return_value = created_rt
+
+        nb = self._make_nb(mock_settings, mock_pynetbox)
+        all_rack_types = {}
+        rack_type = {
+            "manufacturer": {"slug": "apc"},
+            "model": "AR1300",
+            "slug": "apc-ar1300",
+        }
+        nb.create_rack_types([rack_type], only_new=False, all_rack_types=all_rack_types)
+
+        mock_pynetbox.api.return_value.dcim.rack_types.create.assert_called_once()
+        assert nb.counter["rack_type_added"] == 1
+        assert all_rack_types["apc"]["AR1300"] is created_rt
+
+    def test_request_error_on_create_logged_no_crash(self, mock_settings, mock_pynetbox):
+        """RequestError during create is logged; processing continues."""
+        import pynetbox
+
+        mock_pynetbox.api.return_value.version = "4.1"
+        err = pynetbox.RequestError(MagicMock(status_code=400, url="u", content=b'{"detail":"bad"}'))
+        mock_pynetbox.api.return_value.dcim.rack_types.create.side_effect = err
+        mock_pynetbox.RequestError = pynetbox.RequestError
+
+        nb = self._make_nb(mock_settings, mock_pynetbox)
+        rack_type = {
+            "manufacturer": {"slug": "apc"},
+            "model": "AR1300",
+            "slug": "apc-ar1300",
+            "src": "/some/file.yaml",
+        }
+        nb.create_rack_types([rack_type], all_rack_types={})  # should not raise
+
+        mock_settings.handle.log.assert_called()
+
+    def test_request_error_on_update_logged_no_crash(self, mock_settings, mock_pynetbox):
+        """RequestError during update is logged; processing continues."""
+        import pynetbox
+        from core.graphql_client import DotDict
+
+        mock_pynetbox.api.return_value.version = "4.1"
+        err = pynetbox.RequestError(MagicMock(status_code=400, url="u", content=b'{"detail":"bad"}'))
+        mock_pynetbox.api.return_value.dcim.rack_types.update.side_effect = err
+        mock_pynetbox.RequestError = pynetbox.RequestError
+
+        nb = self._make_nb(mock_settings, mock_pynetbox)
+        existing = DotDict({"id": 5, "model": "AR1300", "u_height": 40})
+        all_rack_types = {"apc": {"AR1300": existing}}
+        rack_type = {
+            "manufacturer": {"slug": "apc"},
+            "model": "AR1300",
+            "slug": "apc-ar1300",
+            "u_height": 42,
+        }
+        nb.create_rack_types([rack_type], only_new=False, all_rack_types=all_rack_types)  # should not raise
+
+        mock_settings.handle.log.assert_called()
+
+    def test_all_rack_types_none_triggers_fetch(self, mock_settings, mock_pynetbox):
+        """When all_rack_types=None, get_existing_rack_types() is called to populate the cache."""
+        mock_pynetbox.api.return_value.version = "4.1"
+        nb = self._make_nb(mock_settings, mock_pynetbox)
+        nb.get_existing_rack_types = MagicMock(return_value={})
+        rack_type = {
+            "manufacturer": {"slug": "apc"},
+            "model": "AR1300",
+            "slug": "apc-ar1300",
+        }
+        nb.create_rack_types([rack_type], all_rack_types=None)
+
+        nb.get_existing_rack_types.assert_called_once()
+
+    def test_progress_iterator_used(self, mock_settings, mock_pynetbox):
+        """When a progress wrapper is provided, it is used as the iterator."""
+        mock_pynetbox.api.return_value.version = "4.1"
+        created_rt = MagicMock()
+        created_rt.id = 1
+        mock_pynetbox.api.return_value.dcim.rack_types.create.return_value = created_rt
+
+        nb = self._make_nb(mock_settings, mock_pynetbox)
+        rack_type = {
+            "manufacturer": {"slug": "apc"},
+            "model": "AR1300",
+            "slug": "apc-ar1300",
+        }
+        progress_items = [rack_type]
+        nb.create_rack_types([rack_type], progress=iter(progress_items), all_rack_types={})
+
+        mock_pynetbox.api.return_value.dcim.rack_types.create.assert_called_once()

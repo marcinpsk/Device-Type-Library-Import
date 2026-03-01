@@ -641,6 +641,131 @@ class TestGetModuleTypes:
         assert result == {}
 
 
+class TestGetRackTypes:
+    """Tests for the get_rack_types() convenience method."""
+
+    def _make_client(self):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        return NetBoxGraphQLClient("http://netbox.local", "tok")
+
+    def test_returns_nested_dict_by_manufacturer_and_model(self, mock_post):
+        data = {
+            "rack_type_list": [
+                {
+                    "id": "10",
+                    "model": "AR1300",
+                    "slug": "apc-ar1300",
+                    "form_factor": "4-post-cabinet",
+                    "width": 19,
+                    "u_height": 42,
+                    "starting_unit": 1,
+                    "outer_width": 600,
+                    "outer_height": 1991,
+                    "outer_depth": 1070,
+                    "outer_unit": "mm",
+                    "mounting_depth": 914,
+                    "weight": 125.09,
+                    "max_weight": 1020,
+                    "weight_unit": "kg",
+                    "desc_units": False,
+                    "comments": "",
+                    "description": "APC NetShelter SX, 42U",
+                    "manufacturer": {"id": "5", "name": "APC", "slug": "apc"},
+                },
+                {
+                    "id": "11",
+                    "model": "AR3300",
+                    "slug": "apc-ar3300",
+                    "form_factor": "4-post-cabinet",
+                    "width": 19,
+                    "u_height": 42,
+                    "starting_unit": 1,
+                    "outer_width": 600,
+                    "outer_height": 1991,
+                    "outer_depth": 1070,
+                    "outer_unit": "mm",
+                    "mounting_depth": 914,
+                    "weight": 130.0,
+                    "max_weight": 1020,
+                    "weight_unit": "kg",
+                    "desc_units": False,
+                    "comments": "",
+                    "description": "",
+                    "manufacturer": {"id": "5", "name": "APC", "slug": "apc"},
+                },
+            ]
+        }
+        mock_post.side_effect = _make_paged_responses(data, "rack_type_list")
+
+        client = self._make_client()
+        result = client.get_rack_types()
+
+        assert "apc" in result
+        assert "AR1300" in result["apc"]
+        assert "AR3300" in result["apc"]
+        assert result["apc"]["AR1300"]["id"] == 10
+        assert result["apc"]["AR3300"]["id"] == 11
+        # Attribute access (DotDict compatibility)
+        rt = result["apc"]["AR1300"]
+        assert rt.id == 10
+        assert rt.model == "AR1300"
+        assert rt.slug == "apc-ar1300"
+        assert rt.u_height == 42
+        assert rt.manufacturer.slug == "apc"
+
+    def test_returns_empty_dict_when_no_rack_types(self, mock_post):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"data": {"rack_type_list": []}}
+        mock_response.raise_for_status = MagicMock()
+        mock_post.return_value = mock_response
+
+        client = self._make_client()
+        result = client.get_rack_types()
+
+        assert result == {}
+
+    def test_field_values_accessible_as_dotdict_attributes(self, mock_post):
+        data = {
+            "rack_type_list": [
+                {
+                    "id": "99",
+                    "model": "TestRack",
+                    "slug": "vendor-testrack",
+                    "form_factor": "2-post-frame",
+                    "width": 23,
+                    "u_height": 12,
+                    "starting_unit": 1,
+                    "outer_width": 500,
+                    "outer_height": 600,
+                    "outer_depth": 700,
+                    "outer_unit": "mm",
+                    "mounting_depth": 400,
+                    "weight": 50.0,
+                    "max_weight": 500,
+                    "weight_unit": "kg",
+                    "desc_units": True,
+                    "comments": "a comment",
+                    "description": "A test rack",
+                    "manufacturer": {"id": "7", "name": "Vendor", "slug": "vendor"},
+                }
+            ]
+        }
+        mock_post.side_effect = _make_paged_responses(data, "rack_type_list")
+
+        client = self._make_client()
+        result = client.get_rack_types()
+
+        rt = result["vendor"]["TestRack"]
+        assert rt.form_factor == "2-post-frame"
+        assert rt.width == 23
+        assert rt.outer_unit == "mm"
+        assert rt.desc_units is True
+        assert rt.comments == "a comment"
+        assert rt.description == "A test rack"
+
+
 class TestGetModuleTypeImages:
     """Tests for the get_module_type_images() convenience method."""
 

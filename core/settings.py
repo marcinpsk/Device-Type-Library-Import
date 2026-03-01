@@ -21,6 +21,7 @@ SLUGS = os.getenv("SLUGS", "").split()
 
 NETBOX_FEATURES = {
     "modules": False,
+    "rack_types": False,
 }
 
 
