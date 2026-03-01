@@ -2034,10 +2034,10 @@ class DeviceTypes:
             self.counter["images"] += len(images)
             if self._image_progress:
                 self._image_progress(len(images))
-        except OSError as e:
-            self.handle.log(f"Error reading image file for device type {device_type}: {e}")
         except requests.RequestException as e:
             self.handle.log(f"Error uploading images for device type {device_type}: {e}")
+        except OSError as e:
+            self.handle.log(f"Error reading image file for device type {device_type}: {e}")
         finally:
             for _, (_, fh) in file_handles.items():
                 try:
@@ -2089,9 +2089,9 @@ class DeviceTypes:
                 if self._image_progress:
                     self._image_progress(1)
                 return True
-        except OSError as e:
-            self.handle.log(f"Error reading image file {image_path}: {e}")
-            return False
         except requests.RequestException as e:
             self.handle.log(f"Error uploading image attachment for {object_type} {object_id}: {e}")
+            return False
+        except OSError as e:
+            self.handle.log(f"Error reading image file {image_path}: {e}")
             return False
