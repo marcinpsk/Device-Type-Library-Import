@@ -888,6 +888,277 @@ class TestGetComponentTemplates:
         assert "module_type" not in sent_query
 
 
+class TestDotDictSetattr:
+    """Tests for DotDict.__setattr__ (attribute-assignment path)."""
+
+    def test_setattr_stores_value_in_dict(self):
+        """Assigning via d.key = value should store the value in the underlying dict."""
+        d = DotDict({"name": "Cisco"})
+        d.slug = "cisco"
+        assert d["slug"] == "cisco"
+        assert d.slug == "cisco"
+
+    def test_setattr_overwrites_existing_key(self):
+        """Attribute assignment overwrites an existing key."""
+        d = DotDict({"name": "Old"})
+        d.name = "New"
+        assert d["name"] == "New"
+
+
+class TestToDotDict:
+    """Tests for the _to_dotdict module-level helper."""
+
+    def test_list_input_returns_list_of_dotdicts(self):
+        """A list input is converted element-wise to DotDicts."""
+        from core.graphql_client import _to_dotdict
+
+        result = _to_dotdict([{"id": "1", "name": "Cisco"}, {"id": "2", "name": "Juniper"}])
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0].name == "Cisco"
+        assert result[0].id == 1
+        assert result[1].id == 2
+
+    def test_non_numeric_id_kept_as_string(self):
+        """When the 'id' string cannot be parsed as int, the original string is kept."""
+        from core.graphql_client import _to_dotdict
+
+        result = _to_dotdict({"id": "not-a-number", "name": "test"})
+        assert result["id"] == "not-a-number"
+        assert result.name == "test"
+
+
+class TestClientLifecycle:
+    """Tests for NetBoxGraphQLClient.close(), __enter__, and __exit__."""
+
+    def test_close_calls_session_close(self):
+        """close() should close the underlying HTTP session."""
+        from core.graphql_client import NetBoxGraphQLClient
+
+        client = NetBoxGraphQLClient("http://netbox.local", "tok")
+        client.close()
+        client._session.close.assert_called_once()
+
+    def test_context_manager_returns_client(self):
+        """The context manager __enter__ should return the client itself."""
+        from core.graphql_client import NetBoxGraphQLClient
+
+        with NetBoxGraphQLClient("http://netbox.local", "tok") as client:
+            assert isinstance(client, NetBoxGraphQLClient)
+
+    def test_context_manager_closes_session_on_exit(self):
+        """The context manager __exit__ should close the HTTP session."""
+        from core.graphql_client import NetBoxGraphQLClient
+
+        with NetBoxGraphQLClient("http://netbox.local", "tok") as client:
+            pass
+        client._session.close.assert_called_once()
+
+
+class TestQueryValueError:
+    """Tests for the ValueError path in query()."""
+
+    def _make_client(self):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        return NetBoxGraphQLClient("http://netbox.local", "tok")
+
+    def test_query_raises_graphql_error_on_invalid_json(self, mock_post):
+        """A ValueError from response.json() is wrapped in GraphQLError."""
+        from core.graphql_client import GraphQLError
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.side_effect = ValueError("bad json")
+        mock_post.return_value = mock_response
+
+        client = self._make_client()
+        with pytest.raises(GraphQLError, match="Invalid JSON"):
+            client.query("{ foo { id } }")
+
+
+class TestQueryAllOnPage:
+    """Tests for the on_page callback in query_all()."""
+
+    def _make_client(self):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        return NetBoxGraphQLClient("http://netbox.local", "tok")
+
+    def test_on_page_callback_is_called_with_page_count(self, mock_post):
+        """on_page is invoked after each non-empty page with the item count."""
+        items = [{"id": "1"}, {"id": "2"}, {"id": "3"}]
+        r_data = MagicMock()
+        r_data.status_code = 200
+        r_data.raise_for_status = MagicMock()
+        r_data.json.return_value = {"data": {"manufacturer_list": items}}
+        r_empty = MagicMock()
+        r_empty.status_code = 200
+        r_empty.raise_for_status = MagicMock()
+        r_empty.json.return_value = {"data": {"manufacturer_list": []}}
+        mock_post.side_effect = [r_data, r_empty]
+
+        callback_counts = []
+        client = self._make_client()
+        client.query_all(
+            "query($pagination: OffsetPaginationInput) { manufacturer_list(pagination: $pagination) { id } }",
+            list_key="manufacturer_list",
+            page_size=100,
+            on_page=callback_counts.append,
+        )
+
+        assert callback_counts == [3]
+
+
+class TestQueryAllClampingPrintFallback:
+    """Tests for the print() fallback in query_all when no log_handler is set."""
+
+    def test_clamping_warning_uses_print_when_no_log_handler(self, mock_post, capsys):
+        """When log_handler is None the clamping warning goes to stdout via print()."""
+        pages = [
+            [{"id": "1"}, {"id": "2"}],
+            [{"id": "3"}, {"id": "4"}],
+            [{"id": "5"}],
+        ]
+        responses = []
+        for page_data in pages:
+            r = MagicMock()
+            r.status_code = 200
+            r.json.return_value = {"data": {"device_type_list": page_data}}
+            r.raise_for_status = MagicMock()
+            responses.append(r)
+        mock_post.side_effect = responses
+
+        from core.graphql_client import NetBoxGraphQLClient
+
+        client = NetBoxGraphQLClient("http://netbox.local", "tok")  # no log_handler
+        result = client.query_all(
+            "query($p: OffsetPaginationInput) { device_type_list(pagination: $p) { id } }",
+            list_key="device_type_list",
+            page_size=10,
+        )
+
+        assert len(result) == 5
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.out
+        assert "2" in captured.out
+        assert "10" in captured.out
+
+
+class TestGetModuleTypeImagesObjectIdConversion:
+    """Tests for the object_id string-to-int conversion in get_module_type_images()."""
+
+    def _make_client(self):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        return NetBoxGraphQLClient("http://netbox.local", "tok")
+
+    def test_string_object_id_is_converted_to_int(self, mock_post):
+        """A numeric string object_id is coerced to int in the result dict."""
+        data = {
+            "image_attachment_list": [
+                {"id": "1", "name": "front", "object_id": "42"},
+            ]
+        }
+        mock_post.side_effect = _make_paged_responses(data, "image_attachment_list")
+
+        client = self._make_client()
+        result = client.get_module_type_images()
+
+        assert 42 in result
+        assert result[42] == {"front"}
+
+    def test_non_numeric_string_object_id_is_skipped(self, mock_post):
+        """An object_id string that cannot be parsed as int is skipped (ValueError path)."""
+        data = {
+            "image_attachment_list": [
+                {"id": "1", "name": "front", "object_id": "not-a-number"},
+                {"id": "2", "name": "valid", "object_id": "99"},
+            ]
+        }
+        mock_post.side_effect = _make_paged_responses(data, "image_attachment_list")
+
+        client = self._make_client()
+        result = client.get_module_type_images()
+
+        assert 99 in result
+        assert len(result) == 1
+
+
+class TestGetComponentTemplatesFrontPortFallback:
+    """Tests for the front_port_templates rear_port_position fallback in get_component_templates()."""
+
+    def _make_client(self):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        return NetBoxGraphQLClient("http://netbox.local", "tok")
+
+    def _make_response(self, data):
+        r = MagicMock()
+        r.status_code = 200
+        r.raise_for_status = MagicMock()
+        r.json.return_value = {"data": data}
+        return r
+
+    def _make_error_response(self, message):
+        r = MagicMock()
+        r.status_code = 200
+        r.raise_for_status = MagicMock()
+        r.json.return_value = {"errors": [{"message": message}]}
+        return r
+
+    def test_fallback_without_rear_port_position_on_graphql_error(self, mock_post):
+        """When the primary query fails, retries without rear_port_position and succeeds."""
+        front_ports = [
+            {
+                "id": "50",
+                "name": "FP1",
+                "type": "8p8c",
+                "label": "",
+                "device_type": {"id": "1"},
+                "module_type": None,
+            }
+        ]
+        mock_post.side_effect = [
+            self._make_error_response("Cannot query field 'rear_port_position'"),
+            self._make_response({"front_port_template_list": front_ports}),
+            self._make_response({"front_port_template_list": []}),
+        ]
+
+        client = self._make_client()
+        records = client.get_component_templates("front_port_templates")
+
+        assert len(records) == 1
+        assert records[0].name == "FP1"
+        assert records[0].id == 50
+        # rear_port_position should not be present in the fallback result
+        assert "rear_port_position" not in records[0]
+
+    def test_fallback_raises_when_retry_also_fails(self, mock_post):
+        """When both the primary and fallback queries fail, re-raises the fallback GraphQLError."""
+        from core.graphql_client import GraphQLError
+
+        mock_post.side_effect = [
+            self._make_error_response("Cannot query field 'rear_port_position'"),
+            self._make_error_response("Some other schema error"),
+        ]
+
+        client = self._make_client()
+        with pytest.raises(GraphQLError, match="Some other schema error"):
+            client.get_component_templates("front_port_templates")
+
+    def test_non_front_port_graphql_error_is_reraised(self, mock_post):
+        """GraphQLError from a non-front_port endpoint propagates unchanged."""
+        from core.graphql_client import GraphQLError
+
+        mock_post.return_value = self._make_error_response("interface field error")
+
+        client = self._make_client()
+        with pytest.raises(GraphQLError, match="interface field error"):
+            client.get_component_templates("interface_templates")
+
+
 class TestCustomPageSize:
     """Verify that the page_size constructor parameter is respected."""
 
