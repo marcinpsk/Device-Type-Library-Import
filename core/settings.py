@@ -8,7 +8,10 @@ REPO_BRANCH = os.getenv("REPO_BRANCH", default="master")
 NETBOX_URL = os.getenv("NETBOX_URL")
 NETBOX_TOKEN = os.getenv("NETBOX_TOKEN")
 IGNORE_SSL_ERRORS = os.getenv("IGNORE_SSL_ERRORS", default="False") == "True"
-REPO_PATH = f"{os.path.dirname(os.path.realpath(__file__))}/repo"
+REPO_PATH = os.getenv(
+    "REPO_PATH",
+    default=f"{os.path.dirname(os.path.dirname(os.path.realpath(__file__)))}/repo",
+)
 
 # optionally load vendors through a comma separated list as env var
 VENDORS = list(filter(None, os.getenv("VENDORS", "").split(",")))
@@ -18,6 +21,7 @@ SLUGS = os.getenv("SLUGS", "").split()
 
 NETBOX_FEATURES = {
     "modules": False,
+    "rack_types": False,
 }
 
 

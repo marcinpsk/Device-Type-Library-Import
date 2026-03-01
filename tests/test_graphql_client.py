@@ -45,7 +45,6 @@ class TestDotDict:
 
     def test_str_returns_name(self):
         """str() should return the name, matching pynetbox Record behavior."""
-
         d = DotDict({"name": "Cisco", "slug": "cisco"})
         assert str(d) == "Cisco"
 
@@ -91,7 +90,6 @@ class TestDotDict:
 
     def test_update_method(self):
         """DotDict.update() should work for property updates like pynetbox."""
-
         d = DotDict({"name": "Old", "slug": "old"})
         d.update({"name": "New"})
         assert d.name == "New"
@@ -336,7 +334,8 @@ class TestGraphQLQueryAll:
 
         client = self._make_client()
         client.query_all(
-            "query($pagination: OffsetPaginationInput, $name: String) { device_type_list(pagination: $pagination, filters: {name: $name}) { id } }",
+            "query($pagination: OffsetPaginationInput, $name: String) { "
+            "device_type_list(pagination: $pagination, filters: {name: $name}) { id } }",
             list_key="device_type_list",
             variables={"name": "test"},
         )
@@ -642,6 +641,131 @@ class TestGetModuleTypes:
         assert result == {}
 
 
+class TestGetRackTypes:
+    """Tests for the get_rack_types() convenience method."""
+
+    def _make_client(self):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        return NetBoxGraphQLClient("http://netbox.local", "tok")
+
+    def test_returns_nested_dict_by_manufacturer_and_model(self, mock_post):
+        data = {
+            "rack_type_list": [
+                {
+                    "id": "10",
+                    "model": "AR1300",
+                    "slug": "apc-ar1300",
+                    "form_factor": "4-post-cabinet",
+                    "width": 19,
+                    "u_height": 42,
+                    "starting_unit": 1,
+                    "outer_width": 600,
+                    "outer_height": 1991,
+                    "outer_depth": 1070,
+                    "outer_unit": "mm",
+                    "mounting_depth": 914,
+                    "weight": 125.09,
+                    "max_weight": 1020,
+                    "weight_unit": "kg",
+                    "desc_units": False,
+                    "comments": "",
+                    "description": "APC NetShelter SX, 42U",
+                    "manufacturer": {"id": "5", "name": "APC", "slug": "apc"},
+                },
+                {
+                    "id": "11",
+                    "model": "AR3300",
+                    "slug": "apc-ar3300",
+                    "form_factor": "4-post-cabinet",
+                    "width": 19,
+                    "u_height": 42,
+                    "starting_unit": 1,
+                    "outer_width": 600,
+                    "outer_height": 1991,
+                    "outer_depth": 1070,
+                    "outer_unit": "mm",
+                    "mounting_depth": 914,
+                    "weight": 130.0,
+                    "max_weight": 1020,
+                    "weight_unit": "kg",
+                    "desc_units": False,
+                    "comments": "",
+                    "description": "",
+                    "manufacturer": {"id": "5", "name": "APC", "slug": "apc"},
+                },
+            ]
+        }
+        mock_post.side_effect = _make_paged_responses(data, "rack_type_list")
+
+        client = self._make_client()
+        result = client.get_rack_types()
+
+        assert "apc" in result
+        assert "AR1300" in result["apc"]
+        assert "AR3300" in result["apc"]
+        assert result["apc"]["AR1300"]["id"] == 10
+        assert result["apc"]["AR3300"]["id"] == 11
+        # Attribute access (DotDict compatibility)
+        rt = result["apc"]["AR1300"]
+        assert rt.id == 10
+        assert rt.model == "AR1300"
+        assert rt.slug == "apc-ar1300"
+        assert rt.u_height == 42
+        assert rt.manufacturer.slug == "apc"
+
+    def test_returns_empty_dict_when_no_rack_types(self, mock_post):
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"data": {"rack_type_list": []}}
+        mock_response.raise_for_status = MagicMock()
+        mock_post.return_value = mock_response
+
+        client = self._make_client()
+        result = client.get_rack_types()
+
+        assert result == {}
+
+    def test_field_values_accessible_as_dotdict_attributes(self, mock_post):
+        data = {
+            "rack_type_list": [
+                {
+                    "id": "99",
+                    "model": "TestRack",
+                    "slug": "vendor-testrack",
+                    "form_factor": "2-post-frame",
+                    "width": 23,
+                    "u_height": 12,
+                    "starting_unit": 1,
+                    "outer_width": 500,
+                    "outer_height": 600,
+                    "outer_depth": 700,
+                    "outer_unit": "mm",
+                    "mounting_depth": 400,
+                    "weight": 50.0,
+                    "max_weight": 500,
+                    "weight_unit": "kg",
+                    "desc_units": True,
+                    "comments": "a comment",
+                    "description": "A test rack",
+                    "manufacturer": {"id": "7", "name": "Vendor", "slug": "vendor"},
+                }
+            ]
+        }
+        mock_post.side_effect = _make_paged_responses(data, "rack_type_list")
+
+        client = self._make_client()
+        result = client.get_rack_types()
+
+        rt = result["vendor"]["TestRack"]
+        assert rt.form_factor == "2-post-frame"
+        assert rt.width == 23
+        assert rt.outer_unit == "mm"
+        assert rt.desc_units is True
+        assert rt.comments == "a comment"
+        assert rt.description == "A test rack"
+
+
 class TestGetModuleTypeImages:
     """Tests for the get_module_type_images() convenience method."""
 
@@ -695,7 +819,6 @@ class TestGetModuleTypeImages:
 
     def test_falls_back_to_python_filter_on_schema_error(self, mock_post):
         """When the filtered query raises GraphQLError, fall back to fetch-all + Python filter."""
-
         error_response = MagicMock()
         error_response.status_code = 200
         error_response.raise_for_status = MagicMock()
@@ -747,7 +870,6 @@ class TestGetComponentTemplates:
 
     def test_returns_dotdict_records_with_parent_info(self, mock_post):
         """Records should be DotDicts with device_type/module_type and correct id types."""
-
         data = {
             "interface_template_list": [
                 {
@@ -889,6 +1011,277 @@ class TestGetComponentTemplates:
         # Verify the generated query does not include module_type (not in schema for module_bay_templates)
         sent_query = mock_post.call_args_list[0][1]["json"]["query"]
         assert "module_type" not in sent_query
+
+
+class TestDotDictSetattr:
+    """Tests for DotDict.__setattr__ (attribute-assignment path)."""
+
+    def test_setattr_stores_value_in_dict(self):
+        """Assigning via d.key = value should store the value in the underlying dict."""
+        d = DotDict({"name": "Cisco"})
+        d.slug = "cisco"
+        assert d["slug"] == "cisco"
+        assert d.slug == "cisco"
+
+    def test_setattr_overwrites_existing_key(self):
+        """Attribute assignment overwrites an existing key."""
+        d = DotDict({"name": "Old"})
+        d.name = "New"
+        assert d["name"] == "New"
+
+
+class TestToDotDict:
+    """Tests for the _to_dotdict module-level helper."""
+
+    def test_list_input_returns_list_of_dotdicts(self):
+        """A list input is converted element-wise to DotDicts."""
+        from core.graphql_client import _to_dotdict
+
+        result = _to_dotdict([{"id": "1", "name": "Cisco"}, {"id": "2", "name": "Juniper"}])
+        assert isinstance(result, list)
+        assert len(result) == 2
+        assert result[0].name == "Cisco"
+        assert result[0].id == 1
+        assert result[1].id == 2
+
+    def test_non_numeric_id_kept_as_string(self):
+        """When the 'id' string cannot be parsed as int, the original string is kept."""
+        from core.graphql_client import _to_dotdict
+
+        result = _to_dotdict({"id": "not-a-number", "name": "test"})
+        assert result["id"] == "not-a-number"
+        assert result.name == "test"
+
+
+class TestClientLifecycle:
+    """Tests for NetBoxGraphQLClient.close(), __enter__, and __exit__."""
+
+    def test_close_calls_session_close(self):
+        """close() should close the underlying HTTP session."""
+        from core.graphql_client import NetBoxGraphQLClient
+
+        client = NetBoxGraphQLClient("http://netbox.local", "tok")
+        client.close()
+        client._session.close.assert_called_once()
+
+    def test_context_manager_returns_client(self):
+        """The context manager __enter__ should return the client itself."""
+        from core.graphql_client import NetBoxGraphQLClient
+
+        with NetBoxGraphQLClient("http://netbox.local", "tok") as client:
+            assert isinstance(client, NetBoxGraphQLClient)
+
+    def test_context_manager_closes_session_on_exit(self):
+        """The context manager __exit__ should close the HTTP session."""
+        from core.graphql_client import NetBoxGraphQLClient
+
+        with NetBoxGraphQLClient("http://netbox.local", "tok") as client:
+            pass
+        client._session.close.assert_called_once()
+
+
+class TestQueryValueError:
+    """Tests for the ValueError path in query()."""
+
+    def _make_client(self):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        return NetBoxGraphQLClient("http://netbox.local", "tok")
+
+    def test_query_raises_graphql_error_on_invalid_json(self, mock_post):
+        """A ValueError from response.json() is wrapped in GraphQLError."""
+        from core.graphql_client import GraphQLError
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.side_effect = ValueError("bad json")
+        mock_post.return_value = mock_response
+
+        client = self._make_client()
+        with pytest.raises(GraphQLError, match="Invalid JSON"):
+            client.query("{ foo { id } }")
+
+
+class TestQueryAllOnPage:
+    """Tests for the on_page callback in query_all()."""
+
+    def _make_client(self):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        return NetBoxGraphQLClient("http://netbox.local", "tok")
+
+    def test_on_page_callback_is_called_with_page_count(self, mock_post):
+        """on_page is invoked after each non-empty page with the item count."""
+        items = [{"id": "1"}, {"id": "2"}, {"id": "3"}]
+        r_data = MagicMock()
+        r_data.status_code = 200
+        r_data.raise_for_status = MagicMock()
+        r_data.json.return_value = {"data": {"manufacturer_list": items}}
+        r_empty = MagicMock()
+        r_empty.status_code = 200
+        r_empty.raise_for_status = MagicMock()
+        r_empty.json.return_value = {"data": {"manufacturer_list": []}}
+        mock_post.side_effect = [r_data, r_empty]
+
+        callback_counts = []
+        client = self._make_client()
+        client.query_all(
+            "query($pagination: OffsetPaginationInput) { manufacturer_list(pagination: $pagination) { id } }",
+            list_key="manufacturer_list",
+            page_size=100,
+            on_page=callback_counts.append,
+        )
+
+        assert callback_counts == [3]
+
+
+class TestQueryAllClampingPrintFallback:
+    """Tests for the print() fallback in query_all when no log_handler is set."""
+
+    def test_clamping_warning_uses_print_when_no_log_handler(self, mock_post, capsys):
+        """When log_handler is None the clamping warning goes to stdout via print()."""
+        pages = [
+            [{"id": "1"}, {"id": "2"}],
+            [{"id": "3"}, {"id": "4"}],
+            [{"id": "5"}],
+        ]
+        responses = []
+        for page_data in pages:
+            r = MagicMock()
+            r.status_code = 200
+            r.json.return_value = {"data": {"device_type_list": page_data}}
+            r.raise_for_status = MagicMock()
+            responses.append(r)
+        mock_post.side_effect = responses
+
+        from core.graphql_client import NetBoxGraphQLClient
+
+        client = NetBoxGraphQLClient("http://netbox.local", "tok")  # no log_handler
+        result = client.query_all(
+            "query($p: OffsetPaginationInput) { device_type_list(pagination: $p) { id } }",
+            list_key="device_type_list",
+            page_size=10,
+        )
+
+        assert len(result) == 5
+        captured = capsys.readouterr()
+        assert "WARNING" in captured.out
+        assert "2" in captured.out
+        assert "10" in captured.out
+
+
+class TestGetModuleTypeImagesObjectIdConversion:
+    """Tests for the object_id string-to-int conversion in get_module_type_images()."""
+
+    def _make_client(self):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        return NetBoxGraphQLClient("http://netbox.local", "tok")
+
+    def test_string_object_id_is_converted_to_int(self, mock_post):
+        """A numeric string object_id is coerced to int in the result dict."""
+        data = {
+            "image_attachment_list": [
+                {"id": "1", "name": "front", "object_id": "42"},
+            ]
+        }
+        mock_post.side_effect = _make_paged_responses(data, "image_attachment_list")
+
+        client = self._make_client()
+        result = client.get_module_type_images()
+
+        assert 42 in result
+        assert result[42] == {"front"}
+
+    def test_non_numeric_string_object_id_is_skipped(self, mock_post):
+        """An object_id string that cannot be parsed as int is skipped (ValueError path)."""
+        data = {
+            "image_attachment_list": [
+                {"id": "1", "name": "front", "object_id": "not-a-number"},
+                {"id": "2", "name": "valid", "object_id": "99"},
+            ]
+        }
+        mock_post.side_effect = _make_paged_responses(data, "image_attachment_list")
+
+        client = self._make_client()
+        result = client.get_module_type_images()
+
+        assert 99 in result
+        assert len(result) == 1
+
+
+class TestGetComponentTemplatesFrontPortFallback:
+    """Tests for the front_port_templates rear_port_position fallback in get_component_templates()."""
+
+    def _make_client(self):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        return NetBoxGraphQLClient("http://netbox.local", "tok")
+
+    def _make_response(self, data):
+        r = MagicMock()
+        r.status_code = 200
+        r.raise_for_status = MagicMock()
+        r.json.return_value = {"data": data}
+        return r
+
+    def _make_error_response(self, message):
+        r = MagicMock()
+        r.status_code = 200
+        r.raise_for_status = MagicMock()
+        r.json.return_value = {"errors": [{"message": message}]}
+        return r
+
+    def test_fallback_without_rear_port_position_on_graphql_error(self, mock_post):
+        """When the primary query fails, retries without rear_port_position and succeeds."""
+        front_ports = [
+            {
+                "id": "50",
+                "name": "FP1",
+                "type": "8p8c",
+                "label": "",
+                "device_type": {"id": "1"},
+                "module_type": None,
+            }
+        ]
+        mock_post.side_effect = [
+            self._make_error_response("Cannot query field 'rear_port_position'"),
+            self._make_response({"front_port_template_list": front_ports}),
+            self._make_response({"front_port_template_list": []}),
+        ]
+
+        client = self._make_client()
+        records = client.get_component_templates("front_port_templates")
+
+        assert len(records) == 1
+        assert records[0].name == "FP1"
+        assert records[0].id == 50
+        # rear_port_position should not be present in the fallback result
+        assert "rear_port_position" not in records[0]
+
+    def test_fallback_raises_when_retry_also_fails(self, mock_post):
+        """When both the primary and fallback queries fail, re-raises the fallback GraphQLError."""
+        from core.graphql_client import GraphQLError
+
+        mock_post.side_effect = [
+            self._make_error_response("Cannot query field 'rear_port_position'"),
+            self._make_error_response("Some other schema error"),
+        ]
+
+        client = self._make_client()
+        with pytest.raises(GraphQLError, match="Some other schema error"):
+            client.get_component_templates("front_port_templates")
+
+    def test_non_front_port_graphql_error_is_reraised(self, mock_post):
+        """GraphQLError from a non-front_port endpoint propagates unchanged."""
+        from core.graphql_client import GraphQLError
+
+        mock_post.return_value = self._make_error_response("interface field error")
+
+        client = self._make_client()
+        with pytest.raises(GraphQLError, match="interface field error"):
+            client.get_component_templates("interface_templates")
 
 
 class TestCustomPageSize:

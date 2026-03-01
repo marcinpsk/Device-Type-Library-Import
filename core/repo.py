@@ -8,16 +8,17 @@ import concurrent.futures
 
 
 def validate_git_url(url):
-    """
-    Determine whether a Git remote URL is allowed (HTTPS, SSH, or file://).
+    """Determine whether a Git remote URL is allowed (HTTPS, SSH, or file://).
 
-    Parameters:
-        url (str): Git remote URL to validate. Accepted formats are HTTPS URLs with a hostname (e.g., https://host/...),
-            SSH scp-like form beginning with `git@host:` (e.g., git@host:org/repo.git), ssh URLs starting with `ssh://`,
-            or file:// URLs for local repositories (CI/testing).
+    Args:
+        url (str): Git remote URL to validate. Accepted formats are HTTPS URLs with a hostname
+            (e.g., https://host/...), SSH scp-like form beginning with `git@host:`
+            (e.g., git@host:org/repo.git), ssh URLs starting with `ssh://`, or file:// URLs
+            for local repositories (CI/testing).
 
     Returns:
-        (bool, str or None): `True, None` if the URL is allowed; otherwise `False` and a short error message explaining why.
+        (bool, str or None): `True, None` if the URL is allowed; otherwise `False` and a
+            short error message explaining why.
     """
     if not url or not str(url).strip():
         return False, "Empty URL"
@@ -57,15 +58,44 @@ def validate_git_url(url):
     return False, "URL must use HTTPS, SSH, or file protocol"
 
 
-def parse_single_file(file):
-    """
-    Load a YAML device mapping, convert its `manufacturer` to a slug dictionary, and record the source path.
+def validate_repo_path(repo_path):
+    """Check whether *repo_path* is usable for a git clone or pull operation.
 
-    Parameters:
-        file (str): Path to a YAML file containing a device mapping. The mapping must include a "manufacturer" field.
+    If the path already exists it must be a directory; the parent directory
+    must be writable when the path does not yet exist so that a new clone can
+    be created there.
+
+    Args:
+        repo_path (str): Filesystem path intended for the local repository clone.
 
     Returns:
-        dict: Parsed mapping with `manufacturer` replaced by `{"slug": "<slugified-name>"}` and `src` set to the file path.
+        tuple[bool, str]: ``(True, "")`` when the path is usable, or
+            ``(False, reason)`` with a human-readable explanation otherwise.
+    """
+    if os.path.exists(repo_path):
+        if not os.path.isdir(repo_path):
+            return False, f"REPO_PATH '{repo_path}' exists but is not a directory"
+        if not os.access(repo_path, os.W_OK):
+            return False, f"REPO_PATH '{repo_path}' is not writable"
+    else:
+        parent = os.path.dirname(os.path.abspath(repo_path)) or "."
+        if not os.path.isdir(parent):
+            return False, f"REPO_PATH parent directory '{parent}' does not exist"
+        if not os.access(parent, os.W_OK):
+            return False, f"REPO_PATH parent directory '{parent}' is not writable"
+    return True, ""
+
+
+def parse_single_file(file):
+    """Load a YAML device mapping, convert its `manufacturer` to a slug dictionary, and record the source path.
+
+    Args:
+        file (str): Path to a YAML file containing a device mapping. The mapping must include
+            a "manufacturer" field.
+
+    Returns:
+        dict: Parsed mapping with `manufacturer` replaced by `{"slug": "<slugified-name>"}` and
+            `src` set to the file path.
         str: Error string beginning with "Error:" describing YAML parsing or other failure.
     """
     with open(file, "r") as stream:
@@ -91,8 +121,7 @@ class DTLRepo:
     """
 
     def __new__(cls, *args, **kwargs):
-        """
-        Allocate and return a new instance of the class using the default object allocator.
+        """Allocate and return a new instance of the class using the default object allocator.
 
         Returns:
             instance: A newly created instance of the class `cls`.
@@ -100,15 +129,21 @@ class DTLRepo:
         return super().__new__(cls)
 
     def __init__(self, args, repo_path, exception_handler):
-        """
-        Initialize repository management and ensure a local clone exists by either updating an existing clone or cloning the remote.
+        """Initialize repository management, updating an existing clone or creating a new one.
 
-        If the target path already exists as a directory, the repository will be updated from its configured remote; otherwise the provided URL is validated and a new clone is created. The initializer sets instance attributes used by other methods (handler, supported YAML extensions, URL, repo path, branch, repo reference, and current working directory).
+        If the target path already exists as a directory, the repository will be updated from
+        its configured remote; otherwise the provided URL is validated and a new clone is
+        created. The initializer sets instance attributes used by other methods (handler,
+        supported YAML extensions, URL, repo path, branch, repo reference, and current
+        working directory).
 
-        Parameters:
-            args: An object with `url` (str) and `branch` (str) attributes specifying the remote repository URL and branch to use.
-            repo_path (str): Filesystem path where the repository should be cloned or where an existing clone is located.
-            exception_handler: An object exposing `exception(name, context, message)` used to report validation and Git errors.
+        Args:
+            args: An object with `url` (str) and `branch` (str) attributes specifying the
+                remote repository URL and branch to use.
+            repo_path (str): Filesystem path where the repository should be cloned or where
+                an existing clone is located.
+            exception_handler: An object exposing `exception(name, context, message)` used
+                to report validation and Git errors.
         """
         self.handle = exception_handler
         self.yaml_extensions = ["yaml", "yml"]
@@ -117,6 +152,10 @@ class DTLRepo:
         self.branch = args.branch
         self.repo = None
         self.cwd = os.getcwd()
+
+        is_path_valid, path_error = validate_repo_path(self.repo_path)
+        if not is_path_valid:
+            self.handle.exception("InvalidRepoPath", self.repo_path, path_error)
 
         if os.path.isdir(self.repo_path):
             # Repo exists; pull from existing remote (pull_repo validates origin URL)
@@ -129,8 +168,7 @@ class DTLRepo:
             self.clone_repo()
 
     def get_relative_path(self):
-        """
-        Get the repository path configured for this instance relative to the current working directory.
+        """Get the repository path configured for this instance relative to the current working directory.
 
         Returns:
             The stored relative repository path (`repo_path`).
@@ -138,11 +176,11 @@ class DTLRepo:
         return self.repo_path
 
     def get_absolute_path(self):
-        """
-        Return the absolute filesystem path to the repository directory.
+        """Return the absolute filesystem path to the repository directory.
 
         Returns:
-            str: Absolute path combining the repository path with the repository object's current working directory.
+            str: Absolute path combining the repository path with the repository object's
+                current working directory.
         """
         return os.path.join(self.cwd, self.repo_path)
 
@@ -153,6 +191,10 @@ class DTLRepo:
     def get_modules_path(self):
         """Return the absolute path to the ``module-types`` directory within the repository."""
         return os.path.join(self.get_absolute_path(), "module-types")
+
+    def get_racks_path(self):
+        """Return the absolute path to the ``rack-types`` directory within the repository."""
+        return os.path.join(self.get_absolute_path(), "rack-types")
 
     def slug_format(self, name):
         """Convert *name* to a slug by lowercasing and replacing non-word characters with hyphens."""
@@ -182,10 +224,12 @@ class DTLRepo:
             self.handle.exception("Exception", "Git Repository Error", git_error)
 
     def clone_repo(self):
-        """
-        Clone the configured Git repository into the configured local path and record the cloned Repo instance.
+        """Clone the configured Git repository into the configured local path and record the cloned Repo instance.
 
-        Attempts to clone from the repository URL into the absolute repository path and set self.repo to the resulting Repo; on success logs the origin URL via the configured handler. If cloning or Git operations fail, the exception is reported to the configured exception handler.
+        Attempts to clone from the repository URL into the absolute repository path and set
+        self.repo to the resulting Repo; on success logs the origin URL via the configured
+        handler. If cloning or Git operations fail, the exception is reported to the
+        configured exception handler.
         """
         try:
             self.repo = Repo.clone_from(self.url, self.get_absolute_path(), branch=self.branch)
@@ -196,19 +240,20 @@ class DTLRepo:
             self.handle.exception("Exception", "Git Repository Error", git_error)
 
     def get_devices(self, base_path, vendors: list = None):
-        """
-        Discover device YAML files and vendor directories under a base path.
+        """Discover device YAML files and vendor directories under a base path.
 
-        Parameters:
-            base_path (str): Directory path containing vendor subdirectories (each vendor folder contains device YAML files).
-            vendors (list, optional): List of vendor names (case-insensitive) to include; if omitted, all vendors are considered.
+        Args:
+            base_path (str): Directory path containing vendor subdirectories (each vendor
+                folder contains device YAML files).
+            vendors (list, optional): List of vendor names (case-insensitive) to include;
+                if omitted, all vendors are considered.
 
         Returns:
-            tuple:
-                files (list): List of file paths to discovered YAML files (extensions from self.yaml_extensions) under matching vendor folders.
-                discovered_vendors (list): List of dicts for each discovered vendor with keys:
-                    - name (str): Vendor directory name.
-                    - slug (str): Slugified vendor name produced by self.slug_format.
+            tuple[list, list]: A pair of (files, discovered_vendors) where files is a list
+                of file paths to discovered YAML files (extensions from self.yaml_extensions)
+                under matching vendor folders, and discovered_vendors is a list of dicts with
+                keys 'name' (str) and 'slug' (str) for each vendor.
+
         Note:
             The folder named "testing" (case-insensitive) is ignored.
         """
@@ -224,18 +269,20 @@ class DTLRepo:
         return files, discovered_vendors
 
     def parse_files(self, files: list, slugs: list = None, progress=None):
-        """
-        Parse YAML device files into device type dictionaries, optionally filtering by slug/model and advancing a progress iterable.
+        """Parse YAML device files into device type dicts, optionally filtering and tracking progress.
 
-        Parameters:
+        Args:
             files (Iterable[str]): Paths of YAML files to parse.
             slugs (list[str], optional): Device-type slug or model substrings used to filter results;
                 an item is included if any provided slug is a case-insensitive substring of the item's
                 ``"slug"`` or ``"model"`` field. If omitted, no slug filtering is applied.
-            progress (Iterable, optional): Iterable consumed in parallel with parsing to drive an external progress display; values are ignored but the iterable should yield once per file.
+            progress (Iterable, optional): Iterable consumed in parallel with parsing to drive an
+                external progress display; values are ignored but should yield once per file.
 
         Returns:
-            list: Parsed device type dictionaries. Files that fail parsing (returned as strings beginning with ``"Error:"``) are logged via the instance handler and excluded. Parsed items that do not match the provided slug filters are also excluded.
+            list: Parsed device type dictionaries. Files that fail parsing (returned as strings
+                beginning with ``"Error:"``) are logged and excluded. Parsed items that do not
+                match the provided slug filters are also excluded.
         """
         deviceTypes = []
 

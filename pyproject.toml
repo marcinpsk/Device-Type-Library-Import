@@ -17,16 +17,38 @@ dependencies = [
 dev = [
     "pre-commit>=4.5.0",
     "pytest>=9.0.2",
+    "pytest-cov>=6.0",
     "pytest-mock>=3.15.1",
     "pytest-timeout>=2.4.0",
     "ruff>=0.14.9",
 ]
 
-[tool.black]
-line-length = 120
-
 [tool.ruff]
 line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "D", "C901"]
+ignore = [
+    # Docstring style choices (pick D211+D212 convention)
+    "D203",  # no-blank-line-before-class (incompatible with D211)
+    "D213",  # multi-line-summary-second-line (incompatible with D212)
+    # Overly strict docstring requirements
+    "D100",  # missing docstring in public module
+    "D104",  # missing docstring in public package
+    "D105",  # missing docstring in magic method
+    # Google-style section formatting — too pedantic
+    "D406",  # section name should end with a newline
+    "D407",  # missing dashed underline after section
+    "D411",  # missing blank line before section
+    "D413",  # missing blank line after last section
+]
+
+[tool.ruff.lint.mccabe]
+# Flag errors (`C901`) whenever the complexity level exceeds 15.
+max-complexity = 15
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D102", "D103"]  # test functions don't need docstrings
 
 [tool.pytest.ini_options]
 timeout = 20
@@ -37,10 +59,20 @@ testpaths = [
 ]
 norecursedirs = ["tests/integration"]
 
+[tool.coverage.run]
+source = ["."]
+omit = ["tests/*", "setup.py", "conftest.py"]
+
+[tool.coverage.report]
+fail_under = 96
+
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
 commit_message = "chore(release): v{version}"
 build_command = ""
+
+[tool.semantic_release.changelog]
+template_dir = "templates"
 
 [tool.semantic_release.branches.main]
 match = "(main|master)"

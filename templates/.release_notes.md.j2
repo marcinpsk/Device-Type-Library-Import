@@ -1,0 +1,18 @@
+{%- from ".components/contributors.md.j2" import render_contributors -%}
+{%- set commit_objects = release["elements"] | dictsort -%}
+## What's Changed
+{%- for type_, commits in commit_objects if type_ != "unknown" %}
+
+### {{ type_ | title }}
+
+{% for commit in commits -%}
+{%- set summary = commit.descriptions[0] | capitalize -%}
+{%- set link_parts = [] -%}
+{%- if commit.linked_merge_request != "" -%}
+{%-   set _ = link_parts.append(commit.linked_merge_request) -%}
+{%- endif -%}
+{%- set _ = link_parts.append("[`%s`](%s)" | format(commit.hexsha[:7], commit.hexsha | commit_hash_url)) -%}
+- {% if commit.scope %}**{{ commit.scope }}**: {% endif %}{{ summary }} ({{ link_parts | join(", ") }})
+{% endfor -%}
+{%- endfor %}
+{{ render_contributors(commit_objects) }}

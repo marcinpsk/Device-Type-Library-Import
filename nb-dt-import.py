@@ -301,7 +301,8 @@ def log_run_mode(handle, args):
             handle.log("Mode: --remove-components enabled; missing components will be removed from existing models.")
         else:
             handle.log(
-                "Mode: will not remove components from existing models; use --remove-components with --update to change this."
+                "Mode: will not remove components from existing models; use --remove-components with "
+                "--update to change this."
             )
     else:
         handle.log("Mode: --update not set; changed properties/components will not be applied (use --update).")
@@ -338,9 +339,324 @@ def _image_progress_scope(progress, device_types, total=0):
         device_types._image_progress = None
 
 
-def main():
+def _check_env_vars(handle):
+    """Validate that all mandatory environment variables are set.
+
+    Calls ``handle.exception`` (which exits) for the first missing variable.
+
+    Args:
+        handle (LogHandler): Logging handler used to report and exit on error.
     """
-    Orchestrate importing device- and module-types from a Git repository into NetBox.
+    for var in settings.MANDATORY_ENV_VARS:
+        if not os.environ.get(var, "").strip():
+            handle.exception(
+                "EnvironmentError",
+                var,
+                f'Environment variable "{var}" is not set or is empty.'
+                f"\n\nMANDATORY_ENV_VARS: {str(settings.MANDATORY_ENV_VARS)}\n",
+            )
+
+
+def _log_import_filters(handle, args):
+    """Log active vendor and slug filter choices to *handle*.
+
+    Args:
+        handle (LogHandler): Logging handler used to emit filter messages.
+        args: Parsed CLI arguments; inspects ``vendors`` and ``slugs``.
+    """
+    if args.vendors:
+        handle.log(f"Importing vendors: {', '.join(args.vendors)}")
+    if args.slugs:
+        handle.log(f"Filtering by slugs: {', '.join(args.slugs)}")
+
+
+def _bg_parse_module_types(dtl_repo, module_vendor_filter, slugs):
+    """Discover and parse module-type YAML files; designed for background execution.
+
+    Args:
+        dtl_repo (DTLRepo): Repository helper for file discovery and YAML parsing.
+        module_vendor_filter (list[str]): Vendor slugs used to scope file discovery.
+        slugs (list[str]): Device-type slug filters passed to ``parse_files``.
+
+    Returns:
+        tuple[list, list, list]: ``(files, discovered_vendors, module_types)``.
+            *module_types* is an empty list when no files are discovered.
+    """
+    bg_files, bg_vendors = dtl_repo.get_devices(dtl_repo.get_modules_path(), module_vendor_filter)
+    if not bg_files:
+        return [], bg_vendors, []
+    bg_module_types = dtl_repo.parse_files(bg_files, slugs=slugs)
+    return bg_files, bg_vendors, bg_module_types
+
+
+def _process_device_types(args, netbox, handle, progress, device_types, cache_preload_job):
+    """Process device types according to the active run mode.
+
+    Handles *only_new*, *update*, and default mode device-type processing,
+    including cache preloading, change detection, and NetBox API calls.
+
+    Args:
+        args: Parsed CLI arguments; inspects ``only_new``, ``update``, and
+            ``remove_components``.
+        netbox (NetBox): NetBox API wrapper instance.
+        handle (LogHandler): Logging handler used to emit progress messages.
+        progress: Rich Progress instance for progress display, or None.
+        device_types (list[dict]): Parsed device-type dicts to process.
+        cache_preload_job: Background component-cache preload job, or None.
+
+    Returns:
+        The updated *cache_preload_job*: ``None`` if the job was consumed by
+        ``preload_all_components``; otherwise the original value.
+    """
+    if args.only_new:
+        new_device_types = filter_new_device_types(
+            device_types,
+            netbox.device_types.existing_device_types,
+            netbox.device_types.existing_device_types_by_slug,
+        )
+        if new_device_types:
+            image_total = netbox.count_device_type_images(new_device_types)
+            with _image_progress_scope(progress, netbox.device_types, total=image_total):
+                netbox.create_device_types(
+                    new_device_types,
+                    progress=get_progress_wrapper(progress, new_device_types, desc="Creating Device Types"),
+                    only_new=True,
+                )
+        else:
+            handle.verbose_log("No new device types to create.")
+        return cache_preload_job
+
+    # Non-only_new path: preload cache then detect changes.
+    if device_types:
+        handle.verbose_log("Caching NetBox data for comparison (concurrent API requests started during parsing)...")
+        netbox.device_types.preload_all_components(
+            progress=progress,
+            preload_job=cache_preload_job,
+        )
+        cache_preload_job = None
+    else:
+        handle.log("No device types matched filters. Skipping NetBox cache preload.")
+
+    detector = ChangeDetector(netbox.device_types, handle)
+    change_report = detector.detect_changes(
+        device_types,
+        progress=get_progress_wrapper(progress, device_types, desc="Detecting Changes"),
+    )
+    detector.log_change_report(change_report)
+
+    if args.update:
+        device_types_to_process = select_device_types_for_update_mode(device_types, change_report)
+        if device_types_to_process:
+            image_total = netbox.count_device_type_images(device_types_to_process)
+            with _image_progress_scope(progress, netbox.device_types, total=image_total):
+                netbox.create_device_types(
+                    device_types_to_process,
+                    progress=get_progress_wrapper(progress, device_types_to_process, desc="Processing Device Types"),
+                    only_new=False,
+                    update=True,
+                    change_report=change_report,
+                    remove_components=args.remove_components,
+                )
+        else:
+            handle.verbose_log("No device type changes to process.")
+    else:
+        device_types_to_process = select_device_types_for_default_mode(device_types, change_report)
+        if device_types_to_process:
+            image_total = netbox.count_device_type_images(device_types_to_process)
+            with _image_progress_scope(progress, netbox.device_types, total=image_total):
+                netbox.create_device_types(
+                    device_types_to_process,
+                    progress=get_progress_wrapper(progress, device_types_to_process, desc="Creating Device Types"),
+                    only_new=True,
+                )
+        else:
+            handle.verbose_log("No new device types or missing images to process.")
+
+    return cache_preload_job
+
+
+def _process_module_types(
+    args,
+    netbox,
+    dtl_repo,
+    handle,
+    progress,
+    selected_vendor_slugs,
+    *,
+    module_parse_future=None,
+    module_parse_executor=None,
+):
+    """Process module types, retrieving data from a background future or parsing synchronously.
+
+    Args:
+        args: Parsed CLI arguments; inspects ``vendors``, ``slugs``, ``only_new``,
+            and ``update``.
+        netbox (NetBox): NetBox API wrapper instance.
+        dtl_repo (DTLRepo): Repository helper for file discovery and YAML parsing;
+            used only when *module_parse_future* is ``None``.
+        handle (LogHandler): Logging handler used to emit progress messages.
+        progress: Rich Progress instance for progress display, or None.
+        selected_vendor_slugs (set[str]): Vendor slugs derived from parsed device
+            types, used to scope module discovery when ``--slugs`` is set.
+        module_parse_future: Background ``concurrent.futures.Future`` that returns
+            ``(files, vendors, module_types)``, or ``None`` for synchronous parsing.
+        module_parse_executor: ``ThreadPoolExecutor`` used to start the background
+            parse; shut down after result retrieval.  Ignored when
+            *module_parse_future* is ``None``.
+    """
+    if module_parse_future is not None:
+        module_files, discovered_module_vendors, module_types = module_parse_future.result()
+        if module_parse_executor is not None:
+            module_parse_executor.shutdown(wait=False)
+        if not module_files:
+            module_types = []
+    else:
+        module_vendor_filter = args.vendors
+        if args.slugs and not args.vendors:
+            module_vendor_filter = sorted(selected_vendor_slugs)
+        module_files, discovered_module_vendors = dtl_repo.get_devices(
+            dtl_repo.get_modules_path(), module_vendor_filter
+        )
+        if not module_files:
+            module_types = []
+        else:
+            module_parse_progress = get_progress_wrapper(progress, module_files, desc="Parsing Module Types")
+            module_types = dtl_repo.parse_files(module_files, slugs=args.slugs, progress=module_parse_progress)
+
+    module_vendors, _ = filter_vendors_for_parsed_types(discovered_module_vendors, module_types)
+    handle.verbose_log(f"{len(module_vendors)} Module Vendors Found")
+    handle.verbose_log(f"{len(module_types)} Module-Types Found")
+
+    module_only_new = should_only_create_new_modules(args)
+    existing_module_types = netbox.get_existing_module_types()
+    module_types_to_process, module_type_existing_images = netbox.filter_actionable_module_types(
+        module_types,
+        existing_module_types,
+        only_new=module_only_new,
+    )
+
+    new_module_count = len(NetBox.filter_new_module_types(module_types, existing_module_types))
+    if module_only_new:
+        handle.log("============================================================")
+        handle.log(f"New module types: {new_module_count}")
+        handle.log("============================================================")
+    else:
+        module_changed_count = len(module_types_to_process) - new_module_count
+        module_unchanged_count = len(module_types) - len(module_types_to_process)
+        handle.log("============================================================")
+        handle.log("MODULE TYPE CHANGE DETECTION")
+        handle.log("============================================================")
+        handle.log(f"New module types:       {new_module_count}")
+        handle.log(f"Unchanged module types: {module_unchanged_count}")
+        handle.log(f"Modified module types:  {module_changed_count}")
+        handle.log("------------------------------------------------------------")
+
+    if module_types_to_process:
+        netbox.create_manufacturers(module_vendors)
+        module_image_total = netbox.count_module_type_images(
+            module_types_to_process, existing_module_types, module_type_existing_images
+        )
+        with _image_progress_scope(progress, netbox.device_types, total=module_image_total):
+            netbox.create_module_types(
+                module_types_to_process,
+                progress=get_progress_wrapper(progress, module_types_to_process, desc="Processing Module Types"),
+                only_new=module_only_new,
+                all_module_types=existing_module_types,
+                module_type_existing_images=module_type_existing_images,
+            )
+    else:
+        handle.verbose_log("No module type changes to process.")
+
+
+def _process_rack_types(args, netbox, dtl_repo, handle, progress, selected_vendor_slugs):
+    """Discover, parse, and import rack types from the repository into NetBox.
+
+    Soft-skips with a warning when the connected NetBox instance is older than 4.1.
+    Honors ``--vendors`` and ``--slugs`` filters.
+
+    Args:
+        args: Parsed CLI arguments; inspects ``vendors``, ``slugs``, and ``only_new``.
+        netbox (NetBox): NetBox API wrapper instance.
+        dtl_repo (DTLRepo): Repository helper for file discovery and YAML parsing.
+        handle (LogHandler): Logging handler used to emit progress messages.
+        progress: Rich Progress instance for progress display, or None.
+        selected_vendor_slugs (set[str]): Vendor slugs derived from parsed device
+            types, used to scope rack-type discovery when ``--slugs`` is set.
+    """
+    if not netbox.rack_types:
+        handle.log("Rack types require NetBox >= 4.1. Skipping rack type import.")
+        return
+
+    racks_path = dtl_repo.get_racks_path()
+    if not os.path.isdir(racks_path):
+        handle.verbose_log("No rack-types directory found in repository. Skipping.")
+        return
+
+    rack_vendor_filter = args.vendors
+    if args.slugs and not args.vendors:
+        rack_vendor_filter = sorted(selected_vendor_slugs)
+
+    rack_files, discovered_rack_vendors = dtl_repo.get_devices(racks_path, rack_vendor_filter)
+    if not rack_files:
+        handle.verbose_log("No rack-type files found for the selected vendors/slugs.")
+        return
+
+    rack_parse_progress = get_progress_wrapper(progress, rack_files, desc="Parsing Rack Types")
+    rack_types = dtl_repo.parse_files(rack_files, slugs=args.slugs, progress=rack_parse_progress)
+
+    rack_vendors, _ = filter_vendors_for_parsed_types(discovered_rack_vendors, rack_types)
+    handle.verbose_log(f"{len(rack_vendors)} Rack Vendors Found")
+    handle.verbose_log(f"{len(rack_types)} Rack-Types Found")
+
+    all_rack_types = netbox.get_existing_rack_types()
+    new_count = sum(
+        1
+        for rt in rack_types
+        if all_rack_types.get(rt.get("manufacturer", {}).get("slug", ""), {}).get(rt.get("model")) is None
+    )
+    existing_count = len(rack_types) - new_count
+
+    handle.log("============================================================")
+    handle.log(f"New rack types:       {new_count}")
+    handle.log(f"Existing rack types:  {existing_count}")
+    handle.log("============================================================")
+
+    if rack_types:
+        netbox.create_manufacturers(rack_vendors)
+        netbox.create_rack_types(
+            rack_types,
+            progress=get_progress_wrapper(progress, rack_types, desc="Processing Rack Types"),
+            only_new=args.only_new,
+            all_rack_types=all_rack_types,
+        )
+
+
+def _log_run_summary(handle, netbox, start_time):
+    """Log the final import summary counters to *handle*.
+
+    Args:
+        handle (LogHandler): Logging handler for output.
+        netbox (NetBox): NetBox API wrapper whose ``counter`` is read.
+        start_time (datetime): Timestamp from the start of the run for elapsed-time reporting.
+    """
+    handle.log("---")
+    handle.verbose_log(f"Script took {(datetime.now() - start_time)} to run")
+    handle.log(f"{netbox.counter['added']} device types created")
+    handle.log(f"{netbox.counter['properties_updated']} device types updated")
+    handle.log(f"{netbox.counter['components_updated']} components updated")
+    handle.log(f"{netbox.counter['components_added']} components added")
+    handle.log(f"{netbox.counter['components_removed']} components removed")
+    handle.verbose_log(f"{netbox.counter['images']} images uploaded")
+    handle.log(f"{netbox.counter['manufacturer']} manufacturers created")
+    if settings.NETBOX_FEATURES["modules"]:
+        handle.log(f"{netbox.counter['module_added']} modules created")
+    if netbox.rack_types:
+        handle.log(f"{netbox.counter['rack_type_added']} rack types created")
+        handle.log(f"{netbox.counter['rack_type_updated']} rack types updated")
+
+
+def main():
+    """Orchestrate importing device- and module-types from a Git repository into NetBox.
 
     Parses CLI arguments, validates environment variables, clones/pulls the DTL repo,
     parses YAML files, and creates manufacturers, device types, and module types in NetBox.
@@ -376,13 +692,15 @@ def main():
         "--update",
         action="store_true",
         default=False,
-        help="Update existing device types with changes from repository (add missing components, modify changed properties)",
+        help="Update existing device types with changes from repository (add missing components, modify "
+        "changed properties)",
     )
     parser.add_argument(
         "--remove-components",
         action="store_true",
         default=False,
-        help="Remove components from NetBox that no longer exist in YAML (use with --update). WARNING: May affect existing device instances.",
+        help="Remove components from NetBox that no longer exist in YAML (use with --update). "
+        "WARNING: May affect existing device instances.",
     )
 
     args = parser.parse_args()
@@ -396,14 +714,7 @@ def main():
 
     handle = LogHandler(args)
 
-    # Evaluate environment variables and exit if one of the mandatory ones are not set
-    for var in settings.MANDATORY_ENV_VARS:
-        if var not in os.environ:
-            handle.exception(
-                "EnvironmentError",
-                var,
-                f'Environment variable "{var}" is not set.\n\nMANDATORY_ENV_VARS: {str(settings.MANDATORY_ENV_VARS)}\n',
-            )
+    _check_env_vars(handle)
 
     dtl_repo = DTLRepo(args, settings.REPO_PATH, handle)
 
@@ -414,12 +725,7 @@ def main():
 
     # Confirm effective run behavior right after compatibility checks.
     log_run_mode(handle, args)
-
-    # Print what will be imported based on CLI arguments
-    if args.vendors:
-        handle.log(f"Importing vendors: {', '.join(args.vendors)}")
-    if args.slugs:
-        handle.log(f"Filtering by slugs: {', '.join(args.slugs)}")
+    _log_import_filters(handle, args)
 
     files, discovered_vendors = dtl_repo.get_devices(dtl_repo.get_devices_path(), args.vendors)
     cache_preload_job = None
@@ -467,165 +773,28 @@ def main():
                 if args.slugs and not args.vendors:
                     _module_vendor_filter = sorted(selected_vendor_slugs)
                 _module_parse_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-                _slugs = args.slugs
-
-                def _bg_parse_modules():
-                    bg_files, bg_vendors = dtl_repo.get_devices(dtl_repo.get_modules_path(), _module_vendor_filter)
-                    if not bg_files:
-                        return [], bg_vendors, []
-                    bg_module_types = dtl_repo.parse_files(bg_files, slugs=_slugs)
-                    return bg_files, bg_vendors, bg_module_types
-
-                _module_parse_future = _module_parse_executor.submit(_bg_parse_modules)
+                _module_parse_future = _module_parse_executor.submit(
+                    _bg_parse_module_types, dtl_repo, _module_vendor_filter, args.slugs
+                )
 
             netbox.create_manufacturers(vendors)
 
-            # Determine processing mode
-            change_report = None
-
-            if args.only_new:
-                # Skip caching and change detection - create only new devices
-                new_device_types = filter_new_device_types(
-                    device_types,
-                    netbox.device_types.existing_device_types,
-                    netbox.device_types.existing_device_types_by_slug,
-                )
-                if new_device_types:
-                    image_total = netbox.count_device_type_images(new_device_types)
-                    with _image_progress_scope(progress, netbox.device_types, total=image_total):
-                        netbox.create_device_types(
-                            new_device_types,
-                            progress=get_progress_wrapper(progress, new_device_types, desc="Creating Device Types"),
-                            only_new=True,
-                        )
-                else:
-                    handle.verbose_log("No new device types to create.")
-            else:
-                # Cache NetBox data for comparison (concurrent preload started during parsing)
-                if device_types:
-                    handle.verbose_log(
-                        "Caching NetBox data for comparison (concurrent API requests started during parsing)..."
-                    )
-                    netbox.device_types.preload_all_components(
-                        progress=progress,
-                        preload_job=cache_preload_job,
-                    )
-                    cache_preload_job = None
-                else:
-                    handle.log("No device types matched filters. Skipping NetBox cache preload.")
-
-                # Detect changes between YAML and NetBox
-                detector = ChangeDetector(netbox.device_types, handle)
-                change_report = detector.detect_changes(
-                    device_types,
-                    progress=get_progress_wrapper(progress, device_types, desc="Detecting Changes"),
-                )
-                detector.log_change_report(change_report)
-
-                if args.update:
-                    # Update mode: create new + update existing
-                    device_types_to_process = select_device_types_for_update_mode(device_types, change_report)
-                    if device_types_to_process:
-                        image_total = netbox.count_device_type_images(device_types_to_process)
-                        with _image_progress_scope(progress, netbox.device_types, total=image_total):
-                            netbox.create_device_types(
-                                device_types_to_process,
-                                progress=get_progress_wrapper(
-                                    progress, device_types_to_process, desc="Processing Device Types"
-                                ),
-                                only_new=False,
-                                update=True,
-                                change_report=change_report,
-                                remove_components=args.remove_components,
-                            )
-                    else:
-                        handle.verbose_log("No device type changes to process.")
-                else:
-                    # Default mode: only create new, log what would change
-                    device_types_to_process = select_device_types_for_default_mode(device_types, change_report)
-                    if device_types_to_process:
-                        image_total = netbox.count_device_type_images(device_types_to_process)
-                        with _image_progress_scope(progress, netbox.device_types, total=image_total):
-                            netbox.create_device_types(
-                                device_types_to_process,
-                                progress=get_progress_wrapper(
-                                    progress, device_types_to_process, desc="Creating Device Types"
-                                ),
-                                only_new=True,  # Skip existing devices in default mode
-                            )
-                    else:
-                        handle.verbose_log("No new device types or missing images to process.")
+            cache_preload_job = _process_device_types(args, netbox, handle, progress, device_types, cache_preload_job)
 
             if netbox.modules:
-                # Retrieve background-parsed module type files (started after vendor slugs computed).
-                if _module_parse_future is not None:
-                    module_files, discovered_module_vendors, module_types = _module_parse_future.result()
-                    _module_parse_executor.shutdown(wait=False)
-                    _module_parse_future = None
-                    _module_parse_executor = None
-                    if not module_files:
-                        module_types = []
-                else:
-                    module_vendor_filter = args.vendors
-                    if args.slugs and not args.vendors:
-                        module_vendor_filter = sorted(selected_vendor_slugs)
-                    module_files, discovered_module_vendors = dtl_repo.get_devices(
-                        dtl_repo.get_modules_path(), module_vendor_filter
-                    )
-                    if not module_files:
-                        module_types = []
-                    else:
-                        module_parse_progress = get_progress_wrapper(
-                            progress, module_files, desc="Parsing Module Types"
-                        )
-                        module_types = dtl_repo.parse_files(
-                            module_files, slugs=args.slugs, progress=module_parse_progress
-                        )
-                module_vendors, _ = filter_vendors_for_parsed_types(discovered_module_vendors, module_types)
-                handle.verbose_log(f"{len(module_vendors)} Module Vendors Found")
-                handle.verbose_log(f"{len(module_types)} Module-Types Found")
-                module_only_new = should_only_create_new_modules(args)
-                existing_module_types = netbox.get_existing_module_types()
-                module_types_to_process, module_type_existing_images = netbox.filter_actionable_module_types(
-                    module_types,
-                    existing_module_types,
-                    only_new=module_only_new,
+                _process_module_types(
+                    args,
+                    netbox,
+                    dtl_repo,
+                    handle,
+                    progress,
+                    selected_vendor_slugs,
+                    module_parse_future=_module_parse_future,
+                    module_parse_executor=_module_parse_executor,
                 )
-
-                # Log module type change stats
-                new_module_count = len(NetBox.filter_new_module_types(module_types, existing_module_types))
-                if module_only_new:
-                    handle.log("============================================================")
-                    handle.log(f"New module types: {new_module_count}")
-                    handle.log("============================================================")
-                else:
-                    module_changed_count = len(module_types_to_process) - new_module_count
-                    module_unchanged_count = len(module_types) - len(module_types_to_process)
-                    handle.log("============================================================")
-                    handle.log("MODULE TYPE CHANGE DETECTION")
-                    handle.log("============================================================")
-                    handle.log(f"New module types:       {new_module_count}")
-                    handle.log(f"Unchanged module types: {module_unchanged_count}")
-                    handle.log(f"Modified module types:  {module_changed_count}")
-                    handle.log("------------------------------------------------------------")
-
-                if module_types_to_process:
-                    netbox.create_manufacturers(module_vendors)
-                    module_image_total = netbox.count_module_type_images(
-                        module_types_to_process, existing_module_types, module_type_existing_images
-                    )
-                    with _image_progress_scope(progress, netbox.device_types, total=module_image_total):
-                        netbox.create_module_types(
-                            module_types_to_process,
-                            progress=get_progress_wrapper(
-                                progress, module_types_to_process, desc="Processing Module Types"
-                            ),
-                            only_new=module_only_new,
-                            all_module_types=existing_module_types,
-                            module_type_existing_images=module_type_existing_images,
-                        )
-                else:
-                    handle.verbose_log("No module type changes to process.")
+                _module_parse_future = None
+                _module_parse_executor = None
+            _process_rack_types(args, netbox, dtl_repo, handle, progress, selected_vendor_slugs)
         finally:
             if cache_preload_job:
                 netbox.device_types.stop_component_preload(cache_preload_job)
@@ -635,17 +804,7 @@ def main():
                 _module_parse_executor.shutdown(wait=False, cancel_futures=True)
             handle.set_console(None)
 
-    handle.log("---")
-    handle.verbose_log(f"Script took {(datetime.now() - startTime)} to run")
-    handle.log(f"{netbox.counter['added']} device types created")
-    handle.log(f"{netbox.counter['properties_updated']} device types updated")
-    handle.log(f"{netbox.counter['components_updated']} components updated")
-    handle.log(f"{netbox.counter['components_added']} components added")
-    handle.log(f"{netbox.counter['components_removed']} components removed")
-    handle.verbose_log(f"{netbox.counter['images']} images uploaded")
-    handle.log(f"{netbox.counter['manufacturer']} manufacturers created")
-    if settings.NETBOX_FEATURES["modules"]:
-        handle.log(f"{netbox.counter['module_added']} modules created")
+    _log_run_summary(handle, netbox, startTime)
 
 
 if __name__ == "__main__":

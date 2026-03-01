@@ -1,0 +1,30 @@
+{#
+  Render a Contributors section from release commit data.
+  Extracts unique authors, deriving GitHub @username from noreply emails.
+#}
+{%- macro render_contributors(commit_objects) -%}
+{%-   set authors = [] -%}
+{%-   for type_, commits in commit_objects -%}
+{%-     for commit in commits if commit.error is undefined -%}
+{%-       set author_email = commit.commit.author.email -%}
+{%-       if "@users.noreply.github.com" in author_email -%}
+{%-         set username = author_email.split("@")[0] -%}
+{%-         if "+" in username -%}
+{%-           set username = username.split("+")[1] -%}
+{%-         endif -%}
+{%-         set author_entry = "@" ~ username -%}
+{%-       else -%}
+{%-         set author_entry = commit.commit.author.name -%}
+{%-       endif -%}
+{%-       if author_entry not in authors and "github-actions" not in author_entry -%}
+{%-         set _ = authors.append(author_entry) -%}
+{%-       endif -%}
+{%-     endfor -%}
+{%-   endfor -%}
+{%-   if authors | length > 0 %}
+
+### Contributors
+
+{{ authors | sort | join(", ") }}
+{%-   endif -%}
+{%- endmacro -%}

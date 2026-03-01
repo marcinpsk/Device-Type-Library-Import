@@ -19,14 +19,13 @@
 - Updated dependencies ([#24](https://github.com/marcinpsk/Device-Type-Library-Import/pull/24),
   [`a7c8d9b`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/a7c8d9b5021046432248e5e46309479dcaaaac4a))
 
-
 ## v1.0.1 (2026-02-28)
 
 ### Bug Fixes
 
 - Use python directly instead of uv run in Dockerfile CMD
   ([`3d8a808`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/3d8a8089cff8a0bde716864bbe5dc15ad9a0085d))
-
+- Fix Dockerfile missing core copy @Pa0x43 ([`b562177`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/b56217755e9235b652b34d461f0733b975567de8))
 
 ## v1.0.0 (2026-02-23)
 
@@ -56,7 +55,6 @@
   ([#22](https://github.com/marcinpsk/Device-Type-Library-Import/pull/22),
   [`0ba1006`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/0ba1006344587ca0fb78effa0cbef03393aa386b))
 
-
 ## v0.4.0 (2026-02-22)
 
 ### Bug Fixes
@@ -80,7 +78,6 @@
 - Migrate read queries from REST to GraphQL with configurable tuning
   ([#18](https://github.com/marcinpsk/Device-Type-Library-Import/pull/18),
   [`7f63a0f`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/7f63a0f6b0bb65563b9a9a2c3aeefd46884a5f48))
-
 
 ## v0.2.0 (2026-02-17)
 
