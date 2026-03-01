@@ -722,7 +722,7 @@ class NetBox:
                     + f"{module_type_res.model} - {module_type_res.id}"
                 )
             except pynetbox.RequestError as excep:
-                self.handle.log(f"Error creating Module Type: {excep} (Context: {src_file})")
+                self.handle.log(f"Error creating Module Type: {excep.error} (Context: {src_file})")
                 return False
 
         # Upload images for both cached and newly created module types
