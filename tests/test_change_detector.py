@@ -191,6 +191,14 @@ class TestCompareComponents:
         changes = detector._compare_components(yaml_data, 1)
         assert any(c.component_name == "PSU1" and c.change_type == ChangeType.COMPONENT_ADDED for c in changes)
 
+    def test_component_without_name_is_skipped(self):
+        """YAML component entry with no 'name' key must be skipped (line 350 continue)."""
+        detector = self._make_detector()
+        detector.device_types.cached_components = {"interface_templates": {("device", 1): {}}}
+        yaml_data = {"interfaces": [{"type": "virtual"}]}  # no 'name' key
+        changes = detector._compare_components(yaml_data, 1)
+        assert changes == []
+
 
 class TestCompareComponentProperties:
     """Tests for TestCompareComponentProperties."""

@@ -46,6 +46,10 @@ ignore = [
     "D413",  # missing blank line after last section
 ]
 
+[tool.ruff.lint.mccabe]
+# Flag errors (`C901`) whenever the complexity level exceeds 15.
+max-complexity = 15
+
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D102", "D103"]  # test functions don't need docstrings
 
@@ -59,8 +63,8 @@ testpaths = [
 norecursedirs = ["tests/integration"]
 
 [tool.coverage.run]
-source = ["core"]
-omit = ["tests/*"]
+source = ["core", "."]
+omit = ["tests/*", "setup.py", "conftest.py"]
 
 [tool.coverage.report]
 fail_under = 80
