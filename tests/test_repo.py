@@ -88,7 +88,7 @@ class TestDTLRepoInit:
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
             DTLRepo(mock_args, "/tmp/repo", mock_handle)
-        mock_git_repo.remotes.origin.fetch.assert_called_once()
+        mock_git_repo.remotes.origin.fetch.assert_called_once_with(prune=True)
         mock_git_repo.git.checkout.assert_called_with("-B", "master", "origin/master")
 
     def test_clones_when_dir_missing(self):
@@ -212,7 +212,7 @@ class TestPullRepo:
             DTLRepo(mock_args, "/tmp/repo", mock_handle)
         assert mock_git_repo.remotes.origin.method_calls[:2] == [
             call.set_url("https://github.com/new-org/repo.git"),
-            call.fetch(),
+            call.fetch(prune=True),
         ]
 
     def test_pull_repo_branch_not_found_calls_exception(self):
@@ -322,7 +322,7 @@ class TestGetDevices:
         repo = self._make_repo()
         with (
             patch("os.listdir", return_value=["Cisco", "Juniper"]),
-            patch("glob.glob", return_value=[]),
+            patch("core.repo.glob", return_value=[]),
         ):
             files, vendors = repo.get_devices("/base/path")
         assert len(vendors) == 2
@@ -332,7 +332,7 @@ class TestGetDevices:
         repo = self._make_repo()
         with (
             patch("os.listdir", return_value=["Cisco", "Juniper"]),
-            patch("glob.glob", return_value=[]),
+            patch("core.repo.glob", return_value=[]),
         ):
             files, vendors = repo.get_devices("/base/path", vendors=["cisco"])
         assert len(vendors) == 1
@@ -342,7 +342,7 @@ class TestGetDevices:
         repo = self._make_repo()
         with (
             patch("os.listdir", return_value=["Cisco", "testing"]),
-            patch("glob.glob", return_value=[]),
+            patch("core.repo.glob", return_value=[]),
         ):
             files, vendors = repo.get_devices("/base/path")
         assert not any(v["name"] == "testing" for v in vendors)
@@ -699,6 +699,15 @@ class TestNormalizePortMappings:
             "front-ports": [{"name": "FP1", "type": "8p8c"}],
             "rear-ports": [{"name": "RP1"}],
             "port-mappings": None,
+        }
+        err = normalize_port_mappings(data)
+        assert err is None
+        assert "port-mappings" not in data
+
+    def test_empty_stanza_no_front_ports_still_deleted(self):
+        """Empty port-mappings stanza with no front-ports is cleaned up (not silently skipped)."""
+        data = {
+            "port-mappings": [],
         }
         err = normalize_port_mappings(data)
         assert err is None

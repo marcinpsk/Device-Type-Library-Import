@@ -124,7 +124,7 @@ def normalize_port_mappings(data):
     front_ports = data.get("front-ports") or []
     port_mappings_stanza = data.get("port-mappings")
 
-    if not front_ports and not port_mappings_stanza:
+    if not front_ports and "port-mappings" not in data:
         return None
 
     front_by_name = {fp["name"]: fp for fp in front_ports if fp.get("name")}
@@ -344,7 +344,7 @@ class DTLRepo:
                 if not is_valid:
                     self.handle.exception("InvalidGitURL", origin_url, error_msg)
 
-            self.repo.remotes.origin.fetch()
+            self.repo.remotes.origin.fetch(prune=True)
 
             remote_branch_names = [ref.name for ref in self.repo.remotes.origin.refs]
             if f"origin/{self.branch}" not in remote_branch_names:

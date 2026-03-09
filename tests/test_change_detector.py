@@ -464,7 +464,8 @@ class TestCompareComponentPropertiesMappings:
                     "front_port_position": 1,
                     "rear_port_position": 1,
                 }
-            ]
+            ],
+            type="8p8c",
         )
         changes = self._cd()._compare_component_properties(
             yaml_comp,
@@ -472,8 +473,7 @@ class TestCompareComponentPropertiesMappings:
             ["name", "type", "_mappings"],
             comp_type="front-ports",
         )
-        mapping_changes = [c for c in changes if c.property_name == "_mappings"]
-        assert mapping_changes == []
+        assert changes == []
 
     def test_rear_port_name_changed_detected(self):
         """Mapping to a different rear port → change detected."""
