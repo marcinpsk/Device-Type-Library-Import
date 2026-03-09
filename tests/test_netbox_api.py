@@ -1,7 +1,7 @@
 import queue
 import pytest
 from unittest.mock import MagicMock, patch
-from core.netbox_api import NetBox, DeviceTypes, _FrontPortRecord45, _values_equal
+from core.netbox_api import NetBox, DeviceTypes, _FrontPortRecordWithMappings, _values_equal
 from helpers import paginate_dispatch
 
 
@@ -577,38 +577,37 @@ def test_filter_actionable_module_types_includes_module_with_missing_component(
     assert actionable == [module_type]
 
 
-def test_update_components_m2m_front_port_position(mock_settings, mock_pynetbox, graphql_client):
-    """On NetBox 4.5+, rear_port_position updates should use the M2M rear_ports array format."""
+def test_update_components_m2m_front_port_mappings(mock_settings, mock_pynetbox, graphql_client):
+    """On NetBox 4.5+, _mappings updates should rebuild the full M2M rear_ports array."""
     from core.change_detector import ChangeType, ComponentChange, PropertyChange
 
     mock_nb_api = MagicMock()
     dt = DeviceTypes(mock_nb_api, mock_settings.handle, MagicMock(), False, False, graphql=graphql_client)
     dt.m2m_front_ports = True
 
-    # Simulate an existing front port with M2M mapping.
-    # Delete _record so getattr(comp, "_record", comp) falls through to comp itself.
     existing_fp = MagicMock()
     existing_fp.id = 10
     existing_fp.name = "FP1"
-    del existing_fp._record
-    mapping = MagicMock()
-    mapping.position = 1
-    mapping.rear_port_position = 1
+
     rp = MagicMock()
     rp.id = 99
-    mapping.rear_port = rp
-    existing_fp.rear_ports = [mapping]
 
+    # Cache both front port templates and rear port templates
     dt.cached_components = {
         "front_port_templates": {("device", 1): {"FP1": existing_fp}},
+        "rear_port_templates": {("device", 1): {"RP1": rp}},
     }
+
+    # new_value is a frozenset of (rear_port_name, fp_pos, rp_pos) tuples
+    new_mappings_set = frozenset({("RP1", 1, 2)})
+    old_mappings_set = frozenset({("RP1", 1, 1)})
 
     changes = [
         ComponentChange(
             component_type="front-ports",
             component_name="FP1",
             change_type=ChangeType.COMPONENT_CHANGED,
-            property_changes=[PropertyChange("rear_port_position", 1, 2)],
+            property_changes=[PropertyChange("_mappings", old_mappings_set, new_mappings_set)],
         ),
     ]
 
@@ -618,12 +617,12 @@ def test_update_components_m2m_front_port_position(mock_settings, mock_pynetbox,
     endpoint.update.assert_called_once()
     update_payload = endpoint.update.call_args[0][0][0]
     assert update_payload["id"] == 10
-    assert "rear_port_position" not in update_payload, "Should not have flat rear_port_position"
+    assert "_mappings" not in update_payload, "Should not have raw _mappings key"
     assert update_payload["rear_ports"] == [{"position": 1, "rear_port": 99, "rear_port_position": 2}]
 
 
 def test_update_components_m2m_no_mapping_warns(mock_settings, mock_pynetbox, graphql_client):
-    """On NetBox 4.5+, a rear_port_position update with no existing M2M mapping should warn, not update."""
+    """On NetBox 4.5+, a _mappings update referencing unknown rear port should warn, not update."""
     from core.change_detector import ChangeType, ComponentChange, PropertyChange
 
     mock_nb_api = MagicMock()
@@ -633,19 +632,21 @@ def test_update_components_m2m_no_mapping_warns(mock_settings, mock_pynetbox, gr
     existing_fp = MagicMock()
     existing_fp.id = 10
     existing_fp.name = "FP1"
-    del existing_fp._record
-    existing_fp.rear_ports = []  # No M2M mapping
 
     dt.cached_components = {
         "front_port_templates": {("device", 1): {"FP1": existing_fp}},
+        "rear_port_templates": {("device", 1): {}},  # Empty: rear port missing
     }
+
+    new_mappings_set = frozenset({("MISSING_RP", 1, 1)})
+    old_mappings_set = frozenset()
 
     changes = [
         ComponentChange(
             component_type="front-ports",
             component_name="FP1",
             change_type=ChangeType.COMPONENT_CHANGED,
-            property_changes=[PropertyChange("rear_port_position", 1, 2)],
+            property_changes=[PropertyChange("_mappings", old_mappings_set, new_mappings_set)],
         ),
     ]
 
@@ -654,9 +655,7 @@ def test_update_components_m2m_no_mapping_warns(mock_settings, mock_pynetbox, gr
     dt.update_components({}, 1, changes, parent_type="device")
 
     endpoint.update.assert_not_called()
-    mock_settings.handle.log.assert_any_call(
-        'Cannot update rear_port_position for "FP1" — no existing M2M mapping found.'
-    )
+    assert any("MISSING_RP" in str(c) for c in mock_settings.handle.log.call_args_list)
 
 
 class TestNetBoxConnectApi:
@@ -697,29 +696,51 @@ class TestCreateManufacturersError:
         mock_settings.handle.log.assert_called()
 
 
-class TestFrontPortRecord45:
-    """Tests for TestFrontPortRecord45."""
+class TestFrontPortRecordWithMappings:
+    """Tests for _FrontPortRecordWithMappings."""
 
-    def test_exposes_rear_port_position_from_mapping(self):
-        record = MagicMock()
-        mapping = MagicMock()
-        mapping.rear_port_position = 3
-        record.rear_ports = [mapping]
-        wrapped = _FrontPortRecord45(record)
-        assert wrapped.rear_port_position == 3
+    def test_45_path_builds_canonical_from_mappings(self):
+        """NetBox >= 4.5: canonical list is built from the mappings attribute."""
+        from core.graphql_client import DotDict
 
-    def test_none_when_no_mappings(self):
-        record = MagicMock()
-        record.rear_ports = []
-        wrapped = _FrontPortRecord45(record)
-        assert wrapped.rear_port_position is None
+        rp = DotDict({"id": 7, "name": "RP1"})
+        mapping = DotDict({"id": 9, "front_port_position": 2, "rear_port_position": 3, "rear_port": rp})
+        record = DotDict({"id": 1, "name": "FP1", "type": "8p8c", "mappings": [mapping]})
+        wrapped = _FrontPortRecordWithMappings(record)
+        assert wrapped._mappings_canonical == [
+            {"rear_port_name": "RP1", "front_port_position": 2, "rear_port_position": 3}
+        ]
+
+    def test_45_path_empty_mappings_gives_empty_canonical(self):
+        """NetBox >= 4.5: empty mappings list → empty canonical."""
+        from core.graphql_client import DotDict
+
+        record = DotDict({"id": 1, "name": "FP1", "mappings": []})
+        wrapped = _FrontPortRecordWithMappings(record)
+        assert wrapped._mappings_canonical == []
+
+    def test_legacy_path_uses_rear_port_position_scalar(self):
+        """NetBox < 4.5: rear_port_position scalar → single canonical entry with rear_port_name=None."""
+        record = MagicMock(spec=[])  # no mappings attr
+        record.rear_port_position = 3
+        wrapped = _FrontPortRecordWithMappings(record)
+        assert wrapped._mappings_canonical == [
+            {"rear_port_name": None, "front_port_position": 1, "rear_port_position": 3}
+        ]
+
+    def test_legacy_path_no_rear_port_position_gives_empty_canonical(self):
+        """NetBox < 4.5 with no rear_port_position → empty canonical."""
+        record = MagicMock(spec=[])
+        wrapped = _FrontPortRecordWithMappings(record)
+        assert wrapped._mappings_canonical == []
 
     def test_delegates_unknown_attr_to_record(self):
-        record = MagicMock()
-        record.name = "fp1"
-        record.rear_ports = []
-        wrapped = _FrontPortRecord45(record)
-        assert wrapped.name == "fp1"
+        """Attribute access falls through to the underlying record."""
+        from core.graphql_client import DotDict
+
+        record = DotDict({"id": 1, "name": "FP1", "type": "8p8c", "mappings": []})
+        wrapped = _FrontPortRecordWithMappings(record)
+        assert wrapped.name == "FP1"
 
 
 class TestStopComponentPreload:
@@ -1116,19 +1137,38 @@ class TestUpdateComponentsAdditions:
 class TestFetchGlobalEndpointRestPath:
     """Tests for TestFetchGlobalEndpointRestPath."""
 
-    def test_m2m_front_ports_uses_rest(self, mock_settings, mock_pynetbox, graphql_client):
+    def test_front_port_templates_uses_graphql_and_wraps(
+        self, mock_settings, mock_pynetbox, graphql_client, mock_graphql_requests
+    ):
+        """front_port_templates always uses GraphQL and wraps records with _FrontPortRecordWithMappings."""
         mock_nb_api = mock_pynetbox.api.return_value
         dt = DeviceTypes(mock_nb_api, mock_settings.handle, MagicMock(), False, False, graphql=graphql_client)
-        dt.m2m_front_ports = True
+        dt.m2m_front_ports = True  # no longer affects front_port_templates path
 
-        raw_fp = MagicMock()
-        raw_fp.rear_ports = []
-        mock_nb_api.dcim.front_port_templates.all.return_value = [raw_fp]
+        fp_record = {
+            "id": "1",
+            "name": "FP1",
+            "type": "8p8c",
+            "label": "",
+            "mappings": [],
+            "device_type": {"id": "42"},
+            "module_type": None,
+        }
+
+        # First call returns one record; second call returns empty to stop pagination.
+        resp1 = MagicMock()
+        resp1.raise_for_status = MagicMock()
+        resp1.json.return_value = {"data": {"front_port_template_list": [fp_record]}}
+        resp2 = MagicMock()
+        resp2.raise_for_status = MagicMock()
+        resp2.json.return_value = {"data": {"front_port_template_list": []}}
+        mock_graphql_requests.side_effect = [resp1, resp2]
 
         records = dt._fetch_global_endpoint_records("front_port_templates")
-        mock_nb_api.dcim.front_port_templates.all.assert_called_once()
+        # REST endpoint should NOT be called
+        mock_nb_api.dcim.front_port_templates.all.assert_not_called()
         assert len(records) == 1
-        assert isinstance(records[0], _FrontPortRecord45)
+        assert isinstance(records[0], _FrontPortRecordWithMappings)
 
     def test_rest_only_endpoint_with_progress_callback(self, mock_settings, mock_pynetbox, graphql_client):
         mock_nb_api = mock_pynetbox.api.return_value

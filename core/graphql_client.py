@@ -90,7 +90,13 @@ COMPONENT_TEMPLATE_FIELDS = {
     "console_server_port_templates": ["id", "name", "type", "label"],
     "power_outlet_templates": ["id", "name", "type", "feed_leg", "label"],
     "rear_port_templates": ["id", "name", "type", "positions", "label"],
-    "front_port_templates": ["id", "name", "type", "label", "rear_port_position"],
+    "front_port_templates": [
+        "id",
+        "name",
+        "type",
+        "label",
+        "mappings { id front_port_position rear_port_position rear_port { id name } }",
+    ],
     "device_bay_templates": ["id", "name", "label"],
     "module_bay_templates": ["id", "name", "position", "label"],
 }
@@ -509,10 +515,19 @@ class NetBoxGraphQLClient:
         try:
             items = self.query_all(query, list_key=list_key, on_page=on_page)
         except GraphQLError as original_exc:
-            if endpoint_name == "front_port_templates" and "rear_port_position" in fields:
-                # rear_port_position was removed in NetBox >= 4.5 (replaced by M2M rear_ports).
-                # Retry without it so the query works on both schema versions.
-                fallback_fields = [f for f in fields if f != "rear_port_position"]
+            if endpoint_name == "front_port_templates":
+                # mappings subfield was added in NetBox 4.5.  On older versions fall back to
+                # the legacy rear_port_position direct field.  Conversely, rear_port_position
+                # was removed in 4.5, so if mappings failed for some other reason we also
+                # try rear_port_position as last resort.
+                has_mappings = any("mappings" in f for f in fields)
+                has_rpp = "rear_port_position" in fields
+                if has_mappings:
+                    fallback_fields = ["rear_port_position" if "mappings" in f else f for f in fields]
+                elif has_rpp:
+                    fallback_fields = [f for f in fields if f != "rear_port_position"]
+                else:
+                    raise
                 field_block = "\n            ".join(fallback_fields)
                 fallback_query = f"""
         query($pagination: OffsetPaginationInput) {{

@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, mock_open, patch
 from git import exc as git_exc
-from core.repo import DTLRepo, validate_git_url
+from core.repo import DTLRepo, validate_git_url, normalize_port_mappings
 
 
 class TestValidateGitUrl:
@@ -345,3 +345,177 @@ model: AP4431-Module
             # Non-matching filter should skip without raising KeyError
             results_filtered_out = repo.parse_files(files, slugs=["juniper"])
             assert len(results_filtered_out) == 0
+
+
+# ---------------------------------------------------------------------------
+# normalize_port_mappings tests
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizePortMappings:
+    """Tests for normalize_port_mappings."""
+
+    # ── Old inline format ────────────────────────────────────────────────
+
+    def test_inline_single_mapping(self):
+        """Old inline rear_port/rear_port_position is converted to _mappings."""
+        data = {
+            "front-ports": [{"name": "FP1", "type": "8p8c", "rear_port": "RP1", "rear_port_position": 2}],
+            "rear-ports": [{"name": "RP1"}],
+        }
+        err = normalize_port_mappings(data)
+        assert err is None
+        fp = data["front-ports"][0]
+        assert "rear_port" not in fp
+        assert "rear_port_position" not in fp
+        assert fp["_mappings"] == [{"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 2}]
+
+    def test_inline_default_rear_port_position(self):
+        """rear_port_position defaults to 1 when omitted."""
+        data = {
+            "front-ports": [{"name": "FP1", "type": "8p8c", "rear_port": "RP1"}],
+            "rear-ports": [{"name": "RP1"}],
+        }
+        err = normalize_port_mappings(data)
+        assert err is None
+        assert data["front-ports"][0]["_mappings"] == [
+            {"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 1}
+        ]
+
+    def test_inline_multiple_front_ports(self):
+        """Each inline front port gets its own _mappings list."""
+        data = {
+            "front-ports": [
+                {"name": "FP1", "type": "8p8c", "rear_port": "RP1"},
+                {"name": "FP2", "type": "8p8c", "rear_port": "RP2"},
+            ],
+            "rear-ports": [{"name": "RP1"}, {"name": "RP2"}],
+        }
+        err = normalize_port_mappings(data)
+        assert err is None
+        assert data["front-ports"][0]["_mappings"][0]["rear_port"] == "RP1"
+        assert data["front-ports"][1]["_mappings"][0]["rear_port"] == "RP2"
+
+    def test_no_front_ports_noop(self):
+        """No front-ports and no port-mappings stanza returns None and doesn't modify data."""
+        data = {"interfaces": [{"name": "eth0"}]}
+        err = normalize_port_mappings(data)
+        assert err is None
+        assert "interfaces" in data
+
+    def test_front_ports_without_rear_port_key_noop(self):
+        """Front ports without rear_port inline key are left unchanged."""
+        data = {
+            "front-ports": [{"name": "FP1", "type": "8p8c"}],
+        }
+        err = normalize_port_mappings(data)
+        assert err is None
+        assert "_mappings" not in data["front-ports"][0]
+
+    # ── New port-mappings stanza ─────────────────────────────────────────
+
+    def test_stanza_single_mapping(self):
+        """New port-mappings stanza is converted to _mappings on front port."""
+        data = {
+            "front-ports": [{"name": "FP1", "type": "8p8c"}],
+            "rear-ports": [{"name": "RP1"}],
+            "port-mappings": [{"front_port": "FP1", "rear_port": "RP1"}],
+        }
+        err = normalize_port_mappings(data)
+        assert err is None
+        assert "port-mappings" not in data
+        assert data["front-ports"][0]["_mappings"] == [
+            {"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 1}
+        ]
+
+    def test_stanza_explicit_positions(self):
+        """Explicit front_port_position and rear_port_position are preserved."""
+        data = {
+            "front-ports": [{"name": "FP1", "type": "8p8c"}],
+            "rear-ports": [{"name": "RP1", "positions": 4}],
+            "port-mappings": [
+                {"front_port": "FP1", "rear_port": "RP1", "front_port_position": 2, "rear_port_position": 3}
+            ],
+        }
+        err = normalize_port_mappings(data)
+        assert err is None
+        assert data["front-ports"][0]["_mappings"] == [
+            {"rear_port": "RP1", "front_port_position": 2, "rear_port_position": 3}
+        ]
+
+    def test_stanza_multi_mapping_one_front_port(self):
+        """Multiple port-mappings for the same front port produce a list."""
+        data = {
+            "front-ports": [{"name": "FP1", "type": "8p8c"}],
+            "rear-ports": [{"name": "RP1", "positions": 2}],
+            "port-mappings": [
+                {"front_port": "FP1", "rear_port": "RP1", "front_port_position": 1, "rear_port_position": 1},
+                {"front_port": "FP1", "rear_port": "RP1", "front_port_position": 2, "rear_port_position": 2},
+            ],
+        }
+        err = normalize_port_mappings(data)
+        assert err is None
+        assert len(data["front-ports"][0]["_mappings"]) == 2
+
+    def test_stanza_missing_front_port_key_returns_error(self):
+        """Missing front_port in a stanza entry returns an error string."""
+        data = {
+            "front-ports": [{"name": "FP1"}],
+            "rear-ports": [{"name": "RP1"}],
+            "port-mappings": [{"rear_port": "RP1"}],  # no front_port
+        }
+        err = normalize_port_mappings(data)
+        assert err is not None
+        assert err.startswith("Error:")
+
+    def test_stanza_unknown_front_port_returns_error(self):
+        """Stanza referencing a front port not in front-ports list returns error."""
+        data = {
+            "front-ports": [{"name": "FP1"}],
+            "rear-ports": [{"name": "RP1"}],
+            "port-mappings": [{"front_port": "UNKNOWN", "rear_port": "RP1"}],
+        }
+        err = normalize_port_mappings(data)
+        assert err is not None
+        assert "UNKNOWN" in err
+
+    def test_stanza_unknown_rear_port_returns_error(self):
+        """Stanza referencing a rear port not in rear-ports list returns error."""
+        data = {
+            "front-ports": [{"name": "FP1"}],
+            "rear-ports": [{"name": "RP1"}],
+            "port-mappings": [{"front_port": "FP1", "rear_port": "MISSING"}],
+        }
+        err = normalize_port_mappings(data)
+        assert err is not None
+        assert "MISSING" in err
+
+    # ── Conflict detection ───────────────────────────────────────────────
+
+    def test_both_formats_identical_is_accepted(self):
+        """Both inline and stanza present with identical content is accepted."""
+        data = {
+            "front-ports": [{"name": "FP1", "type": "8p8c", "rear_port": "RP1", "rear_port_position": 1}],
+            "rear-ports": [{"name": "RP1"}],
+            "port-mappings": [
+                {
+                    "front_port": "FP1",
+                    "rear_port": "RP1",
+                    "front_port_position": 1,
+                    "rear_port_position": 1,
+                }
+            ],
+        }
+        err = normalize_port_mappings(data)
+        assert err is None
+
+    def test_both_formats_conflicting_returns_error(self):
+        """Both inline and stanza present with different mappings returns error."""
+        data = {
+            "front-ports": [{"name": "FP1", "type": "8p8c", "rear_port": "RP1", "rear_port_position": 1}],
+            "rear-ports": [{"name": "RP1"}, {"name": "RP2"}],
+            "port-mappings": [{"front_port": "FP1", "rear_port": "RP2"}],  # different rear port
+        }
+        err = normalize_port_mappings(data)
+        assert err is not None
+        assert "conflict" in err.lower() or "Error" in err

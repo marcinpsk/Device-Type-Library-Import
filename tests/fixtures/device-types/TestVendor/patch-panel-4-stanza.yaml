@@ -1,0 +1,38 @@
+---
+manufacturer: TestVendor
+model: Test Patch Panel 4-Port Stanza
+slug: testvendor-patch-panel-4-stanza
+part_number: TPP-4S
+u_height: 1
+is_full_depth: false
+front-ports:
+  - name: FP1
+    type: 8p8c
+  - name: FP2
+    type: 8p8c
+  - name: FP3
+    type: 8p8c
+  - name: FP4
+    type: 8p8c
+rear-ports:
+  - name: RP1
+    type: 110-punch
+    positions: 1
+  - name: RP2
+    type: 110-punch
+    positions: 1
+  - name: RP3
+    type: 110-punch
+    positions: 1
+  - name: RP4
+    type: 110-punch
+    positions: 1
+port-mappings:
+  - front_port: FP1
+    rear_port: RP1
+  - front_port: FP2
+    rear_port: RP2
+  - front_port: FP3
+    rear_port: RP3
+  - front_port: FP4
+    rear_port: RP4

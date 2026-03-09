@@ -940,6 +940,16 @@ class TestGetComponentTemplates:
         for endpoint in expected_endpoints:
             assert endpoint in COMPONENT_TEMPLATE_FIELDS, f"{endpoint} not in COMPONENT_TEMPLATE_FIELDS"
 
+    def test_front_port_templates_uses_mappings_field(self):
+        """front_port_templates fields include the nested mappings subfield (not rear_port_position)."""
+        from core.graphql_client import COMPONENT_TEMPLATE_FIELDS
+
+        fields = COMPONENT_TEMPLATE_FIELDS["front_port_templates"]
+        has_mappings = any("mappings" in f and "{" in f for f in fields)
+        has_rear_port_position_direct = "rear_port_position" in fields
+        assert has_mappings, "Expected mappings { ... } in front_port_templates fields"
+        assert not has_rear_port_position_direct, "rear_port_position should not be a direct field in >= 4.5 schema"
+
     def test_raises_for_unknown_endpoint(self):
         """An unknown endpoint name should raise ValueError."""
         client = self._make_client()
@@ -1212,7 +1222,12 @@ class TestGetModuleTypeImagesObjectIdConversion:
 
 
 class TestGetComponentTemplatesFrontPortFallback:
-    """Tests for the front_port_templates rear_port_position fallback in get_component_templates()."""
+    """Tests for the front_port_templates mappings/rear_port_position fallback in get_component_templates().
+
+    Primary query uses ``mappings { ... }`` (NetBox >= 4.5).  When that fails the
+    fallback uses ``rear_port_position`` (NetBox < 4.5).  When the old-style
+    ``rear_port_position`` primary fails the fallback drops the field entirely.
+    """
 
     def _make_client(self):
         from core.graphql_client import NetBoxGraphQLClient
@@ -1233,8 +1248,63 @@ class TestGetComponentTemplatesFrontPortFallback:
         r.json.return_value = {"errors": [{"message": message}]}
         return r
 
+    def test_primary_mappings_query_succeeds(self, mock_post):
+        """Primary mappings query works (NetBox >= 4.5) — no fallback needed."""
+        rp = {"id": "7", "name": "RP1"}
+        mapping = {"id": "9", "front_port_position": 1, "rear_port_position": 1, "rear_port": rp}
+        front_ports = [
+            {
+                "id": "50",
+                "name": "FP1",
+                "type": "8p8c",
+                "label": "",
+                "mappings": [mapping],
+                "device_type": {"id": "1"},
+                "module_type": None,
+            }
+        ]
+        mock_post.side_effect = [
+            self._make_response({"front_port_template_list": front_ports}),
+            self._make_response({"front_port_template_list": []}),
+        ]
+
+        client = self._make_client()
+        records = client.get_component_templates("front_port_templates")
+
+        assert len(records) == 1
+        assert records[0].name == "FP1"
+        assert records[0].id == 50
+        assert len(records[0].mappings) == 1
+        assert records[0].mappings[0].rear_port.name == "RP1"
+
+    def test_fallback_to_rear_port_position_on_mappings_error(self, mock_post):
+        """When mappings query fails (< 4.5 schema), retries with rear_port_position."""
+        front_ports = [
+            {
+                "id": "50",
+                "name": "FP1",
+                "type": "8p8c",
+                "label": "",
+                "rear_port_position": 2,
+                "device_type": {"id": "1"},
+                "module_type": None,
+            }
+        ]
+        mock_post.side_effect = [
+            self._make_error_response("Cannot query field 'mappings'"),
+            self._make_response({"front_port_template_list": front_ports}),
+            self._make_response({"front_port_template_list": []}),
+        ]
+
+        client = self._make_client()
+        records = client.get_component_templates("front_port_templates")
+
+        assert len(records) == 1
+        assert records[0].name == "FP1"
+        assert records[0].rear_port_position == 2
+
     def test_fallback_without_rear_port_position_on_graphql_error(self, mock_post):
-        """When the primary query fails, retries without rear_port_position and succeeds."""
+        """When the primary query fails for any front_port reason, retries successfully."""
         front_ports = [
             {
                 "id": "50",
@@ -1257,7 +1327,7 @@ class TestGetComponentTemplatesFrontPortFallback:
         assert len(records) == 1
         assert records[0].name == "FP1"
         assert records[0].id == 50
-        # rear_port_position should not be present in the fallback result
+        # rear_port_position is not in the mock response data, so not present in record
         assert "rear_port_position" not in records[0]
 
     def test_fallback_raises_when_retry_also_fails(self, mock_post):

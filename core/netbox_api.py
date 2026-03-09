@@ -962,27 +962,56 @@ ENDPOINT_CACHE_MAP = {
 }
 
 
-class _FrontPortRecord45:
-    """Thin wrapper around a pynetbox front port template record from NetBox >= 4.5.
+class _FrontPortRecordWithMappings:
+    """Wrapper around a front port template record that normalises port mappings.
 
-    NetBox 4.5 replaced the ``rear_port`` FK + ``rear_port_position`` integer with a
-    ManyToMany ``rear_ports`` mapping (``PortMapping`` through-table).  This wrapper
-    extracts the first mapping entry's ``rear_port_position`` and exposes it as a
-    plain attribute so that :class:`~change_detector.ChangeDetector` can compare it
-    against YAML values using the same ``getattr(record, "rear_port_position")`` call
-    as before, without any changes to the detection logic.
+    Supports two data shapes returned by the GraphQL client:
+
+    * **NetBox >= 4.5** — GraphQL ``mappings`` list with ``front_port_position``,
+      ``rear_port_position``, and ``rear_port { id name }`` per entry.
+    * **NetBox < 4.5** — GraphQL ``rear_port_position`` scalar (legacy direct field).
+
+    Exposes ``_mappings_canonical`` as a list of dicts for use by
+    :class:`~change_detector.ChangeDetector` and the update-mode PATCH logic::
+
+        [{"rear_port_name": str | None, "front_port_position": int, "rear_port_position": int}]
+
+    All other attribute accesses are forwarded to the underlying record.
     """
 
-    __slots__ = ("_record", "rear_port_position")
+    __slots__ = ("_record", "_mappings_canonical")
 
     def __init__(self, record):
         object.__setattr__(self, "_record", record)
-        rear_ports = list(getattr(record, "rear_ports", None) or [])
-        # None (not 1) is intentional when rear_ports is empty: it means "no
-        # mapping exists" rather than silently defaulting to position 1, which
-        # would hide a genuine data inconsistency (missing M2M linkage).
-        rp_pos = getattr(rear_ports[0], "rear_port_position", 1) if rear_ports else None
-        object.__setattr__(self, "rear_port_position", rp_pos)
+        mappings_raw = getattr(record, "mappings", None)
+        if mappings_raw is not None:
+            # NetBox >= 4.5: mappings is a list of PortTemplateMapping objects
+            canonical = []
+            for m in mappings_raw or []:
+                rp = m.get("rear_port") if isinstance(m, dict) else getattr(m, "rear_port", None)
+                rp_name = (
+                    (rp.get("name") if isinstance(rp, dict) else getattr(rp, "name", None)) if rp is not None else None
+                )
+                fp_pos = (
+                    m.get("front_port_position", 1) if isinstance(m, dict) else getattr(m, "front_port_position", 1)
+                )
+                rp_pos = m.get("rear_port_position", 1) if isinstance(m, dict) else getattr(m, "rear_port_position", 1)
+                canonical.append(
+                    {
+                        "rear_port_name": rp_name,
+                        "front_port_position": fp_pos,
+                        "rear_port_position": rp_pos,
+                    }
+                )
+        else:
+            # NetBox < 4.5: rear_port_position is a direct scalar field
+            rp_pos = getattr(record, "rear_port_position", None)
+            canonical = (
+                [{"rear_port_name": None, "front_port_position": 1, "rear_port_position": rp_pos}]
+                if rp_pos is not None
+                else []
+            )
+        object.__setattr__(self, "_mappings_canonical", canonical)
 
     def __getattr__(self, name):
         return getattr(self._record, name)
@@ -1470,12 +1499,11 @@ class DeviceTypes:
         instead because their GraphQL schema is missing fields that are required
         for accurate change detection.
 
-        ``front_port_templates`` is always fetched via REST when running against
-        NetBox >= 4.5 because the 4.5 M2M port mapping model stores
-        ``rear_port_position`` inside the ``rear_ports`` list rather than as a
-        direct field (GraphQL exposes neither).  Each record is wrapped in
-        :class:`_FrontPortRecord45` so change-detection sees ``rear_port_position``
-        as a regular attribute.
+        ``front_port_templates`` records are always wrapped in
+        :class:`_FrontPortRecordWithMappings` after fetching so that
+        :class:`~change_detector.ChangeDetector` can access ``_mappings_canonical``
+        regardless of whether the server returned ``mappings`` (>= 4.5) or the
+        legacy ``rear_port_position`` scalar (< 4.5).
 
         Args:
             endpoint_name (str): Component template endpoint name (e.g. ``"interface_templates"``).
@@ -1485,23 +1513,19 @@ class DeviceTypes:
         Returns:
             list: All component template records.
         """
-        use_rest = endpoint_name in self.REST_ONLY_ENDPOINTS or (
-            endpoint_name == "front_port_templates" and self.m2m_front_ports
-        )
+        use_rest = endpoint_name in self.REST_ONLY_ENDPOINTS
 
         if use_rest:
             endpoint = getattr(self.netbox.dcim, endpoint_name)
-            raw = list(endpoint.all())
-            if endpoint_name == "front_port_templates" and self.m2m_front_ports:
-                records = [_FrontPortRecord45(r) for r in raw]
-            else:
-                records = raw
+            records = list(endpoint.all())
             if progress_callback is not None and records:
                 progress_callback(endpoint_name, len(records))
             return records
 
         on_page = (lambda n: progress_callback(endpoint_name, n)) if progress_callback is not None else None
         records = self.graphql.get_component_templates(endpoint_name, on_page=on_page)
+        if endpoint_name == "front_port_templates":
+            records = [_FrontPortRecordWithMappings(r) for r in records]
         return records
 
     @staticmethod
@@ -1693,6 +1717,40 @@ class DeviceTypes:
                         f"Error '{excep.error}' creating {component_name}. Items: {failed_items}{context_str}"
                     )
 
+    def _build_mappings_patch(self, comp_name, new_mappings_set, device_type_id, parent_type):
+        """Build the ``rear_ports`` PATCH payload for a front port ``_mappings`` change.
+
+        Args:
+            comp_name (str): Component name for log messages.
+            new_mappings_set: frozenset of ``(rear_port_name, fp_pos, rp_pos)`` tuples.
+            device_type_id: NetBox ID of the parent device or module type.
+            parent_type (str): ``"device"`` or ``"module"``.
+
+        Returns:
+            list | None: ``rear_ports`` payload list, or ``None`` if resolution failed.
+        """
+        existing_rp = self._get_cached_or_fetch(
+            "rear_port_templates", device_type_id, parent_type, self.netbox.dcim.rear_port_templates
+        )
+        rear_ports_payload = []
+        for tup in sorted(new_mappings_set):
+            if len(tup) != 3:
+                # positions-only tuple (<4.5 fallback); cannot rebuild M2M
+                return None
+            rp_name, fp_pos, rp_pos = tup
+            rear_port = existing_rp.get(rp_name)
+            if rear_port is None:
+                self.handle.log(f'Cannot update mapping for "{comp_name}": rear port "{rp_name}" not found in cache.')
+                return None
+            rear_ports_payload.append(
+                {
+                    "position": fp_pos,
+                    "rear_port": rear_port.id,
+                    "rear_port_position": rp_pos,
+                }
+            )
+        return rear_ports_payload
+
     def _apply_updates_for_type(self, comp_type, changes, device_type_id, parent_type):
         """Apply property updates for all changed components of a single type.
 
@@ -1722,29 +1780,12 @@ class DeviceTypes:
                 comp = existing[change.component_name]
                 update_data = {"id": comp.id}
                 for pc in change.property_changes:
-                    if comp_type == "front-ports" and self.m2m_front_ports and pc.property_name == "rear_port_position":
-                        # Build M2M rear_ports array with the updated position
-                        record = getattr(comp, "_record", comp)
-                        existing_mappings = list(getattr(record, "rear_ports", None) or [])
-                        if existing_mappings:
-                            mapping = existing_mappings[0]
-                            rp = getattr(mapping, "rear_port", None)
-                            rear_port_id = getattr(rp, "id", rp)
-                            # "position" is the correct API field name (not
-                            # "front_port_position") — see serializer comment
-                            # in _build_link_rear_ports.
-                            update_data["rear_ports"] = [
-                                {
-                                    "position": getattr(mapping, "position", 1),
-                                    "rear_port": rear_port_id,
-                                    "rear_port_position": pc.new_value,
-                                }
-                            ]
-                        else:
-                            self.handle.log(
-                                f'Cannot update rear_port_position for "{change.component_name}" '
-                                f"— no existing M2M mapping found."
-                            )
+                    if comp_type == "front-ports" and self.m2m_front_ports and pc.property_name == "_mappings":
+                        payload = self._build_mappings_patch(
+                            change.component_name, pc.new_value, device_type_id, parent_type
+                        )
+                        if payload is not None:
+                            update_data["rear_ports"] = payload
                         continue
                     update_data[pc.property_name] = pc.new_value
                 if len(update_data) > 1:  # has fields beyond just "id"
@@ -2061,13 +2102,21 @@ class DeviceTypes:
     def _build_link_rear_ports(self, parent_type, label, context=None):
         """Return a ``post_process`` callable that resolves rear-port name references.
 
-        Resolves each ``rear_port`` name to the corresponding rear-port template ID.
-        Front ports whose ``rear_port`` cannot be resolved are skipped with a log entry.
+        Reads the ``_mappings`` list placed on each front-port dict by
+        :func:`~core.repo.normalize_port_mappings` and resolves each entry's
+        ``rear_port`` name to the corresponding rear-port template ID.
 
-        On NetBox >= 4.5 the M2M port-mapping model is used: the resolved ID and
-        ``rear_port_position`` are sent as ``rear_ports: [{position, rear_port,
-        rear_port_position}]`` instead of the legacy ``rear_port`` / ``rear_port_position``
-        top-level fields (https://github.com/netbox-community/netbox/issues/20564).
+        On NetBox >= 4.5 the M2M port-mapping model is used: each front port
+        receives ``rear_ports: [{position, rear_port, rear_port_position}, ...]``
+        (``position`` is the API name for ``front_port_position``).  Multiple
+        mappings per front port are fully supported.
+
+        On NetBox < 4.5 only the **first** mapping is sent (single FK model); a
+        warning is logged when more than one mapping is present.
+
+        Front ports with no ``_mappings`` and no legacy inline ``rear_port`` key
+        are sent as-is (no rear port linkage).  Front ports whose mapped rear port
+        name cannot be resolved are skipped with a log entry.
 
         Args:
             parent_type (str): ``"device"`` or ``"module"`` — passed to :meth:`_get_cached_or_fetch`.
@@ -2083,29 +2132,76 @@ class DeviceTypes:
 
             ports_to_remove = []
             for port in items:
-                rp_name = port.get("rear_port")
-                if not rp_name:
+                mappings = port.pop("_mappings", None)
+                if mappings is None:
+                    # Legacy inline fallback (should not happen after normalize_port_mappings,
+                    # but kept for safety when files are loaded without going through repo.py).
+                    rp_name = port.get("rear_port")
+                    if not rp_name:
+                        continue
+                    mappings = [
+                        {
+                            "rear_port": port.pop("rear_port"),
+                            "front_port_position": 1,
+                            "rear_port_position": port.pop("rear_port_position", 1),
+                        }
+                    ]
+                elif not mappings:
                     continue
-                rear_port = existing_rp.get(rp_name)
-                if rear_port is None:
-                    available = list(existing_rp.keys()) if existing_rp else []
-                    ctx = f" (Context: {context})" if context else ""
-                    self.handle.log(
-                        f'Could not find Rear Port "{rp_name}" for {label} "{port["name"]}". '
-                        f"Available: {available}{ctx}"
+
+                resolved = []
+                skip = False
+                for m in mappings:
+                    rp_name = m["rear_port"]
+                    rear_port = existing_rp.get(rp_name)
+                    if rear_port is None:
+                        available = list(existing_rp.keys()) if existing_rp else []
+                        ctx = f" (Context: {context})" if context else ""
+                        self.handle.log(
+                            f'Could not find Rear Port "{rp_name}" for {label} "{port["name"]}". '
+                            f"Available: {available}{ctx}"
+                        )
+                        skip = True
+                        break
+                    resolved.append(
+                        {
+                            "rear_port": rear_port.id,
+                            "front_port_position": m.get("front_port_position", 1),
+                            "rear_port_position": m.get("rear_port_position", 1),
+                        }
                     )
+
+                if skip:
                     ports_to_remove.append(port)
                     continue
 
                 if m2m:
-                    rp_pos = port.pop("rear_port_position", 1)
-                    port.pop("rear_port", None)
+                    if len(resolved) > 1 and not m2m:
+                        ctx = f" (Context: {context})" if context else ""
+                        self.handle.log(
+                            f'Multiple mappings for {label} "{port["name"]}" on NetBox < 4.5: '
+                            f"only first mapping applied{ctx}"
+                        )
                     # "position" is the correct API field name — the NetBox serializer
                     # declares `position = IntegerField(source='front_port_position')`,
                     # so the REST API accepts "position", NOT "front_port_position".
-                    port["rear_ports"] = [{"position": 1, "rear_port": rear_port.id, "rear_port_position": rp_pos}]
+                    port["rear_ports"] = [
+                        {
+                            "position": r["front_port_position"],
+                            "rear_port": r["rear_port"],
+                            "rear_port_position": r["rear_port_position"],
+                        }
+                        for r in resolved
+                    ]
                 else:
-                    port["rear_port"] = rear_port.id
+                    if len(resolved) > 1:
+                        ctx = f" (Context: {context})" if context else ""
+                        self.handle.log(
+                            f'Multiple mappings for {label} "{port["name"]}" on NetBox < 4.5: '
+                            f"only first mapping applied{ctx}"
+                        )
+                    port["rear_port"] = resolved[0]["rear_port"]
+                    port["rear_port_position"] = resolved[0]["rear_port_position"]
 
             for port in ports_to_remove:
                 items.remove(port)
