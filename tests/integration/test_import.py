@@ -71,7 +71,11 @@ sys.path.insert(0, str(REPO_ROOT))
 
 # Import after sys.path manipulation so local modules resolve correctly.
 from core.change_detector import DEVICE_TYPE_PROPERTIES  # noqa: E402
-from core.graphql_client import COMPONENT_TEMPLATE_FIELDS, NetBoxGraphQLClient, _NO_MODULE_TYPE  # noqa: E402
+from core.graphql_client import (  # noqa: E402
+    COMPONENT_TEMPLATE_FIELDS,
+    NetBoxGraphQLClient,
+    _NO_MODULE_TYPE,
+)
 
 NETBOX_URL = (os.environ.get("NETBOX_URL") or "").rstrip("/") or None
 NETBOX_TOKEN = os.environ.get("NETBOX_TOKEN")
@@ -186,7 +190,12 @@ def test_first_import() -> None:
     assert_field(fd, "weight", 10.5, "full-device")
     assert_field(fd.get("weight_unit") or {}, "value", "kg", "full-device weight_unit")
     assert_field(fd.get("airflow") or {}, "value", "front-to-rear", "full-device airflow")
-    assert_field(fd, "comments", "Integration test device covering all component types.", "full-device")
+    assert_field(
+        fd,
+        "comments",
+        "Integration test device covering all component types.",
+        "full-device",
+    )
 
     fd_id = fd["id"]
 

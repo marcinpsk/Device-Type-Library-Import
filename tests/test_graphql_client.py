@@ -128,7 +128,10 @@ class TestNetBoxGraphQLClient:
 
         client = NetBoxGraphQLClient("http://netbox.local", "abcdef1234567890abcdef1234567890abcdef12")
         client._session.headers.update.assert_called_once_with(
-            {"Authorization": "Token abcdef1234567890abcdef1234567890abcdef12", "Content-Type": "application/json"}
+            {
+                "Authorization": "Token abcdef1234567890abcdef1234567890abcdef12",
+                "Content-Type": "application/json",
+            }
         )
 
     def test_v2_token_uses_bearer_auth(self):
@@ -136,7 +139,10 @@ class TestNetBoxGraphQLClient:
 
         client = NetBoxGraphQLClient("http://netbox.local", "nbt_abc123.secrettoken")
         client._session.headers.update.assert_called_once_with(
-            {"Authorization": "Bearer nbt_abc123.secrettoken", "Content-Type": "application/json"}
+            {
+                "Authorization": "Bearer nbt_abc123.secrettoken",
+                "Content-Type": "application/json",
+            }
         )
 
 
@@ -1251,7 +1257,12 @@ class TestGetComponentTemplatesFrontPortFallback:
     def test_primary_mappings_query_succeeds(self, mock_post):
         """Primary mappings query works (NetBox >= 4.5) — no fallback needed."""
         rp = {"id": "7", "name": "RP1"}
-        mapping = {"id": "9", "front_port_position": 1, "rear_port_position": 1, "rear_port": rp}
+        mapping = {
+            "id": "9",
+            "front_port_position": 1,
+            "rear_port_position": 1,
+            "rear_port": rp,
+        }
         front_ports = [
             {
                 "id": "50",
@@ -1330,11 +1341,12 @@ class TestGetComponentTemplatesFrontPortFallback:
         # rear_port_position is not in the mock response data, so not present in record
         assert "rear_port_position" not in records[0]
 
-    def test_fallback_raises_when_retry_also_fails(self, mock_post):
-        """When both the primary and fallback queries fail, re-raises the fallback GraphQLError."""
+    def test_fallback_raises_when_all_retries_fail(self, mock_post):
+        """When primary, first fallback, and second fallback all fail, raises the last error."""
         from core.graphql_client import GraphQLError
 
         mock_post.side_effect = [
+            self._make_error_response("Cannot query field 'mappings'"),
             self._make_error_response("Cannot query field 'rear_port_position'"),
             self._make_error_response("Some other schema error"),
         ]
@@ -1342,6 +1354,32 @@ class TestGetComponentTemplatesFrontPortFallback:
         client = self._make_client()
         with pytest.raises(GraphQLError, match="Some other schema error"):
             client.get_component_templates("front_port_templates")
+
+    def test_second_fallback_without_any_position_field(self, mock_post):
+        """When first fallback (rear_port_position) also fails, retries without position fields."""
+        front_ports = [
+            {
+                "id": "50",
+                "name": "FP1",
+                "type": "8p8c",
+                "label": "",
+                "device_type": {"id": "1"},
+                "module_type": None,
+            }
+        ]
+        mock_post.side_effect = [
+            self._make_error_response("Cannot query field 'mappings'"),
+            self._make_error_response("Cannot query field 'rear_port_position'"),
+            self._make_response({"front_port_template_list": front_ports}),
+            self._make_response({"front_port_template_list": []}),
+        ]
+
+        client = self._make_client()
+        records = client.get_component_templates("front_port_templates")
+
+        assert len(records) == 1
+        assert records[0].name == "FP1"
+        assert records[0].id == 50
 
     def test_non_front_port_graphql_error_is_reraised(self, mock_post):
         """GraphQLError from a non-front_port endpoint propagates unchanged."""

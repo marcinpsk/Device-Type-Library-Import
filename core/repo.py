@@ -139,6 +139,8 @@ def normalize_port_mappings(data):
         if rp_name is None:
             continue
         fp_name = fp.get("name")
+        if rear_by_name and rp_name not in rear_by_name:
+            return f"Error: front-port '{fp_name}' references unknown rear_port '{rp_name}'"
         rp_pos = fp.pop("rear_port_position", 1)
         fp.pop("rear_port")
         inline_mappings.setdefault(fp_name, []).append(
@@ -151,8 +153,8 @@ def normalize_port_mappings(data):
 
     # --- New port-mappings stanza ---
     stanza_mappings = {}  # {front_port_name: [mapping_dict, ...]}
-    if port_mappings_stanza:
-        for entry in port_mappings_stanza:
+    if "port-mappings" in data:
+        for entry in port_mappings_stanza or []:
             fp_name = entry.get("front_port")
             rp_name = entry.get("rear_port")
             if not fp_name or not rp_name:

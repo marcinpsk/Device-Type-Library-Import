@@ -62,7 +62,10 @@ class TestDTLRepoInit:
         mock_args.url = "https://github.com/org/repo.git"
         mock_args.branch = "master"
         mock_handle = MagicMock()
-        with patch("os.path.isdir", return_value=isdir), patch("core.repo.Repo") as MockRepo:
+        with (
+            patch("os.path.isdir", return_value=isdir),
+            patch("core.repo.Repo") as MockRepo,
+        ):
             if mock_repo:
                 MockRepo.return_value = mock_repo
                 MockRepo.clone_from.return_value = mock_repo
@@ -74,7 +77,10 @@ class TestDTLRepoInit:
         mock_args.url = "https://github.com/org/repo.git"
         mock_args.branch = "master"
         mock_handle = MagicMock()
-        with patch("os.path.isdir", return_value=True), patch("core.repo.Repo") as MockRepo:
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("core.repo.Repo") as MockRepo,
+        ):
             mock_git_repo = MagicMock()
             mock_git_repo.remotes.origin.url = "https://github.com/org/repo.git"
             ref = MagicMock()
@@ -90,7 +96,10 @@ class TestDTLRepoInit:
         mock_args.url = "https://github.com/org/repo.git"
         mock_args.branch = "master"
         mock_handle = MagicMock()
-        with patch("os.path.isdir", return_value=False), patch("core.repo.Repo") as MockRepo:
+        with (
+            patch("os.path.isdir", return_value=False),
+            patch("core.repo.Repo") as MockRepo,
+        ):
             mock_cloned = MagicMock()
             MockRepo.clone_from.return_value = mock_cloned
             DTLRepo(mock_args, "/tmp/repo", mock_handle)
@@ -104,7 +113,9 @@ class TestDTLRepoInit:
         with patch("os.path.isdir", return_value=False), patch("core.repo.Repo"):
             DTLRepo(mock_args, "/tmp/repo", mock_handle)
         mock_handle.exception.assert_called_with(
-            "InvalidGitURL", "ftp://bad.url", "URL must use HTTPS, SSH, or file protocol"
+            "InvalidGitURL",
+            "ftp://bad.url",
+            "URL must use HTTPS, SSH, or file protocol",
         )
 
 
@@ -116,7 +127,10 @@ class TestDTLRepoPathMethods:
         mock_args.url = "https://github.com/org/repo.git"
         mock_args.branch = "master"
         mock_handle = MagicMock()
-        with patch("os.path.isdir", return_value=True), patch("core.repo.Repo") as MockRepo:
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("core.repo.Repo") as MockRepo,
+        ):
             mock_git_repo = MagicMock()
             mock_git_repo.remotes.origin.url = "https://github.com/org/repo.git"
             ref = MagicMock()
@@ -148,7 +162,10 @@ class TestPullRepo:
         mock_args.url = "ftp://bad"
         mock_args.branch = "master"
         mock_handle = MagicMock()
-        with patch("os.path.isdir", return_value=True), patch("core.repo.Repo") as MockRepo:
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("core.repo.Repo") as MockRepo,
+        ):
             mock_git_repo = MagicMock()
             # origin URL matches configured URL → validate origin path
             mock_git_repo.remotes.origin.url = "ftp://bad"
@@ -162,13 +179,18 @@ class TestPullRepo:
         mock_args.url = "ftp://bad-config"
         mock_args.branch = "master"
         mock_handle = MagicMock()
-        with patch("os.path.isdir", return_value=True), patch("core.repo.Repo") as MockRepo:
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("core.repo.Repo") as MockRepo,
+        ):
             mock_git_repo = MagicMock()
             mock_git_repo.remotes.origin.url = "https://github.com/org/repo.git"
             MockRepo.return_value = mock_git_repo
             DTLRepo(mock_args, "/tmp/repo", mock_handle)
         mock_handle.exception.assert_any_call(
-            "InvalidGitURL", "ftp://bad-config", "URL must use HTTPS, SSH, or file protocol"
+            "InvalidGitURL",
+            "ftp://bad-config",
+            "URL must use HTTPS, SSH, or file protocol",
         )
 
     def test_pull_repo_updates_remote_url_when_different(self):
@@ -177,7 +199,10 @@ class TestPullRepo:
         mock_args.url = "https://github.com/new-org/repo.git"
         mock_args.branch = "main"
         mock_handle = MagicMock()
-        with patch("os.path.isdir", return_value=True), patch("core.repo.Repo") as MockRepo:
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("core.repo.Repo") as MockRepo,
+        ):
             mock_git_repo = MagicMock()
             mock_git_repo.remotes.origin.url = "https://github.com/old-org/repo.git"
             ref = MagicMock()
@@ -194,7 +219,10 @@ class TestPullRepo:
         mock_args.url = "https://github.com/org/repo.git"
         mock_args.branch = "missing-branch"
         mock_handle = MagicMock()
-        with patch("os.path.isdir", return_value=True), patch("core.repo.Repo") as MockRepo:
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("core.repo.Repo") as MockRepo,
+        ):
             mock_git_repo = MagicMock()
             mock_git_repo.remotes.origin.url = "https://github.com/org/repo.git"
             ref = MagicMock()
@@ -209,7 +237,10 @@ class TestPullRepo:
         mock_args.url = "https://github.com/org/repo.git"
         mock_args.branch = "master"
         mock_handle = MagicMock()
-        with patch("os.path.isdir", return_value=True), patch("core.repo.Repo") as MockRepo:
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("core.repo.Repo") as MockRepo,
+        ):
             mock_git_repo = MagicMock()
             mock_git_repo.remotes.origin.url = "https://github.com/org/repo.git"
             mock_git_repo.remotes.origin.fetch.side_effect = git_exc.GitCommandError("fetch", 1)
@@ -222,7 +253,10 @@ class TestPullRepo:
         mock_args.url = "https://github.com/org/repo.git"
         mock_args.branch = "master"
         mock_handle = MagicMock()
-        with patch("os.path.isdir", return_value=True), patch("core.repo.Repo") as MockRepo:
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("core.repo.Repo") as MockRepo,
+        ):
             mock_git_repo = MagicMock()
             mock_git_repo.remotes.origin.url = "https://github.com/org/repo.git"
             mock_git_repo.remotes.origin.fetch.side_effect = RuntimeError("network error")
@@ -239,7 +273,10 @@ class TestCloneRepo:
         mock_args.url = "https://github.com/org/repo.git"
         mock_args.branch = "master"
         mock_handle = MagicMock()
-        with patch("os.path.isdir", return_value=False), patch("core.repo.Repo") as MockRepo:
+        with (
+            patch("os.path.isdir", return_value=False),
+            patch("core.repo.Repo") as MockRepo,
+        ):
             MockRepo.clone_from.side_effect = git_exc.GitCommandError("clone", 128)
             DTLRepo(mock_args, "/tmp/repo", mock_handle)
         mock_handle.exception.assert_called()
@@ -249,7 +286,10 @@ class TestCloneRepo:
         mock_args.url = "https://github.com/org/repo.git"
         mock_args.branch = "master"
         mock_handle = MagicMock()
-        with patch("os.path.isdir", return_value=False), patch("core.repo.Repo") as MockRepo:
+        with (
+            patch("os.path.isdir", return_value=False),
+            patch("core.repo.Repo") as MockRepo,
+        ):
             MockRepo.clone_from.side_effect = RuntimeError("failed")
             DTLRepo(mock_args, "/tmp/repo", mock_handle)
         mock_handle.exception.assert_called()
@@ -263,7 +303,10 @@ class TestGetDevices:
         mock_args.url = "https://github.com/org/repo.git"
         mock_args.branch = "master"
         mock_handle = MagicMock()
-        with patch("os.path.isdir", return_value=True), patch("core.repo.Repo") as MockRepo:
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("core.repo.Repo") as MockRepo,
+        ):
             mock_git_repo = MagicMock()
             mock_git_repo.remotes.origin.url = "https://github.com/org/repo.git"
             ref = MagicMock()
@@ -275,21 +318,30 @@ class TestGetDevices:
 
     def test_get_devices_all_vendors(self):
         repo = self._make_repo()
-        with patch("os.listdir", return_value=["Cisco", "Juniper"]), patch("glob.glob", return_value=[]):
+        with (
+            patch("os.listdir", return_value=["Cisco", "Juniper"]),
+            patch("glob.glob", return_value=[]),
+        ):
             files, vendors = repo.get_devices("/base/path")
         assert len(vendors) == 2
         assert any(v["name"] == "Cisco" for v in vendors)
 
     def test_get_devices_filters_vendors(self):
         repo = self._make_repo()
-        with patch("os.listdir", return_value=["Cisco", "Juniper"]), patch("glob.glob", return_value=[]):
+        with (
+            patch("os.listdir", return_value=["Cisco", "Juniper"]),
+            patch("glob.glob", return_value=[]),
+        ):
             files, vendors = repo.get_devices("/base/path", vendors=["cisco"])
         assert len(vendors) == 1
         assert vendors[0]["name"] == "Cisco"
 
     def test_get_devices_skips_testing_folder(self):
         repo = self._make_repo()
-        with patch("os.listdir", return_value=["Cisco", "testing"]), patch("glob.glob", return_value=[]):
+        with (
+            patch("os.listdir", return_value=["Cisco", "testing"]),
+            patch("glob.glob", return_value=[]),
+        ):
             files, vendors = repo.get_devices("/base/path")
         assert not any(v["name"] == "testing" for v in vendors)
 
@@ -302,7 +354,10 @@ class TestParseFilesExtended:
         mock_args.url = "https://github.com/org/repo.git"
         mock_args.branch = "master"
         mock_handle = MagicMock()
-        with patch("os.path.isdir", return_value=True), patch("core.repo.Repo") as MockRepo:
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("core.repo.Repo") as MockRepo,
+        ):
             mock_git_repo = MagicMock()
             mock_git_repo.remotes.origin.url = "https://github.com/org/repo.git"
             ref = MagicMock()
@@ -423,7 +478,14 @@ class TestNormalizePortMappings:
     def test_inline_single_mapping(self):
         """Old inline rear_port/rear_port_position is converted to _mappings."""
         data = {
-            "front-ports": [{"name": "FP1", "type": "8p8c", "rear_port": "RP1", "rear_port_position": 2}],
+            "front-ports": [
+                {
+                    "name": "FP1",
+                    "type": "8p8c",
+                    "rear_port": "RP1",
+                    "rear_port_position": 2,
+                }
+            ],
             "rear-ports": [{"name": "RP1"}],
         }
         err = normalize_port_mappings(data)
@@ -497,7 +559,12 @@ class TestNormalizePortMappings:
             "front-ports": [{"name": "FP1", "type": "8p8c"}],
             "rear-ports": [{"name": "RP1", "positions": 4}],
             "port-mappings": [
-                {"front_port": "FP1", "rear_port": "RP1", "front_port_position": 2, "rear_port_position": 3}
+                {
+                    "front_port": "FP1",
+                    "rear_port": "RP1",
+                    "front_port_position": 2,
+                    "rear_port_position": 3,
+                }
             ],
         }
         err = normalize_port_mappings(data)
@@ -512,13 +579,29 @@ class TestNormalizePortMappings:
             "front-ports": [{"name": "FP1", "type": "8p8c"}],
             "rear-ports": [{"name": "RP1", "positions": 2}],
             "port-mappings": [
-                {"front_port": "FP1", "rear_port": "RP1", "front_port_position": 1, "rear_port_position": 1},
-                {"front_port": "FP1", "rear_port": "RP1", "front_port_position": 2, "rear_port_position": 2},
+                {
+                    "front_port": "FP1",
+                    "rear_port": "RP1",
+                    "front_port_position": 1,
+                    "rear_port_position": 1,
+                },
+                {
+                    "front_port": "FP1",
+                    "rear_port": "RP1",
+                    "front_port_position": 2,
+                    "rear_port_position": 2,
+                },
             ],
         }
         err = normalize_port_mappings(data)
         assert err is None
-        assert len(data["front-ports"][0]["_mappings"]) == 2
+        assert sorted(
+            data["front-ports"][0]["_mappings"],
+            key=lambda m: (m["front_port_position"], m["rear_port_position"]),
+        ) == [
+            {"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 1},
+            {"rear_port": "RP1", "front_port_position": 2, "rear_port_position": 2},
+        ]
 
     def test_stanza_missing_front_port_key_returns_error(self):
         """Missing front_port in a stanza entry returns an error string."""
@@ -558,7 +641,14 @@ class TestNormalizePortMappings:
     def test_both_formats_identical_is_accepted(self):
         """Both inline and stanza present with identical content is accepted."""
         data = {
-            "front-ports": [{"name": "FP1", "type": "8p8c", "rear_port": "RP1", "rear_port_position": 1}],
+            "front-ports": [
+                {
+                    "name": "FP1",
+                    "type": "8p8c",
+                    "rear_port": "RP1",
+                    "rear_port_position": 1,
+                }
+            ],
             "rear-ports": [{"name": "RP1"}],
             "port-mappings": [
                 {
@@ -575,10 +665,58 @@ class TestNormalizePortMappings:
     def test_both_formats_conflicting_returns_error(self):
         """Both inline and stanza present with different mappings returns error."""
         data = {
-            "front-ports": [{"name": "FP1", "type": "8p8c", "rear_port": "RP1", "rear_port_position": 1}],
+            "front-ports": [
+                {
+                    "name": "FP1",
+                    "type": "8p8c",
+                    "rear_port": "RP1",
+                    "rear_port_position": 1,
+                }
+            ],
             "rear-ports": [{"name": "RP1"}, {"name": "RP2"}],
             "port-mappings": [{"front_port": "FP1", "rear_port": "RP2"}],  # different rear port
         }
         err = normalize_port_mappings(data)
         assert err is not None
         assert "conflict" in err.lower() or "Error" in err
+
+    def test_empty_stanza_is_deleted(self):
+        """An explicit empty port-mappings list is removed and produces no error."""
+        data = {
+            "front-ports": [{"name": "FP1", "type": "8p8c"}],
+            "rear-ports": [{"name": "RP1"}],
+            "port-mappings": [],
+        }
+        err = normalize_port_mappings(data)
+        assert err is None
+        assert "port-mappings" not in data
+
+    def test_null_stanza_is_deleted(self):
+        """An explicit null port-mappings value is removed and produces no error."""
+        data = {
+            "front-ports": [{"name": "FP1", "type": "8p8c"}],
+            "rear-ports": [{"name": "RP1"}],
+            "port-mappings": None,
+        }
+        err = normalize_port_mappings(data)
+        assert err is None
+        assert "port-mappings" not in data
+
+    def test_inline_unknown_rear_port_returns_error(self):
+        """Inline rear_port reference to unknown rear port returns an error."""
+        data = {
+            "front-ports": [{"name": "FP1", "type": "8p8c", "rear_port": "MISSING"}],
+            "rear-ports": [{"name": "RP1"}],
+        }
+        err = normalize_port_mappings(data)
+        assert err is not None
+        assert "MISSING" in err
+
+    def test_inline_no_rear_ports_list_skips_validation(self):
+        """Inline rear_port reference is accepted when rear-ports list is absent."""
+        data = {
+            "front-ports": [{"name": "FP1", "type": "8p8c", "rear_port": "ANY_NAME"}],
+        }
+        err = normalize_port_mappings(data)
+        assert err is None
+        assert data["front-ports"][0]["_mappings"][0]["rear_port"] == "ANY_NAME"

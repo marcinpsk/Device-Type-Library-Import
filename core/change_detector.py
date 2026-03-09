@@ -88,11 +88,20 @@ IMAGE_PROPERTIES = ["front_image", "rear_image"]
 
 # Component type mapping: YAML key -> (cache_key, comparable_properties)
 COMPONENT_TYPES = {
-    "interfaces": ("interface_templates", ["name", "type", "mgmt_only", "label", "enabled", "poe_mode", "poe_type"]),
-    "power-ports": ("power_port_templates", ["name", "type", "maximum_draw", "allocated_draw", "label"]),
+    "interfaces": (
+        "interface_templates",
+        ["name", "type", "mgmt_only", "label", "enabled", "poe_mode", "poe_type"],
+    ),
+    "power-ports": (
+        "power_port_templates",
+        ["name", "type", "maximum_draw", "allocated_draw", "label"],
+    ),
     "console-ports": ("console_port_templates", ["name", "type", "label"]),
     "power-outlets": ("power_outlet_templates", ["name", "type", "feed_leg", "label"]),
-    "console-server-ports": ("console_server_port_templates", ["name", "type", "label"]),
+    "console-server-ports": (
+        "console_server_port_templates",
+        ["name", "type", "label"],
+    ),
     "rear-ports": ("rear_port_templates", ["name", "type", "positions", "label"]),
     "front-ports": ("front_port_templates", ["name", "type", "_mappings", "label"]),
     "device-bays": ("device_bay_templates", ["name", "label"]),
@@ -400,7 +409,11 @@ class ChangeDetector:
                 # rear_port_position is detected.
                 yaml_mappings = yaml_comp.get("_mappings") or []
                 yaml_set = frozenset(
-                    (m.get("rear_port", ""), m.get("front_port_position", 1), m.get("rear_port_position", 1))
+                    (
+                        m.get("rear_port", ""),
+                        m.get("front_port_position", 1),
+                        m.get("rear_port_position", 1),
+                    )
                     for m in yaml_mappings
                 )
                 canonical = getattr(netbox_comp, "_mappings_canonical", None) or []
@@ -408,16 +421,28 @@ class ChangeDetector:
                 if has_names:
                     # NetBox >= 4.5: compare with rear port names
                     netbox_set = frozenset(
-                        (m.get("rear_port_name", ""), m.get("front_port_position", 1), m.get("rear_port_position", 1))
+                        (
+                            m.get("rear_port_name", ""),
+                            m.get("front_port_position", 1),
+                            m.get("rear_port_position", 1),
+                        )
                         for m in canonical
                     )
                 else:
                     # NetBox < 4.5: rear port names unavailable; compare positions only
                     yaml_set = frozenset(
-                        (m.get("front_port_position", 1), m.get("rear_port_position", 1)) for m in yaml_mappings
+                        (
+                            m.get("front_port_position", 1),
+                            m.get("rear_port_position", 1),
+                        )
+                        for m in yaml_mappings
                     )
                     netbox_set = frozenset(
-                        (m.get("front_port_position", 1), m.get("rear_port_position", 1)) for m in canonical
+                        (
+                            m.get("front_port_position", 1),
+                            m.get("rear_port_position", 1),
+                        )
+                        for m in canonical
                     )
                 if yaml_set != netbox_set:
                     changes.append(

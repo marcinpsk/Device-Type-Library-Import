@@ -266,7 +266,14 @@ class TestDetectChanges:
             existing_by_model={("cisco", "X"): existing},
             cached_components={},
         )
-        dt_data = [{"manufacturer": {"slug": "cisco"}, "model": "X", "slug": "x", "u_height": 2}]
+        dt_data = [
+            {
+                "manufacturer": {"slug": "cisco"},
+                "model": "X",
+                "slug": "x",
+                "u_height": 2,
+            }
+        ]
         report = detector.detect_changes(dt_data)
         assert len(report.modified_device_types) == 1
 
@@ -453,10 +460,19 @@ class TestCompareComponentPropertiesMappings:
             "_mappings": [{"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 1}],
         }
         netbox_comp = self._make_netbox_comp(
-            [{"rear_port_name": "RP1", "front_port_position": 1, "rear_port_position": 1}]
+            [
+                {
+                    "rear_port_name": "RP1",
+                    "front_port_position": 1,
+                    "rear_port_position": 1,
+                }
+            ]
         )
         changes = self._cd()._compare_component_properties(
-            yaml_comp, netbox_comp, ["name", "type", "_mappings"], comp_type="front-ports"
+            yaml_comp,
+            netbox_comp,
+            ["name", "type", "_mappings"],
+            comp_type="front-ports",
         )
         mapping_changes = [c for c in changes if c.property_name == "_mappings"]
         assert mapping_changes == []
@@ -468,7 +484,13 @@ class TestCompareComponentPropertiesMappings:
             "_mappings": [{"rear_port": "RP2", "front_port_position": 1, "rear_port_position": 1}],
         }
         netbox_comp = self._make_netbox_comp(
-            [{"rear_port_name": "RP1", "front_port_position": 1, "rear_port_position": 1}]
+            [
+                {
+                    "rear_port_name": "RP1",
+                    "front_port_position": 1,
+                    "rear_port_position": 1,
+                }
+            ]
         )
         changes = self._cd()._compare_component_properties(
             yaml_comp, netbox_comp, ["name", "_mappings"], comp_type="front-ports"
@@ -482,7 +504,13 @@ class TestCompareComponentPropertiesMappings:
             "_mappings": [{"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 2}],
         }
         netbox_comp = self._make_netbox_comp(
-            [{"rear_port_name": "RP1", "front_port_position": 1, "rear_port_position": 1}]
+            [
+                {
+                    "rear_port_name": "RP1",
+                    "front_port_position": 1,
+                    "rear_port_position": 1,
+                }
+            ]
         )
         changes = self._cd()._compare_component_properties(
             yaml_comp, netbox_comp, ["name", "_mappings"], comp_type="front-ports"
@@ -499,7 +527,13 @@ class TestCompareComponentPropertiesMappings:
             ],
         }
         netbox_comp = self._make_netbox_comp(
-            [{"rear_port_name": "RP1", "front_port_position": 1, "rear_port_position": 1}]
+            [
+                {
+                    "rear_port_name": "RP1",
+                    "front_port_position": 1,
+                    "rear_port_position": 1,
+                }
+            ]
         )
         changes = self._cd()._compare_component_properties(
             yaml_comp, netbox_comp, ["_mappings"], comp_type="front-ports"
@@ -510,7 +544,13 @@ class TestCompareComponentPropertiesMappings:
         """When _mappings is absent from YAML, no comparison is done (absent != removal)."""
         yaml_comp = {"name": "FP1", "type": "8p8c"}  # no _mappings key
         netbox_comp = self._make_netbox_comp(
-            [{"rear_port_name": "RP1", "front_port_position": 1, "rear_port_position": 1}]
+            [
+                {
+                    "rear_port_name": "RP1",
+                    "front_port_position": 1,
+                    "rear_port_position": 1,
+                }
+            ]
         )
         changes = self._cd()._compare_component_properties(
             yaml_comp, netbox_comp, ["name", "_mappings"], comp_type="front-ports"
@@ -525,7 +565,13 @@ class TestCompareComponentPropertiesMappings:
         }
         # rear_port_name=None signals < 4.5 path
         netbox_comp = self._make_netbox_comp(
-            [{"rear_port_name": None, "front_port_position": 1, "rear_port_position": 1}]
+            [
+                {
+                    "rear_port_name": None,
+                    "front_port_position": 1,
+                    "rear_port_position": 1,
+                }
+            ]
         )
         changes = self._cd()._compare_component_properties(
             yaml_comp, netbox_comp, ["_mappings"], comp_type="front-ports"

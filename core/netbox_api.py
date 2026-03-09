@@ -20,7 +20,17 @@ def _build_auth_header(token):
 
 
 # Supported image file extensions for module-type image uploads
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tif", ".tiff", ".svg"}
+IMAGE_EXTENSIONS = {
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".bmp",
+    ".webp",
+    ".tif",
+    ".tiff",
+    ".svg",
+}
 
 # Maximum number of IDs per endpoint.filter() call to avoid excessively long URLs.
 FILTER_CHUNK_SIZE = 200
@@ -111,7 +121,11 @@ class NetBox:
         self.connect_api()
         self.verify_compatibility()
         self.graphql = NetBoxGraphQLClient(
-            self.url, self.token, self.ignore_ssl, log_handler=self.handle, page_size=settings.GRAPHQL_PAGE_SIZE
+            self.url,
+            self.token,
+            self.ignore_ssl,
+            log_handler=self.handle,
+            page_size=settings.GRAPHQL_PAGE_SIZE,
         )
         self.existing_manufacturers = self.get_manufacturers()
         self.device_types = DeviceTypes(
@@ -261,7 +275,14 @@ class NetBox:
         return saved_images
 
     def _handle_existing_device_type(
-        self, dt, device_type, manufacturer_slug, saved_images, only_new, dt_change, remove_components
+        self,
+        dt,
+        device_type,
+        manufacturer_slug,
+        saved_images,
+        only_new,
+        dt_change,
+        remove_components,
     ):
         """Process an existing device type: upload images, apply updates, and log status.
 
@@ -321,7 +342,10 @@ class NetBox:
             # Apply component changes
             if dt_change.component_changes:
                 self.device_types.update_components(
-                    device_type, dt.id, dt_change.component_changes, parent_type="device"
+                    device_type,
+                    dt.id,
+                    dt_change.component_changes,
+                    parent_type="device",
                 )
                 if remove_components:
                     self.device_types.remove_components(dt.id, dt_change.component_changes, parent_type="device")
@@ -460,7 +484,13 @@ class NetBox:
             if dt is not None:
                 dt_change = change_by_key.get((manufacturer_slug, device_type.get("model", "")))
                 if self._handle_existing_device_type(
-                    dt, device_type, manufacturer_slug, saved_images, only_new, dt_change, remove_components
+                    dt,
+                    device_type,
+                    manufacturer_slug,
+                    saved_images,
+                    only_new,
+                    dt_change,
+                    remove_components,
                 ):
                     continue
 
@@ -755,7 +785,12 @@ class NetBox:
         return True
 
     def create_module_types(
-        self, module_types, progress=None, only_new=False, all_module_types=None, module_type_existing_images=None
+        self,
+        module_types,
+        progress=None,
+        only_new=False,
+        all_module_types=None,
+        module_type_existing_images=None,
     ):
         """Create or update module types and their component templates in NetBox.
 
@@ -785,7 +820,11 @@ class NetBox:
             if "src" in curr_mt:
                 del curr_mt["src"]
             if not self._process_single_module_type(
-                curr_mt, src_file, all_module_types, module_type_existing_images, only_new
+                curr_mt,
+                src_file,
+                all_module_types,
+                module_type_existing_images,
+                only_new,
             ):
                 continue
 
@@ -954,7 +993,10 @@ ENDPOINT_CACHE_MAP = {
     "power-port": ("power_port_templates", "power_port_templates"),
     "console-ports": ("console_port_templates", "console_port_templates"),
     "power-outlets": ("power_outlet_templates", "power_outlet_templates"),
-    "console-server-ports": ("console_server_port_templates", "console_server_port_templates"),
+    "console-server-ports": (
+        "console_server_port_templates",
+        "console_server_port_templates",
+    ),
     "rear-ports": ("rear_port_templates", "rear_port_templates"),
     "front-ports": ("front_port_templates", "front_port_templates"),
     "device-bays": ("device_bay_templates", "device_bay_templates"),
@@ -1007,7 +1049,13 @@ class _FrontPortRecordWithMappings:
             # NetBox < 4.5: rear_port_position is a direct scalar field
             rp_pos = getattr(record, "rear_port_position", None)
             canonical = (
-                [{"rear_port_name": None, "front_port_position": 1, "rear_port_position": rp_pos}]
+                [
+                    {
+                        "rear_port_name": None,
+                        "front_port_position": 1,
+                        "rear_port_position": rp_pos,
+                    }
+                ]
                 if rp_pos is not None
                 else []
             )
@@ -1283,7 +1331,14 @@ class DeviceTypes:
         self._preload_global(components, progress_wrapper, progress=progress)
 
     def _preload_track_progress(
-        self, components, futures, progress, task_ids, preload_job, progress_updates, endpoint_totals
+        self,
+        components,
+        futures,
+        progress,
+        task_ids,
+        preload_job,
+        progress_updates,
+        endpoint_totals,
     ):
         """Collect preload results and advance progress tasks as each endpoint future completes.
 
@@ -1332,12 +1387,25 @@ class DeviceTypes:
             # Exclude from pending to avoid double stop_task.
             pending -= already_done
         self._drain_pending(
-            pending, future_map, progress, task_ids, progress_updates, endpoint_totals, records_by_endpoint
+            pending,
+            future_map,
+            progress,
+            task_ids,
+            progress_updates,
+            endpoint_totals,
+            records_by_endpoint,
         )
         return records_by_endpoint
 
     def _drain_pending(
-        self, pending, future_map, progress, task_ids, progress_updates, endpoint_totals, records_by_endpoint
+        self,
+        pending,
+        future_map,
+        progress,
+        task_ids,
+        progress_updates,
+        endpoint_totals,
+        records_by_endpoint,
     ):
         """Wait for pending endpoint futures to complete, collecting results and updating progress.
 
@@ -1473,7 +1541,13 @@ class DeviceTypes:
                         for endpoint, label in components
                     }
                 records_by_endpoint = self._preload_track_progress(
-                    components, futures, progress, task_ids, preload_job, progress_updates, endpoint_totals
+                    components,
+                    futures,
+                    progress,
+                    task_ids,
+                    preload_job,
+                    progress_updates,
+                    endpoint_totals,
                 )
             else:
                 records_by_endpoint = self._preload_no_progress(components, futures)
@@ -1730,7 +1804,10 @@ class DeviceTypes:
             list | None: ``rear_ports`` payload list, or ``None`` if resolution failed.
         """
         existing_rp = self._get_cached_or_fetch(
-            "rear_port_templates", device_type_id, parent_type, self.netbox.dcim.rear_port_templates
+            "rear_port_templates",
+            device_type_id,
+            parent_type,
+            self.netbox.dcim.rear_port_templates,
         )
         rear_ports_payload = []
         for tup in sorted(new_mappings_set):
@@ -1750,6 +1827,31 @@ class DeviceTypes:
                 }
             )
         return rear_ports_payload
+
+    def _apply_mappings_change(self, comp_name, new_mappings, update_data, device_type_id, parent_type):
+        """Merge a ``_mappings`` PropertyChange into *update_data*.
+
+        On NetBox >= 4.5 (M2M model) builds and sets ``update_data["rear_ports"]``.
+        On legacy NetBox (<4.5) translates the first mapping to scalar ``rear_port``
+        and ``rear_port_position`` fields.  Logs a warning and leaves *update_data*
+        unchanged when the referenced rear port cannot be resolved.
+        """
+        if self.m2m_front_ports:
+            payload = self._build_mappings_patch(comp_name, new_mappings, device_type_id, parent_type)
+            if payload is not None:
+                update_data["rear_ports"] = payload
+        else:
+            if new_mappings:
+                rp_name, _fp_pos, rp_pos = next(iter(new_mappings))
+                rps = self.cached_components.get("rear_port_templates", {}).get((parent_type, device_type_id), {})
+                rp = rps.get(rp_name)
+                if rp:
+                    update_data["rear_port"] = rp.id
+                    update_data["rear_port_position"] = rp_pos
+                else:
+                    self.handle.log(
+                        f"Warning: cannot update mappings for '{comp_name}': rear port '{rp_name}' not found"
+                    )
 
     def _apply_updates_for_type(self, comp_type, changes, device_type_id, parent_type):
         """Apply property updates for all changed components of a single type.
@@ -1780,12 +1882,14 @@ class DeviceTypes:
                 comp = existing[change.component_name]
                 update_data = {"id": comp.id}
                 for pc in change.property_changes:
-                    if comp_type == "front-ports" and self.m2m_front_ports and pc.property_name == "_mappings":
-                        payload = self._build_mappings_patch(
-                            change.component_name, pc.new_value, device_type_id, parent_type
+                    if comp_type == "front-ports" and pc.property_name == "_mappings":
+                        self._apply_mappings_change(
+                            change.component_name,
+                            pc.new_value,
+                            update_data,
+                            device_type_id,
+                            parent_type,
                         )
-                        if payload is not None:
-                            update_data["rear_ports"] = payload
                         continue
                     update_data[pc.property_name] = pc.new_value
                 if len(update_data) > 1:  # has fields beyond just "id"
@@ -1983,7 +2087,10 @@ class DeviceTypes:
 
         if bridged_interfaces:
             all_interfaces = self._get_cached_or_fetch(
-                "interface_templates", device_type, "device", self.netbox.dcim.interface_templates
+                "interface_templates",
+                device_type,
+                "device",
+                self.netbox.dcim.interface_templates,
             )
 
             to_update = []
@@ -2035,7 +2142,10 @@ class DeviceTypes:
 
         def link_ports(items, pid):
             existing_pp = self._get_cached_or_fetch(
-                "power_port_templates", pid, "device", self.netbox.dcim.power_port_templates
+                "power_port_templates",
+                pid,
+                "device",
+                self.netbox.dcim.power_port_templates,
             )
 
             outlets_to_remove = []
@@ -2127,7 +2237,10 @@ class DeviceTypes:
 
         def link_rear_ports(items, pid):
             existing_rp = self._get_cached_or_fetch(
-                "rear_port_templates", pid, parent_type, self.netbox.dcim.rear_port_templates
+                "rear_port_templates",
+                pid,
+                parent_type,
+                self.netbox.dcim.rear_port_templates,
             )
 
             ports_to_remove = []
@@ -2292,7 +2405,10 @@ class DeviceTypes:
 
         def link_ports(items, pid):
             existing_pp = self._get_cached_or_fetch(
-                "power_port_templates", pid, "module", self.netbox.dcim.power_port_templates
+                "power_port_templates",
+                pid,
+                "module",
+                self.netbox.dcim.power_port_templates,
             )
 
             outlets_to_remove = []
@@ -2403,7 +2519,11 @@ class DeviceTypes:
             for field, path in images.items():
                 file_handles[field] = (os.path.basename(path), open(path, "rb"))
             response = requests.patch(
-                url, headers=headers, files=file_handles, verify=(not self.ignore_ssl), timeout=60
+                url,
+                headers=headers,
+                files=file_handles,
+                verify=(not self.ignore_ssl),
+                timeout=60,
             )
             response.raise_for_status()
             self.handle.verbose_log(f"Images {images} updated at {url}: {response.status_code}")
