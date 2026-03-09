@@ -42,8 +42,11 @@ class LogHandler:
                 f"SSL verification failed. IGNORE_SSL_ERRORS is {exception}. "
                 f"Set IGNORE_SSL_ERRORS to True if you want to ignore this error. EXITING."
             ),
-            "GitCommandError": f'The repo "{exception}" is not a valid git repo.',
+            "GitCommandError": f'Git error for repo "{exception}".',
             "GitInvalidRepositoryError": f'The repo "{exception}" is not a valid git repo.',
+            "GitBranchNotFound": (
+                f'Branch "{exception}" was not found in the remote repository. Check your REPO_BRANCH setting.'
+            ),
             "InvalidGitURL": f"Invalid Git URL: {exception}. URL must use HTTPS, SSH, or file protocol.",
             "InvalidRepoPath": f'Invalid repository path "{exception}".',
             "Exception": f'An unknown error occurred: "{exception}"',

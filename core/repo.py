@@ -317,8 +317,9 @@ class DTLRepo:
     def pull_repo(self):
         """Pull the latest changes for the configured branch from the existing local repository.
 
-        Opens the existing clone at ``self.repo_path``, validates the origin URL, pulls from
-        origin, and checks out ``self.branch``. Reports errors via the configured exception handler.
+        Opens the existing clone at ``self.repo_path``, validates the origin URL (updating it
+        if REPO_URL has changed), fetches from origin, and checks out ``self.branch``.
+        Reports errors via the configured exception handler.
         """
         try:
             self.handle.log(
@@ -326,12 +327,29 @@ class DTLRepo:
             )
             self.repo = Repo(self.repo_path)
             origin_url = self.repo.remotes.origin.url
-            is_valid, error_msg = validate_git_url(origin_url)
-            if not is_valid:
-                self.handle.exception("InvalidGitURL", origin_url, error_msg)
-            self.repo.remotes.origin.pull()
-            self.repo.git.checkout(self.branch)
-            self.handle.verbose_log(f"Pulled Repo {self.repo.remotes.origin.url}")
+
+            # If the configured URL differs from the current remote, update it so the
+            # fetch pulls from the right place (e.g. user switched forks in .env).
+            if self.url and origin_url != self.url:
+                is_valid, error_msg = validate_git_url(self.url)
+                if not is_valid:
+                    self.handle.exception("InvalidGitURL", self.url, error_msg)
+                self.handle.verbose_log(f"Remote URL changed ({origin_url} → {self.url}), updating origin")
+                self.repo.remotes.origin.set_url(self.url)
+            else:
+                is_valid, error_msg = validate_git_url(origin_url)
+                if not is_valid:
+                    self.handle.exception("InvalidGitURL", origin_url, error_msg)
+
+            self.repo.remotes.origin.fetch()
+
+            remote_branch_names = [ref.name for ref in self.repo.remotes.origin.refs]
+            if f"origin/{self.branch}" not in remote_branch_names:
+                self.handle.exception("GitBranchNotFound", self.branch)
+
+            # -B creates the branch if absent or resets it to the remote ref if present
+            self.repo.git.checkout("-B", self.branch, f"origin/{self.branch}")
+            self.handle.verbose_log(f"Updated repo from {self.repo.remotes.origin.url}")
         except exc.GitCommandError as git_error:
             self.handle.exception("GitCommandError", self.repo.remotes.origin.url, git_error)
         except Exception as git_error:
