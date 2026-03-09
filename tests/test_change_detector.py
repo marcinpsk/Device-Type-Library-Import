@@ -446,11 +446,9 @@ class TestCompareComponentPropertiesMappings:
         """Create a minimal ChangeDetector instance for calling instance methods."""
         return ChangeDetector(MagicMock(), MagicMock())
 
-    def _make_netbox_comp(self, canonical):
-        """Build a mock netbox component with _mappings_canonical."""
-        comp = MagicMock()
-        comp._mappings_canonical = canonical
-        return comp
+    def _make_netbox_comp(self, canonical, **attrs):
+        """Build a netbox component with _mappings_canonical and explicit attributes."""
+        return SimpleNamespace(_mappings_canonical=canonical, **attrs)
 
     def test_identical_mappings_no_change(self):
         """Same mapping on both sides → no property change."""

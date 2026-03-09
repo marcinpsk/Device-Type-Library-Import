@@ -836,6 +836,53 @@ def test_update_components_legacy_mapping_missing_rear_port_warns(mock_settings,
     assert any("MISSING_RP" in str(c) for c in mock_settings.handle.log.call_args_list)
 
 
+def test_update_components_legacy_mapping_two_tuple_warns_and_skips(mock_settings, mock_pynetbox, graphql_client):
+    """On legacy NetBox (<4.5), ChangeDetector emits 2-tuples (fp_pos, rp_pos).
+
+    _apply_mappings_change must warn and skip rather than crash with ValueError.
+    """
+    from core.change_detector import ChangeType, ComponentChange, PropertyChange
+
+    mock_nb_api = MagicMock()
+    dt = DeviceTypes(
+        mock_nb_api,
+        mock_settings.handle,
+        MagicMock(),
+        False,
+        False,
+        graphql=graphql_client,
+    )
+    dt.m2m_front_ports = False
+
+    existing_fp = MagicMock()
+    existing_fp.id = 10
+    existing_fp.name = "FP1"
+    dt.cached_components = {
+        "front_port_templates": {("device", 1): {"FP1": existing_fp}},
+        "rear_port_templates": {("device", 1): {}},
+    }
+
+    # 2-tuple: legacy ChangeDetector cannot include rp_name
+    new_mappings_set = frozenset({(1, 3)})
+    old_mappings_set = frozenset({(1, 1)})
+
+    changes = [
+        ComponentChange(
+            component_type="front-ports",
+            component_name="FP1",
+            change_type=ChangeType.COMPONENT_CHANGED,
+            property_changes=[PropertyChange("_mappings", old_mappings_set, new_mappings_set)],
+        ),
+    ]
+
+    endpoint = mock_nb_api.dcim.front_port_templates
+    mock_settings.handle.log.reset_mock()
+    dt.update_components({}, 1, changes, parent_type="device")
+
+    endpoint.update.assert_not_called()
+    assert any("NetBox < 4.5" in str(c) for c in mock_settings.handle.log.call_args_list)
+
+
 class TestNetBoxConnectApi:
     """Tests for TestNetBoxConnectApi."""
 

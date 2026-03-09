@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, call, mock_open, patch
 from git import exc as git_exc
 from core.repo import DTLRepo, validate_git_url, normalize_port_mappings
 
@@ -210,8 +210,10 @@ class TestPullRepo:
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
             DTLRepo(mock_args, "/tmp/repo", mock_handle)
-        mock_git_repo.remotes.origin.set_url.assert_called_with("https://github.com/new-org/repo.git")
-        mock_git_repo.remotes.origin.fetch.assert_called_once()
+        assert mock_git_repo.remotes.origin.method_calls[:2] == [
+            call.set_url("https://github.com/new-org/repo.git"),
+            call.fetch(),
+        ]
 
     def test_pull_repo_branch_not_found_calls_exception(self):
         """When the configured branch does not exist on the remote, GitBranchNotFound is reported."""
@@ -720,3 +722,24 @@ class TestNormalizePortMappings:
         err = normalize_port_mappings(data)
         assert err is None
         assert data["front-ports"][0]["_mappings"][0]["rear_port"] == "ANY_NAME"
+
+    def test_inline_empty_rear_ports_list_validates(self):
+        """Inline rear_port reference fails when rear-ports: [] is declared (empty but present)."""
+        data = {
+            "front-ports": [{"name": "FP1", "type": "8p8c", "rear_port": "MISSING"}],
+            "rear-ports": [],
+        }
+        err = normalize_port_mappings(data)
+        assert err is not None
+        assert "MISSING" in err
+
+    def test_stanza_empty_rear_ports_list_validates(self):
+        """Stanza rear_port reference fails when rear-ports: [] is declared (empty but present)."""
+        data = {
+            "front-ports": [{"name": "FP1"}],
+            "rear-ports": [],
+            "port-mappings": [{"front_port": "FP1", "rear_port": "MISSING"}],
+        }
+        err = normalize_port_mappings(data)
+        assert err is not None
+        assert "MISSING" in err

@@ -1842,8 +1842,23 @@ class DeviceTypes:
                 update_data["rear_ports"] = payload
         else:
             if new_mappings:
-                rp_name, _fp_pos, rp_pos = next(iter(new_mappings))
-                rps = self.cached_components.get("rear_port_templates", {}).get((parent_type, device_type_id), {})
+                first = next(iter(new_mappings))
+                if len(first) != 3:
+                    # Legacy NetBox (<4.5): ChangeDetector emits 2-tuples (fp_pos, rp_pos)
+                    # because rear port names are unavailable via the GraphQL API.
+                    # Cannot update the FK without the rear port name; skip and warn.
+                    self.handle.log(
+                        f"Warning: cannot update mappings for '{comp_name}' on NetBox < 4.5:"
+                        " rear port names unavailable, skipping mapping update"
+                    )
+                    return
+                rp_name, _fp_pos, rp_pos = first
+                rps = self._get_cached_or_fetch(
+                    "rear_port_templates",
+                    device_type_id,
+                    parent_type,
+                    self.netbox.dcim.rear_port_templates,
+                )
                 rp = rps.get(rp_name)
                 if rp:
                     update_data["rear_port"] = rp.id
