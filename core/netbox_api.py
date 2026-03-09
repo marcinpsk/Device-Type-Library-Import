@@ -1832,41 +1832,44 @@ class DeviceTypes:
         """Merge a ``_mappings`` PropertyChange into *update_data*.
 
         On NetBox >= 4.5 (M2M model) builds and sets ``update_data["rear_ports"]``.
-        On legacy NetBox (<4.5) translates the first mapping to scalar ``rear_port``
-        and ``rear_port_position`` fields.  Logs a warning and leaves *update_data*
-        unchanged when the referenced rear port cannot be resolved.
+        On legacy NetBox (<4.5) translates a mapping tuple to scalar ``rear_port``
+        and ``rear_port_position`` fields, or clears those fields when the mapping
+        is empty.  Logs a warning and leaves *update_data* unchanged when the
+        referenced rear port cannot be resolved.
         """
         if self.m2m_front_ports:
             payload = self._build_mappings_patch(comp_name, new_mappings, device_type_id, parent_type)
             if payload is not None:
                 update_data["rear_ports"] = payload
         else:
-            if new_mappings:
-                first = next(iter(new_mappings))
-                if len(first) != 3:
-                    # Legacy NetBox (<4.5): ChangeDetector emits 2-tuples (fp_pos, rp_pos)
-                    # because rear port names are unavailable via the GraphQL API.
-                    # Cannot update the FK without the rear port name; skip and warn.
-                    self.handle.log(
-                        f"Warning: cannot update mappings for '{comp_name}' on NetBox < 4.5:"
-                        " rear port names unavailable, skipping mapping update"
-                    )
-                    return
-                rp_name, _fp_pos, rp_pos = first
-                rps = self._get_cached_or_fetch(
-                    "rear_port_templates",
-                    device_type_id,
-                    parent_type,
-                    self.netbox.dcim.rear_port_templates,
+            if not new_mappings:
+                # Explicit empty stanza: clear the existing legacy rear port link.
+                update_data["rear_port"] = None
+                update_data["rear_port_position"] = None
+                return
+            first = next(iter(new_mappings))
+            if len(first) != 3:
+                # Legacy NetBox (<4.5): ChangeDetector emits 2-tuples (fp_pos, rp_pos)
+                # because rear port names are unavailable via the GraphQL API.
+                # Cannot update the FK without the rear port name; skip and warn.
+                self.handle.log(
+                    f"Warning: cannot update mappings for '{comp_name}' on NetBox < 4.5:"
+                    " rear port names unavailable, skipping mapping update"
                 )
-                rp = rps.get(rp_name)
-                if rp:
-                    update_data["rear_port"] = rp.id
-                    update_data["rear_port_position"] = rp_pos
-                else:
-                    self.handle.log(
-                        f"Warning: cannot update mappings for '{comp_name}': rear port '{rp_name}' not found"
-                    )
+                return
+            rp_name, _fp_pos, rp_pos = first
+            rps = self._get_cached_or_fetch(
+                "rear_port_templates",
+                device_type_id,
+                parent_type,
+                self.netbox.dcim.rear_port_templates,
+            )
+            rp = rps.get(rp_name)
+            if rp:
+                update_data["rear_port"] = rp.id
+                update_data["rear_port_position"] = rp_pos
+            else:
+                self.handle.log(f"Warning: cannot update mappings for '{comp_name}': rear port '{rp_name}' not found")
 
     def _apply_updates_for_type(self, comp_type, changes, device_type_id, parent_type):
         """Apply property updates for all changed components of a single type.
