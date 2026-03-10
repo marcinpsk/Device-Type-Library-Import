@@ -752,3 +752,88 @@ class TestNormalizePortMappings:
         err = normalize_port_mappings(data)
         assert err is not None
         assert "MISSING" in err
+
+
+# ============================================================
+# validate_repo_path tests
+# ============================================================
+
+
+class TestValidateRepoPath:
+    """Tests for the validate_repo_path() helper."""
+
+    def test_path_exists_is_file_returns_false(self, tmp_path):
+        """Existing path that is a file (not directory) returns False."""
+        from core.repo import validate_repo_path
+
+        f = tmp_path / "not_a_dir.txt"
+        f.write_text("x")
+        ok, msg = validate_repo_path(str(f))
+        assert ok is False
+        assert "not a directory" in msg
+
+    def test_path_exists_not_writable_returns_false(self, tmp_path):
+        """Existing directory without write permission returns False."""
+        from core.repo import validate_repo_path
+
+        d = tmp_path / "readonly"
+        d.mkdir()
+        d.chmod(0o555)
+        try:
+            ok, msg = validate_repo_path(str(d))
+            assert ok is False
+            assert "not writable" in msg
+        finally:
+            d.chmod(0o755)
+
+    def test_parent_not_writable_returns_false(self, tmp_path):
+        """Non-existent path whose parent is not writable returns False."""
+        from core.repo import validate_repo_path
+
+        parent = tmp_path / "readonly_parent"
+        parent.mkdir()
+        parent.chmod(0o555)
+        target = str(parent / "new_repo")
+        try:
+            ok, msg = validate_repo_path(target)
+            assert ok is False
+            assert "not writable" in msg
+        finally:
+            parent.chmod(0o755)
+
+    def test_valid_new_path_returns_true(self, tmp_path):
+        """Non-existent path with writable parent returns True."""
+        from core.repo import validate_repo_path
+
+        target = str(tmp_path / "new_repo")
+        ok, msg = validate_repo_path(target)
+        assert ok is True
+        assert msg == ""
+
+    def test_valid_existing_dir_returns_true(self, tmp_path):
+        """Existing writable directory returns True."""
+        from core.repo import validate_repo_path
+
+        ok, msg = validate_repo_path(str(tmp_path))
+        assert ok is True
+
+
+# ============================================================
+# parse_single_file error path tests
+# ============================================================
+
+
+def test_parse_device_type_returns_error_when_normalize_fails(tmp_path):
+    """normalize_port_mappings returning an error propagates as return value.
+
+    Covers repo.py lines 225-226: 'if err: return err'.
+    """
+    from unittest.mock import patch
+    from core.repo import parse_single_file
+
+    yaml_file = tmp_path / "test.yaml"
+    yaml_file.write_text("manufacturer: Test\nmodel: M1\nslug: m1\n")
+
+    with patch("core.repo.normalize_port_mappings", return_value="Error: invalid mapping"):
+        result = parse_single_file(str(yaml_file))
+    assert result == "Error: invalid mapping"

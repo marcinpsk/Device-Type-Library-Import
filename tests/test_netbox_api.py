@@ -46,6 +46,25 @@ class TestValuesEqual:
         assert _values_equal(True, True)
         assert not _values_equal(True, False)
 
+    def test_type_error_in_coercion_returns_false(self):
+        """Regression: _values_equal must return False (not raise) on non-numeric coercions.
+
+        Covers netbox_api.py lines 65-66: the except (ValueError, TypeError) branch.
+        """
+
+        class Uncoercible:
+            def __eq__(self, other):
+                return NotImplemented
+
+            def __float__(self):
+                raise TypeError("cannot convert")
+
+        assert _values_equal(Uncoercible(), "anything") is False
+        assert _values_equal("1.0", Uncoercible()) is False
+        # Standard numeric coercion: "1" == 1 (yaml int vs netbox string)
+        assert _values_equal(1, "1") is True
+        assert _values_equal(1, "1.5") is False
+
 
 # All component list keys used by the GraphQL client for empty-response fallback.
 _ALL_COMPONENT_KEYS = [
@@ -4508,3 +4527,237 @@ class TestCreateRackTypes:
         nb.create_rack_types([rack_type], progress=iter(progress_items), all_rack_types={})
 
         mock_pynetbox.api.return_value.dcim.rack_types.create.assert_called_once()
+
+
+# ============================================================
+# NetBox version detection tests
+# ============================================================
+
+
+class TestVerifyCompatibility:
+    """Tests for NetBox.verify_compatibility() version thresholds."""
+
+    @pytest.mark.parametrize(
+        "version_str, expected_modules, expected_new_filters, expected_rack_types, expected_m2m",
+        [
+            ("3.1", False, False, False, False),
+            ("3.2", True, False, False, False),
+            ("4.0", True, False, False, False),
+            ("4.1", True, True, True, False),
+            ("4.4", True, True, True, False),
+            ("4.5", True, True, True, True),
+            ("4.6", True, True, True, True),
+            # Version strings with non-numeric suffixes
+            ("4.5-beta", True, True, True, True),
+            ("4.1.0", True, True, True, False),
+        ],
+    )
+    def test_version_thresholds(
+        self,
+        version_str,
+        expected_modules,
+        expected_new_filters,
+        expected_rack_types,
+        expected_m2m,
+        mock_settings,
+        mock_pynetbox,
+    ):
+        mock_pynetbox.api.return_value.version = version_str
+        nb = NetBox(mock_settings, mock_settings.handle)
+        assert nb.modules == expected_modules, f"modules mismatch for {version_str}"
+        assert nb.new_filters == expected_new_filters, f"new_filters mismatch for {version_str}"
+        assert nb.rack_types == expected_rack_types, f"rack_types mismatch for {version_str}"
+        assert nb.m2m_front_ports == expected_m2m, f"m2m_front_ports mismatch for {version_str}"
+
+    def test_single_component_version_string(self, mock_settings, mock_pynetbox):
+        """Version string with only major component (e.g. '4') does not crash."""
+        mock_pynetbox.api.return_value.version = "4"
+        nb = NetBox(mock_settings, mock_settings.handle)
+        assert nb.new_filters is False  # 4.0 → no new filters
+
+    def test_version_42_enables_new_filters_not_m2m(self, mock_settings, mock_pynetbox):
+        mock_pynetbox.api.return_value.version = "4.2"
+        nb = NetBox(mock_settings, mock_settings.handle)
+        assert nb.new_filters is True
+        assert nb.m2m_front_ports is False
+
+
+# ============================================================
+# Regression tests for bugs fixed during port-mappings work
+# ============================================================
+
+
+class TestRegressionPortMappings:
+    """Regression tests for bugs found and fixed during the port-mappings PR."""
+
+    def test_build_mappings_patch_returns_none_for_two_tuple(self, make_device_types, mock_pynetbox):
+        """Regression: _build_mappings_patch must return None (not crash) for legacy 2-tuples.
+
+        Bug: When ChangeDetector emitted 2-tuple (fp_pos, rp_pos) on legacy NetBox but
+        _apply_mappings_change was called in M2M mode, the code crashed unpacking the tuple.
+        Fix: _build_mappings_patch returns None when len(tup) != 3.
+
+        Covers netbox_api.py line 1816.
+        """
+        dt = make_device_types()
+        dt.m2m_front_ports = True
+        dt.cached_components = {"rear_port_templates": {("device", 1): {"RP1": MagicMock(id=99)}}}
+
+        # 2-tuple: legacy ChangeDetector format — should return None, not crash
+        result = dt._build_mappings_patch("FP1", frozenset({(1, 2)}), 1, "device")
+        assert result is None
+
+    def test_legacy_empty_mappings_clears_rear_port(self, make_device_types, mock_pynetbox):
+        """Regression: empty new_mappings frozenset must clear rear_port=None on legacy NetBox.
+
+        Bug: The 'if new_mappings:' guard silently did nothing when mappings were removed.
+        Fix: Added explicit 'if not new_mappings: rear_port=None; return' branch.
+        """
+        from core.change_detector import ChangeType, ComponentChange, PropertyChange
+
+        dt = make_device_types()
+        dt.m2m_front_ports = False
+
+        existing_fp = MagicMock(id=10, name="FP1")
+        dt.cached_components = {"front_port_templates": {("device", 1): {"FP1": existing_fp}}}
+
+        changes = [
+            ComponentChange(
+                component_type="front-ports",
+                component_name="FP1",
+                change_type=ChangeType.COMPONENT_CHANGED,
+                property_changes=[PropertyChange("_mappings", frozenset({("RP1", 1, 1)}), frozenset())],
+            )
+        ]
+        endpoint = dt.netbox.dcim.front_port_templates
+        dt.update_components({}, 1, changes, parent_type="device")
+
+        endpoint.update.assert_called_once()
+        payload = endpoint.update.call_args[0][0][0]
+        assert payload["rear_port"] is None
+        assert payload["rear_port_position"] is None
+
+    def test_legacy_two_tuple_uses_yaml_fallback(self, make_device_types, mock_pynetbox):
+        """Regression: 2-tuple _mappings on legacy NetBox must use YAML for rear port name.
+
+        Bug: When ChangeDetector emitted 2-tuples (no rear port names), the code always
+        warned and skipped — even when YAML data contained the rear port name.
+        Fix: _apply_mappings_change falls back to yaml_mappings[0]["rear_port"] when len(first)!=3.
+        """
+        from core.change_detector import ChangeType, ComponentChange, PropertyChange
+
+        dt = make_device_types()
+        dt.m2m_front_ports = False
+
+        existing_fp = MagicMock(id=10, name="FP1")
+        mock_rp = MagicMock(id=99, name="RP1")
+        dt.cached_components = {
+            "front_port_templates": {("device", 1): {"FP1": existing_fp}},
+            "rear_port_templates": {("device", 1): {"RP1": mock_rp}},
+        }
+
+        yaml_data = {
+            "front-ports": [
+                {"name": "FP1", "_mappings": [{"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 2}]}
+            ]
+        }
+        changes = [
+            ComponentChange(
+                component_type="front-ports",
+                component_name="FP1",
+                change_type=ChangeType.COMPONENT_CHANGED,
+                property_changes=[PropertyChange("_mappings", frozenset({("RP1", 1, 1)}), frozenset({(1, 2)}))],
+            )
+        ]
+        endpoint = dt.netbox.dcim.front_port_templates
+        dt.update_components(yaml_data, 1, changes, parent_type="device")
+
+        endpoint.update.assert_called_once()
+        payload = endpoint.update.call_args[0][0][0]
+        assert payload["rear_port"] == 99
+        assert payload["rear_port_position"] == 2
+
+    def test_legacy_two_tuple_without_yaml_warns_and_skips(self, make_device_types, mock_settings, mock_pynetbox):
+        """Regression: 2-tuple _mappings without YAML fallback must warn+skip (not crash).
+
+        Bug: Before len(first)!=3 guard, the code crashed with ValueError unpacking 2-tuples.
+        Fix: Guard added. Without YAML fallback, still warn and skip gracefully.
+        """
+        from core.change_detector import ChangeType, ComponentChange, PropertyChange
+
+        dt = make_device_types()
+        dt.m2m_front_ports = False
+
+        existing_fp = MagicMock(id=10, name="FP1")
+        dt.cached_components = {"front_port_templates": {("device", 1): {"FP1": existing_fp}}}
+
+        changes = [
+            ComponentChange(
+                component_type="front-ports",
+                component_name="FP1",
+                change_type=ChangeType.COMPONENT_CHANGED,
+                property_changes=[PropertyChange("_mappings", frozenset(), frozenset({(1, 2)}))],
+            )
+        ]
+        endpoint = dt.netbox.dcim.front_port_templates
+        mock_settings.handle.log.reset_mock()
+        dt.update_components({}, 1, changes, parent_type="device")
+
+        endpoint.update.assert_not_called()
+        assert any("NetBox < 4.5" in str(c) for c in mock_settings.handle.log.call_args_list)
+
+
+# ============================================================
+# _build_link_rear_ports edge cases (covering uncovered lines)
+# ============================================================
+
+
+class TestBuildLinkRearPortsEdgeCases:
+    """Edge cases in _build_link_rear_ports not covered by existing tests."""
+
+    def test_port_with_no_mappings_and_no_rear_port_is_skipped(self, make_device_types, mock_pynetbox):
+        """Port with no _mappings key and no rear_port key is silently skipped.
+
+        Covers netbox_api.py lines 2301-2302.
+        """
+        dt = make_device_types()
+        mock_rp = MagicMock(id=99, name="RP1")
+        dt.cached_components = {"rear_port_templates": {("device", 1): {"RP1": mock_rp}}}
+
+        post_process = dt._build_link_rear_ports("device", "Front Port")
+        # Port with neither _mappings nor rear_port key
+        items = [{"name": "FP1", "type": "8p8c"}]
+        post_process(items, 1)
+        assert items == [{"name": "FP1", "type": "8p8c"}]  # unchanged
+
+    def test_multiple_legacy_mappings_logs_warning_with_context(self, make_device_types, mock_settings, mock_pynetbox):
+        """Multiple _mappings on legacy NetBox logs warning including context string.
+
+        Covers netbox_api.py lines 2344-2345.
+        """
+        dt = make_device_types()
+        dt.m2m_front_ports = False
+
+        mock_rp1 = MagicMock(id=99)
+        mock_rp2 = MagicMock(id=100)
+        dt.cached_components = {
+            "rear_port_templates": {("device", 1): {"RP1": mock_rp1, "RP2": mock_rp2}},
+        }
+
+        post_process = dt._build_link_rear_ports("device", "Front Port", context="MyDevice")
+        items = [
+            {
+                "name": "FP1",
+                "type": "8p8c",
+                "_mappings": [
+                    {"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 1},
+                    {"rear_port": "RP2", "front_port_position": 1, "rear_port_position": 1},
+                ],
+            }
+        ]
+        mock_settings.handle.log.reset_mock()
+        post_process(items, 1)
+
+        log_calls = [str(c) for c in mock_settings.handle.log.call_args_list]
+        assert any("only first mapping applied" in c for c in log_calls)
+        assert any("MyDevice" in c for c in log_calls)

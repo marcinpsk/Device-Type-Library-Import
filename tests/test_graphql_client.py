@@ -1391,6 +1391,32 @@ class TestGetComponentTemplatesFrontPortFallback:
         with pytest.raises(GraphQLError, match="interface field error"):
             client.get_component_templates("interface_templates")
 
+    def test_primary_fails_no_mappings_field_reraises(self, mock_post):
+        """When primary query fails and schema has no 'mappings' field, re-raise immediately.
+
+        Covers graphql_client.py line 541: 'if not has_mappings: raise'.
+        The guard fires when endpoint_name is front_port_templates but the fields list
+        (COMPONENT_TEMPLATE_FIELDS) has been stripped of the 'mappings' entry — meaning
+        there is no fallback query to attempt.
+        """
+        from core.graphql_client import GraphQLError, COMPONENT_TEMPLATE_FIELDS
+        from unittest.mock import patch
+        import core.graphql_client as gc_module
+
+        # Strip 'mappings' from front_port_templates fields so has_mappings is False
+        stripped = {
+            "front_port_templates": [
+                f for f in COMPONENT_TEMPLATE_FIELDS["front_port_templates"] if "mappings" not in f
+            ]
+        }
+
+        mock_post.return_value = self._make_error_response("some field error")
+
+        with patch.dict(gc_module.COMPONENT_TEMPLATE_FIELDS, stripped):
+            client = self._make_client()
+            with pytest.raises(GraphQLError):
+                client.get_component_templates("front_port_templates")
+
 
 class TestCustomPageSize:
     """Verify that the page_size constructor parameter is respected."""
