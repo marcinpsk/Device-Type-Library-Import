@@ -1,19 +1,38 @@
 ---
 version: 2
 updates:
-  - package-ecosystem: "pip"
-    directory: "/"
-    schedule:
-      interval: "weekly"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "monday"
+    commit-message:
+      prefix: "chore(ci)"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "tuesday"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      python-deps:
+        patterns:
+          - "*"
+
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "wednesday"
+    commit-message:
+      prefix: "chore(docker)"
+    groups:
+      docker-deps:
+        patterns:
+          - "*"
