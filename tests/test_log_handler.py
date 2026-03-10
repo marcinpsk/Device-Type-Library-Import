@@ -75,7 +75,10 @@ class TestEmit:
 
     def test_emit_uses_builtin_print_when_no_console(self):
         handle = LogHandler(SimpleNamespace(verbose=False))
-        with patch.object(handle, "_timestamp", return_value="00:00:00"), patch("builtins.print") as mock_print:
+        with (
+            patch.object(handle, "_timestamp", return_value="00:00:00"),
+            patch("builtins.print") as mock_print,
+        ):
             handle.log("test message")
         mock_print.assert_called_once_with("[00:00:00] test message")
 
@@ -113,7 +116,10 @@ class TestVerboseLog:
 
     def test_verbose_logs_when_enabled(self):
         handle = LogHandler(SimpleNamespace(verbose=True))
-        with patch.object(handle, "_timestamp", return_value="00:00:00"), patch("builtins.print") as mock_print:
+        with (
+            patch.object(handle, "_timestamp", return_value="00:00:00"),
+            patch("builtins.print") as mock_print,
+        ):
             handle.verbose_log("verbose message")
         mock_print.assert_called_once_with("[00:00:00] verbose message")
 
@@ -186,7 +192,10 @@ class TestLogModulePortsCreated:
 def test_progress_group_buffers_logs_until_end():
     handle = LogHandler(SimpleNamespace(verbose=False))
 
-    with patch.object(handle, "_timestamp", return_value="12:00:00"), patch("builtins.print") as print_mock:
+    with (
+        patch.object(handle, "_timestamp", return_value="12:00:00"),
+        patch("builtins.print") as print_mock,
+    ):
         handle.start_progress_group()
         handle.log("Buffered message")
         print_mock.assert_not_called()
@@ -199,7 +208,10 @@ def test_progress_group_buffers_logs_until_end():
 def test_progress_group_supports_nested_blocks():
     handle = LogHandler(SimpleNamespace(verbose=False))
 
-    with patch.object(handle, "_timestamp", return_value="12:00:00"), patch("builtins.print") as print_mock:
+    with (
+        patch.object(handle, "_timestamp", return_value="12:00:00"),
+        patch("builtins.print") as print_mock,
+    ):
         handle.start_progress_group()
         handle.start_progress_group()
         handle.log("Nested message")

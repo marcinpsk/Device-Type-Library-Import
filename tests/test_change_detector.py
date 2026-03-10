@@ -266,7 +266,14 @@ class TestDetectChanges:
             existing_by_model={("cisco", "X"): existing},
             cached_components={},
         )
-        dt_data = [{"manufacturer": {"slug": "cisco"}, "model": "X", "slug": "x", "u_height": 2}]
+        dt_data = [
+            {
+                "manufacturer": {"slug": "cisco"},
+                "model": "X",
+                "slug": "x",
+                "u_height": 2,
+            }
+        ]
         report = detector.detect_changes(dt_data)
         assert len(report.modified_device_types) == 1
 
@@ -425,3 +432,147 @@ class TestCompareImageProperties:
 
         assert len(changes) == 1
         assert changes[0].property_name == "front_image"
+
+
+# ---------------------------------------------------------------------------
+# _compare_component_properties: front-port _mappings comparison
+# ---------------------------------------------------------------------------
+
+
+class TestCompareComponentPropertiesMappings:
+    """Tests for _mappings comparison in _compare_component_properties."""
+
+    def _cd(self):
+        """Create a minimal ChangeDetector instance for calling instance methods."""
+        return ChangeDetector(MagicMock(), MagicMock())
+
+    def _make_netbox_comp(self, canonical, **attrs):
+        """Build a netbox component with _mappings_canonical and explicit attributes."""
+        return SimpleNamespace(_mappings_canonical=canonical, **attrs)
+
+    def test_identical_mappings_no_change(self):
+        """Same mapping on both sides → no property change."""
+        yaml_comp = {
+            "name": "FP1",
+            "type": "8p8c",
+            "_mappings": [{"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 1}],
+        }
+        netbox_comp = self._make_netbox_comp(
+            [
+                {
+                    "rear_port_name": "RP1",
+                    "front_port_position": 1,
+                    "rear_port_position": 1,
+                }
+            ],
+            type="8p8c",
+        )
+        changes = self._cd()._compare_component_properties(
+            yaml_comp,
+            netbox_comp,
+            ["name", "type", "_mappings"],
+            comp_type="front-ports",
+        )
+        assert changes == []
+
+    def test_rear_port_name_changed_detected(self):
+        """Mapping to a different rear port → change detected."""
+        yaml_comp = {
+            "name": "FP1",
+            "_mappings": [{"rear_port": "RP2", "front_port_position": 1, "rear_port_position": 1}],
+        }
+        netbox_comp = self._make_netbox_comp(
+            [
+                {
+                    "rear_port_name": "RP1",
+                    "front_port_position": 1,
+                    "rear_port_position": 1,
+                }
+            ]
+        )
+        changes = self._cd()._compare_component_properties(
+            yaml_comp, netbox_comp, ["name", "_mappings"], comp_type="front-ports"
+        )
+        assert any(c.property_name == "_mappings" for c in changes)
+
+    def test_rear_port_position_changed_detected(self):
+        """rear_port_position changed → change detected."""
+        yaml_comp = {
+            "name": "FP1",
+            "_mappings": [{"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 2}],
+        }
+        netbox_comp = self._make_netbox_comp(
+            [
+                {
+                    "rear_port_name": "RP1",
+                    "front_port_position": 1,
+                    "rear_port_position": 1,
+                }
+            ]
+        )
+        changes = self._cd()._compare_component_properties(
+            yaml_comp, netbox_comp, ["name", "_mappings"], comp_type="front-ports"
+        )
+        assert any(c.property_name == "_mappings" for c in changes)
+
+    def test_multi_mapping_added_detected(self):
+        """Adding a second mapping → change detected."""
+        yaml_comp = {
+            "name": "FP1",
+            "_mappings": [
+                {"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 1},
+                {"rear_port": "RP1", "front_port_position": 2, "rear_port_position": 2},
+            ],
+        }
+        netbox_comp = self._make_netbox_comp(
+            [
+                {
+                    "rear_port_name": "RP1",
+                    "front_port_position": 1,
+                    "rear_port_position": 1,
+                }
+            ]
+        )
+        changes = self._cd()._compare_component_properties(
+            yaml_comp, netbox_comp, ["_mappings"], comp_type="front-ports"
+        )
+        assert any(c.property_name == "_mappings" for c in changes)
+
+    def test_no_mappings_key_in_yaml_skips_comparison(self):
+        """When _mappings is absent from YAML, no comparison is done (absent != removal)."""
+        yaml_comp = {"name": "FP1", "type": "8p8c"}  # no _mappings key
+        netbox_comp = self._make_netbox_comp(
+            [
+                {
+                    "rear_port_name": "RP1",
+                    "front_port_position": 1,
+                    "rear_port_position": 1,
+                }
+            ]
+        )
+        changes = self._cd()._compare_component_properties(
+            yaml_comp, netbox_comp, ["name", "_mappings"], comp_type="front-ports"
+        )
+        assert changes == []
+
+    def test_legacy_path_positions_only_comparison(self):
+        """NetBox < 4.5 records (rear_port_name=None): compare only positions."""
+        yaml_comp = {
+            "name": "FP1",
+            "_mappings": [{"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 1}],
+        }
+        # rear_port_name=None signals < 4.5 path
+        netbox_comp = self._make_netbox_comp(
+            [
+                {
+                    "rear_port_name": None,
+                    "front_port_position": 1,
+                    "rear_port_position": 1,
+                }
+            ]
+        )
+        changes = self._cd()._compare_component_properties(
+            yaml_comp, netbox_comp, ["_mappings"], comp_type="front-ports"
+        )
+        # Positions match → no change
+        assert changes == []

@@ -451,7 +451,11 @@ def _process_device_types(args, netbox, handle, progress, device_types, cache_pr
             with _image_progress_scope(progress, netbox.device_types, total=image_total):
                 netbox.create_device_types(
                     device_types_to_process,
-                    progress=get_progress_wrapper(progress, device_types_to_process, desc="Processing Device Types"),
+                    progress=get_progress_wrapper(
+                        progress,
+                        device_types_to_process,
+                        desc="Processing Device Types",
+                    ),
                     only_new=False,
                     update=True,
                     change_report=change_report,
@@ -666,9 +670,17 @@ def main():
 
     parser = ArgumentParser(description="Import Netbox Device Types")
     parser.add_argument(
-        "--vendors", nargs="+", default=settings.VENDORS, help="List of vendors to import eg. apc cisco"
+        "--vendors",
+        nargs="+",
+        default=settings.VENDORS,
+        help="List of vendors to import eg. apc cisco",
     )
-    parser.add_argument("--url", "--git", default=settings.REPO_URL, help="Git URL with valid Device Type YAML files")
+    parser.add_argument(
+        "--url",
+        "--git",
+        default=settings.REPO_URL,
+        help="Git URL with valid Device Type YAML files",
+    )
     parser.add_argument(
         "--slugs",
         nargs="+",
@@ -686,7 +698,10 @@ def main():
 
     mode_group = parser.add_mutually_exclusive_group()
     mode_group.add_argument(
-        "--only-new", action="store_true", default=False, help="Only create new devices, skip existing ones"
+        "--only-new",
+        action="store_true",
+        default=False,
+        help="Only create new devices, skip existing ones",
     )
     mode_group.add_argument(
         "--update",

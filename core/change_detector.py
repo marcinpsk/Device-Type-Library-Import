@@ -88,13 +88,22 @@ IMAGE_PROPERTIES = ["front_image", "rear_image"]
 
 # Component type mapping: YAML key -> (cache_key, comparable_properties)
 COMPONENT_TYPES = {
-    "interfaces": ("interface_templates", ["name", "type", "mgmt_only", "label", "enabled", "poe_mode", "poe_type"]),
-    "power-ports": ("power_port_templates", ["name", "type", "maximum_draw", "allocated_draw", "label"]),
+    "interfaces": (
+        "interface_templates",
+        ["name", "type", "mgmt_only", "label", "enabled", "poe_mode", "poe_type"],
+    ),
+    "power-ports": (
+        "power_port_templates",
+        ["name", "type", "maximum_draw", "allocated_draw", "label"],
+    ),
     "console-ports": ("console_port_templates", ["name", "type", "label"]),
     "power-outlets": ("power_outlet_templates", ["name", "type", "feed_leg", "label"]),
-    "console-server-ports": ("console_server_port_templates", ["name", "type", "label"]),
+    "console-server-ports": (
+        "console_server_port_templates",
+        ["name", "type", "label"],
+    ),
     "rear-ports": ("rear_port_templates", ["name", "type", "positions", "label"]),
-    "front-ports": ("front_port_templates", ["name", "type", "rear_port_position", "label"]),
+    "front-ports": ("front_port_templates", ["name", "type", "_mappings", "label"]),
     "device-bays": ("device_bay_templates", ["name", "label"]),
     "module-bays": ("module_bay_templates", ["name", "position", "label"]),
 }
@@ -361,7 +370,9 @@ class ChangeDetector:
                 else:
                     # Check for property changes on existing component
                     existing = existing_components[comp_name]
-                    prop_changes = self._compare_component_properties(yaml_comp, existing, properties)
+                    prop_changes = self._compare_component_properties(
+                        yaml_comp, existing, properties, comp_type=yaml_key
+                    )
                     if prop_changes:
                         changes.append(
                             ComponentChange(
@@ -379,6 +390,7 @@ class ChangeDetector:
         yaml_comp: dict,
         netbox_comp,
         properties: List[str],
+        comp_type: str = "",
     ) -> List[PropertyChange]:
         """Compare properties between YAML and NetBox component."""
         changes = []
@@ -386,6 +398,60 @@ class ChangeDetector:
         for prop in properties:
             if prop == "name":
                 # Name is the key, skip comparison
+                continue
+
+            if prop == "_mappings" and comp_type == "front-ports":
+                # Only compare when YAML explicitly declares _mappings (absent key = not managed).
+                if "_mappings" not in yaml_comp:
+                    continue
+                # Full port-mapping comparison: compare sets of (rear_port, fp_pos, rp_pos)
+                # so that any change to rear port name, front_port_position, or
+                # rear_port_position is detected.
+                yaml_mappings = yaml_comp.get("_mappings") or []
+                yaml_set = frozenset(
+                    (
+                        m.get("rear_port", ""),
+                        m.get("front_port_position", 1),
+                        m.get("rear_port_position", 1),
+                    )
+                    for m in yaml_mappings
+                )
+                canonical = getattr(netbox_comp, "_mappings_canonical", None) or []
+                has_names = any(m.get("rear_port_name") is not None for m in canonical)
+                if has_names:
+                    # NetBox >= 4.5: compare with rear port names
+                    netbox_set = frozenset(
+                        (
+                            m.get("rear_port_name", ""),
+                            m.get("front_port_position", 1),
+                            m.get("rear_port_position", 1),
+                        )
+                        for m in canonical
+                    )
+                else:
+                    # NetBox < 4.5: rear port names unavailable; compare positions only
+                    yaml_set = frozenset(
+                        (
+                            m.get("front_port_position", 1),
+                            m.get("rear_port_position", 1),
+                        )
+                        for m in yaml_mappings
+                    )
+                    netbox_set = frozenset(
+                        (
+                            m.get("front_port_position", 1),
+                            m.get("rear_port_position", 1),
+                        )
+                        for m in canonical
+                    )
+                if yaml_set != netbox_set:
+                    changes.append(
+                        PropertyChange(
+                            property_name="_mappings",
+                            old_value=netbox_set,
+                            new_value=yaml_set,
+                        )
+                    )
                 continue
 
             # Only compare properties explicitly present in the YAML component;

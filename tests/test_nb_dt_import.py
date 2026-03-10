@@ -10,7 +10,11 @@ import pytest
 
 
 def _dt_sort_key(d):
-    return (d.get("manufacturer", {}).get("slug", ""), d.get("model", ""), d.get("slug", ""))
+    return (
+        d.get("manufacturer", {}).get("slug", ""),
+        d.get("model", ""),
+        d.get("slug", ""),
+    )
 
 
 @pytest.fixture(scope="module")
@@ -154,7 +158,9 @@ def test_has_missing_device_images_returns_false_when_no_image_changes(nb_dt_imp
     assert not nb_dt_import.has_missing_device_images(report)
 
 
-def test_select_device_types_for_default_mode_scopes_to_new_and_missing_images(nb_dt_import):
+def test_select_device_types_for_default_mode_scopes_to_new_and_missing_images(
+    nb_dt_import,
+):
     device_types = [
         {"manufacturer": {"slug": "cisco"}, "model": "A", "slug": "a"},
         {"manufacturer": {"slug": "cisco"}, "model": "B", "slug": "b"},
@@ -259,7 +265,9 @@ def test_items_per_second_column_uses_finished_speed_when_available(nb_dt_import
     assert str(rendered) == "5.0 it/s"
 
 
-def test_items_per_second_column_uses_elapsed_fallback_when_finished_speed_missing(nb_dt_import):
+def test_items_per_second_column_uses_elapsed_fallback_when_finished_speed_missing(
+    nb_dt_import,
+):
     column = nb_dt_import.ItemsPerSecondColumn()
 
     rendered = column.render(
@@ -665,7 +673,11 @@ class TestMain:
     def test_vendors_and_slugs_flags_log_lines(self, nb_dt_import):
         """--vendors and --slugs args cause their respective log lines to execute."""
         with (
-            patch.object(sys, "argv", ["nb-dt-import.py", "--vendors", "cisco", "--slugs", "ws-c3750"]),
+            patch.object(
+                sys,
+                "argv",
+                ["nb-dt-import.py", "--vendors", "cisco", "--slugs", "ws-c3750"],
+            ),
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
             patch("nb_dt_import.ChangeDetector") as MockDetector,
@@ -748,7 +760,10 @@ class TestMain:
             patch.object(sys, "argv", ["nb-dt-import.py", "--only-new"]),
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
-            patch("nb_dt_import.concurrent.futures.ThreadPoolExecutor", return_value=mock_executor),
+            patch(
+                "nb_dt_import.concurrent.futures.ThreadPoolExecutor",
+                return_value=mock_executor,
+            ),
         ):
             mock_nb = _make_mock_netbox(modules=True)
             MockNetBox.return_value = mock_nb
@@ -766,7 +781,10 @@ class TestMain:
             patch.object(sys, "argv", ["nb-dt-import.py", "--only-new", "--slugs", "my-slug"]),
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
-            patch("nb_dt_import.concurrent.futures.ThreadPoolExecutor", return_value=mock_executor),
+            patch(
+                "nb_dt_import.concurrent.futures.ThreadPoolExecutor",
+                return_value=mock_executor,
+            ),
         ):
             mock_nb = _make_mock_netbox(modules=True)
             MockNetBox.return_value = mock_nb
@@ -837,7 +855,10 @@ class TestMain:
             patch.object(sys, "argv", ["nb-dt-import.py", "--only-new"]),
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
-            patch("nb_dt_import.concurrent.futures.ThreadPoolExecutor", return_value=mock_executor),
+            patch(
+                "nb_dt_import.concurrent.futures.ThreadPoolExecutor",
+                return_value=mock_executor,
+            ),
         ):
             mock_nb = _make_mock_netbox(modules=True)
             MockNetBox.return_value = mock_nb
@@ -920,7 +941,11 @@ class TestProcessRackTypes:
             [str(racks_dir / "apc-ar1300.yaml")],
             [{"name": "APC", "slug": "apc"}],
         )
-        rack_type = {"manufacturer": {"slug": "apc"}, "model": "AR1300", "slug": "apc-ar1300"}
+        rack_type = {
+            "manufacturer": {"slug": "apc"},
+            "model": "AR1300",
+            "slug": "apc-ar1300",
+        }
         dtl_repo.parse_files.return_value = [rack_type]
 
         nb_dt_import._process_rack_types(self._make_args(), netbox, dtl_repo, handle, None, set())
@@ -970,7 +995,10 @@ class TestEntryPoint:
 
     def test_entry_point_calls_main_normally(self):
         """Running the script as __main__ with mocked deps completes without error."""
-        with patch("core.repo.DTLRepo") as MockDTLRepo, patch("core.netbox_api.NetBox") as MockNetBox:
+        with (
+            patch("core.repo.DTLRepo") as MockDTLRepo,
+            patch("core.netbox_api.NetBox") as MockNetBox,
+        ):
             MockDTLRepo.return_value = _make_mock_repo()
             MockNetBox.return_value = _make_mock_netbox()
 

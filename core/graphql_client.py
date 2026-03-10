@@ -84,13 +84,35 @@ ENDPOINT_TO_LIST_KEY = {
 # Mapping of endpoint names (as used in DeviceTypes) to their GraphQL fields.
 # Every entry also includes ``device_type { id }`` and ``module_type { id }`` automatically.
 COMPONENT_TEMPLATE_FIELDS = {
-    "interface_templates": ["id", "name", "type", "mgmt_only", "label", "enabled", "poe_mode", "poe_type"],
-    "power_port_templates": ["id", "name", "type", "maximum_draw", "allocated_draw", "label"],
+    "interface_templates": [
+        "id",
+        "name",
+        "type",
+        "mgmt_only",
+        "label",
+        "enabled",
+        "poe_mode",
+        "poe_type",
+    ],
+    "power_port_templates": [
+        "id",
+        "name",
+        "type",
+        "maximum_draw",
+        "allocated_draw",
+        "label",
+    ],
     "console_port_templates": ["id", "name", "type", "label"],
     "console_server_port_templates": ["id", "name", "type", "label"],
     "power_outlet_templates": ["id", "name", "type", "feed_leg", "label"],
     "rear_port_templates": ["id", "name", "type", "positions", "label"],
-    "front_port_templates": ["id", "name", "type", "label", "rear_port_position"],
+    "front_port_templates": [
+        "id",
+        "name",
+        "type",
+        "label",
+        "mappings { id front_port_position rear_port_position rear_port { id name } }",
+    ],
     "device_bay_templates": ["id", "name", "label"],
     "module_bay_templates": ["id", "name", "position", "label"],
 }
@@ -509,10 +531,17 @@ class NetBoxGraphQLClient:
         try:
             items = self.query_all(query, list_key=list_key, on_page=on_page)
         except GraphQLError as original_exc:
-            if endpoint_name == "front_port_templates" and "rear_port_position" in fields:
-                # rear_port_position was removed in NetBox >= 4.5 (replaced by M2M rear_ports).
-                # Retry without it so the query works on both schema versions.
-                fallback_fields = [f for f in fields if f != "rear_port_position"]
+            if endpoint_name == "front_port_templates":
+                # Three-tier fallback for front_port_templates:
+                #   1. Primary:         mappings { ... }       (NetBox 4.5+)
+                #   2. First fallback:  rear_port_position     (<4.5 direct scalar field)
+                #   3. Second fallback: neither                (future: field removed entirely)
+                has_mappings = any("mappings" in f for f in fields)
+                if not has_mappings:
+                    raise
+
+                # First fallback: replace the mappings block with the scalar rear_port_position
+                fallback_fields = ["rear_port_position" if "mappings" in f else f for f in fields]
                 field_block = "\n            ".join(fallback_fields)
                 fallback_query = f"""
         query($pagination: OffsetPaginationInput) {{
@@ -525,7 +554,24 @@ class NetBoxGraphQLClient:
                 try:
                     items = self.query_all(fallback_query, list_key=list_key, on_page=on_page)
                 except GraphQLError as fallback_exc:
-                    raise fallback_exc from original_exc
+                    # Second fallback: strip rear_port_position too
+                    second_fallback_fields = [f for f in fallback_fields if f != "rear_port_position"]
+                    if len(second_fallback_fields) == len(fallback_fields):
+                        # rear_port_position wasn't in fallback_fields — nothing more to try
+                        raise fallback_exc from original_exc
+                    field_block = "\n            ".join(second_fallback_fields)
+                    second_fallback_query = f"""
+        query($pagination: OffsetPaginationInput) {{
+          {list_key}(pagination: $pagination) {{
+            {field_block}
+            {parent_fields}
+          }}
+        }}
+        """
+                    try:
+                        items = self.query_all(second_fallback_query, list_key=list_key, on_page=on_page)
+                    except GraphQLError as second_exc:
+                        raise second_exc from original_exc
             else:
                 raise
         return [_to_dotdict(item) for item in items]

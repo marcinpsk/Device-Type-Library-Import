@@ -86,6 +86,120 @@ def validate_repo_path(repo_path):
     return True, ""
 
 
+def normalize_port_mappings(data):
+    """Normalize port mapping definitions in a parsed YAML device/module type dict.
+
+    Supports two input formats and converts both to a unified internal representation:
+
+    **Old inline format** (``rear_port`` / ``rear_port_position`` on each front-port entry)::
+
+        front-ports:
+          - name: FP1
+            type: 8p8c
+            rear_port: RP1
+            rear_port_position: 1   # optional, default 1
+
+    **New NetBox 4.5 port-mappings stanza**::
+
+        port-mappings:
+          - front_port: FP1
+            rear_port: RP1
+            front_port_position: 1  # optional, default 1
+            rear_port_position: 1   # optional, default 1
+
+    In both cases the result is that each front-port entry gains a ``_mappings`` list::
+
+        [{"rear_port": "<rear-port-name>", "front_port_position": 1, "rear_port_position": 1}]
+
+    The inline ``rear_port`` / ``rear_port_position`` keys and the top-level
+    ``port-mappings`` stanza are removed from *data* in-place.
+
+    Args:
+        data (dict): Parsed YAML dict.  Modified in-place.
+
+    Returns:
+        str | None: An ``"Error: ..."`` string describing a validation failure, or
+            ``None`` on success.
+    """
+    front_ports = data.get("front-ports") or []
+    port_mappings_stanza = data.get("port-mappings")
+
+    if not front_ports and "port-mappings" not in data:
+        return None
+
+    front_by_name = {fp["name"]: fp for fp in front_ports if fp.get("name")}
+    rear_ports_declared = "rear-ports" in data
+    rear_ports = data.get("rear-ports") or []
+    rear_by_name = {rp["name"]: rp for rp in rear_ports if rp.get("name")}
+
+    # --- Old inline format ---
+    # Collect rear_port references declared directly on front-port entries.
+    inline_mappings = {}  # {front_port_name: [mapping_dict, ...]}
+    for fp in front_ports:
+        rp_name = fp.get("rear_port")
+        if rp_name is None:
+            continue
+        fp_name = fp.get("name")
+        if rear_ports_declared and rp_name not in rear_by_name:
+            return f"Error: front-port '{fp_name}' references unknown rear_port '{rp_name}'"
+        rp_pos = fp.pop("rear_port_position", 1)
+        fp.pop("rear_port")
+        inline_mappings.setdefault(fp_name, []).append(
+            {
+                "rear_port": rp_name,
+                "front_port_position": 1,
+                "rear_port_position": rp_pos,
+            }
+        )
+
+    # --- New port-mappings stanza ---
+    stanza_mappings = {}  # {front_port_name: [mapping_dict, ...]}
+    if "port-mappings" in data:
+        for entry in port_mappings_stanza or []:
+            fp_name = entry.get("front_port")
+            rp_name = entry.get("rear_port")
+            if not fp_name or not rp_name:
+                return f"Error: port-mappings entry missing front_port or rear_port: {entry!r}"
+            if fp_name not in front_by_name:
+                return f"Error: port-mappings references unknown front_port '{fp_name}'"
+            if rear_ports_declared and rp_name not in rear_by_name:
+                return f"Error: port-mappings references unknown rear_port '{rp_name}'"
+            stanza_mappings.setdefault(fp_name, []).append(
+                {
+                    "rear_port": rp_name,
+                    "front_port_position": entry.get("front_port_position", 1),
+                    "rear_port_position": entry.get("rear_port_position", 1),
+                }
+            )
+        del data["port-mappings"]
+
+    # --- Conflict detection ---
+    # Accept both formats simultaneously only when they describe identical mappings.
+    if inline_mappings and stanza_mappings:
+        all_names = set(inline_mappings) | set(stanza_mappings)
+        for name in all_names:
+            inline = sorted(
+                (m["rear_port"], m["front_port_position"], m["rear_port_position"])
+                for m in inline_mappings.get(name, [])
+            )
+            stanza = sorted(
+                (m["rear_port"], m["front_port_position"], m["rear_port_position"])
+                for m in stanza_mappings.get(name, [])
+            )
+            if inline != stanza:
+                return (
+                    f"Error: front port '{name}' has conflicting mapping definitions "
+                    f"(inline: {inline}, port-mappings stanza: {stanza})"
+                )
+
+    effective = stanza_mappings if stanza_mappings else inline_mappings
+    for fp_name, mappings in effective.items():
+        if fp_name in front_by_name:
+            front_by_name[fp_name]["_mappings"] = mappings
+
+    return None
+
+
 def parse_single_file(file):
     """Load a YAML device mapping, convert its `manufacturer` to a slug dictionary, and record the source path.
 
@@ -106,6 +220,9 @@ def parse_single_file(file):
             # (e.g., RuggedCOM vs RuggedCom in upstream data)
             data["manufacturer"] = {"slug": re_sub(r"\W+", "-", manufacturer.lower())}
             data["src"] = file
+            err = normalize_port_mappings(data)
+            if err:
+                return err
             return data
         except yaml.YAMLError as excep:
             return f"Error: {excep}"
@@ -203,8 +320,9 @@ class DTLRepo:
     def pull_repo(self):
         """Pull the latest changes for the configured branch from the existing local repository.
 
-        Opens the existing clone at ``self.repo_path``, validates the origin URL, pulls from
-        origin, and checks out ``self.branch``. Reports errors via the configured exception handler.
+        Opens the existing clone at ``self.repo_path``, validates the origin URL (updating it
+        if REPO_URL has changed), fetches from origin, and checks out ``self.branch``.
+        Reports errors via the configured exception handler.
         """
         try:
             self.handle.log(
@@ -212,12 +330,29 @@ class DTLRepo:
             )
             self.repo = Repo(self.repo_path)
             origin_url = self.repo.remotes.origin.url
-            is_valid, error_msg = validate_git_url(origin_url)
-            if not is_valid:
-                self.handle.exception("InvalidGitURL", origin_url, error_msg)
-            self.repo.remotes.origin.pull()
-            self.repo.git.checkout(self.branch)
-            self.handle.verbose_log(f"Pulled Repo {self.repo.remotes.origin.url}")
+
+            # If the configured URL differs from the current remote, update it so the
+            # fetch pulls from the right place (e.g. user switched forks in .env).
+            if self.url and origin_url != self.url:
+                is_valid, error_msg = validate_git_url(self.url)
+                if not is_valid:
+                    self.handle.exception("InvalidGitURL", self.url, error_msg)
+                self.handle.verbose_log(f"Remote URL changed ({origin_url} → {self.url}), updating origin")
+                self.repo.remotes.origin.set_url(self.url)
+            else:
+                is_valid, error_msg = validate_git_url(origin_url)
+                if not is_valid:
+                    self.handle.exception("InvalidGitURL", origin_url, error_msg)
+
+            self.repo.remotes.origin.fetch(prune=True)
+
+            remote_branch_names = [ref.name for ref in self.repo.remotes.origin.refs]
+            if f"origin/{self.branch}" not in remote_branch_names:
+                self.handle.exception("GitBranchNotFound", self.branch)
+
+            # -B creates the branch if absent or resets it to the remote ref if present
+            self.repo.git.checkout("-B", self.branch, f"origin/{self.branch}")
+            self.handle.verbose_log(f"Updated repo from {self.repo.remotes.origin.url}")
         except exc.GitCommandError as git_error:
             self.handle.exception("GitCommandError", self.repo.remotes.origin.url, git_error)
         except Exception as git_error:
