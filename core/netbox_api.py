@@ -1828,7 +1828,7 @@ class DeviceTypes:
             )
         return rear_ports_payload
 
-    def _apply_mappings_change(self, comp_name, new_mappings, update_data, device_type_id, parent_type):
+    def _apply_mappings_change(self, comp_name, new_mappings, yaml_mappings, update_data, device_type_id, parent_type):
         """Merge a ``_mappings`` PropertyChange into *update_data*.
 
         On NetBox >= 4.5 (M2M model) builds and sets ``update_data["rear_ports"]``.
@@ -1836,6 +1836,15 @@ class DeviceTypes:
         and ``rear_port_position`` fields, or clears those fields when the mapping
         is empty.  Logs a warning and leaves *update_data* unchanged when the
         referenced rear port cannot be resolved.
+
+        Args:
+            comp_name (str): Front port component name (for logging).
+            new_mappings: New mapping value from PropertyChange (frozenset of tuples).
+            yaml_mappings (list): Raw YAML ``_mappings`` entries for this front port,
+                used as a fallback on legacy NetBox when ChangeDetector emits 2-tuples.
+            update_data (dict): Payload dict being built for the NetBox update call.
+            device_type_id: NetBox ID of the parent device or module type.
+            parent_type (str): ``"device"`` or ``"module"``.
         """
         if self.m2m_front_ports:
             payload = self._build_mappings_patch(comp_name, new_mappings, device_type_id, parent_type)
@@ -1851,13 +1860,18 @@ class DeviceTypes:
             if len(first) != 3:
                 # Legacy NetBox (<4.5): ChangeDetector emits 2-tuples (fp_pos, rp_pos)
                 # because rear port names are unavailable via the GraphQL API.
-                # Cannot update the FK without the rear port name; skip and warn.
-                self.handle.log(
-                    f"Warning: cannot update mappings for '{comp_name}' on NetBox < 4.5:"
-                    " rear port names unavailable, skipping mapping update"
-                )
-                return
-            rp_name, _fp_pos, rp_pos = first
+                # Fall back to the YAML _mappings entry which does include the name.
+                if not yaml_mappings:
+                    self.handle.log(
+                        f"Warning: cannot update mappings for '{comp_name}' on NetBox < 4.5:"
+                        " rear port names unavailable, skipping mapping update"
+                    )
+                    return
+                first_yaml = yaml_mappings[0]
+                rp_name = first_yaml.get("rear_port")
+                rp_pos = first_yaml.get("rear_port_position", 1)
+            else:
+                rp_name, _fp_pos, rp_pos = first
             rps = self._get_cached_or_fetch(
                 "rear_port_templates",
                 device_type_id,
@@ -1871,7 +1885,7 @@ class DeviceTypes:
             else:
                 self.handle.log(f"Warning: cannot update mappings for '{comp_name}': rear port '{rp_name}' not found")
 
-    def _apply_updates_for_type(self, comp_type, changes, device_type_id, parent_type):
+    def _apply_updates_for_type(self, comp_type, changes, yaml_data, device_type_id, parent_type):
         """Apply property updates for all changed components of a single type.
 
         Looks up the NetBox endpoint for *comp_type*, fetches or uses the cached
@@ -1881,6 +1895,8 @@ class DeviceTypes:
         Args:
             comp_type (str): YAML component key (e.g. ``"interfaces"``).
             changes (list): ComponentChange objects with change_type COMPONENT_CHANGED.
+            yaml_data (dict): Full parsed YAML for the device type, used to look up
+                ``_mappings`` entries for front ports on legacy NetBox.
             device_type_id: NetBox ID of the parent device or module type.
             parent_type (str): ``"device"`` or ``"module"``.
         """
@@ -1901,9 +1917,14 @@ class DeviceTypes:
                 update_data = {"id": comp.id}
                 for pc in change.property_changes:
                     if comp_type == "front-ports" and pc.property_name == "_mappings":
+                        yaml_front_port = next(
+                            (p for p in (yaml_data.get("front-ports") or []) if p.get("name") == change.component_name),
+                            None,
+                        )
                         self._apply_mappings_change(
                             change.component_name,
                             pc.new_value,
+                            (yaml_front_port or {}).get("_mappings") or [],
                             update_data,
                             device_type_id,
                             parent_type,
@@ -2016,7 +2037,7 @@ class DeviceTypes:
                 changes_to_add[change.component_type].append(change)
 
         for comp_type, changes in changes_to_update.items():
-            self._apply_updates_for_type(comp_type, changes, device_type_id, parent_type)
+            self._apply_updates_for_type(comp_type, changes, yaml_data, device_type_id, parent_type)
 
         for comp_type, changes in changes_to_add.items():
             self._apply_additions_for_type(comp_type, changes, yaml_data, device_type_id, parent_type)

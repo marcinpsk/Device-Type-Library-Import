@@ -794,7 +794,8 @@ def test_update_components_legacy_mapping_two_tuple_warns_and_skips(
 ):
     """On legacy NetBox (<4.5), ChangeDetector emits 2-tuples (fp_pos, rp_pos).
 
-    _apply_mappings_change must warn and skip rather than crash with ValueError.
+    When no YAML _mappings are available, _apply_mappings_change must warn and skip
+    rather than crash with ValueError.
     """
     from core.change_detector import ChangeType, ComponentChange, PropertyChange
 
@@ -825,10 +826,71 @@ def test_update_components_legacy_mapping_two_tuple_warns_and_skips(
 
     endpoint = mock_nb_api.dcim.front_port_templates
     mock_settings.handle.log.reset_mock()
+    # Pass {} (no front-ports in yaml_data) → yaml_mappings is [] → warn and skip
     dt.update_components({}, 1, changes, parent_type="device")
 
     endpoint.update.assert_not_called()
     assert any("NetBox < 4.5" in str(c) for c in mock_settings.handle.log.call_args_list)
+
+
+def test_update_components_legacy_mapping_two_tuple_uses_yaml_fallback(
+    mock_settings, mock_pynetbox, graphql_client, make_device_types
+):
+    """On legacy NetBox (<4.5), 2-tuple ChangeDetector output uses YAML _mappings fallback.
+
+    When ChangeDetector gives 2-tuples but YAML has _mappings, use the rear port
+    name from the YAML entry as a fallback.
+    """
+    from core.change_detector import ChangeType, ComponentChange, PropertyChange
+
+    mock_nb_api = MagicMock()
+    dt = make_device_types(nb_api=mock_nb_api)
+    dt.m2m_front_ports = False
+
+    existing_fp = MagicMock()
+    existing_fp.id = 10
+    existing_fp.name = "FP1"
+
+    rp = MagicMock()
+    rp.id = 99
+
+    dt.cached_components = {
+        "front_port_templates": {("device", 1): {"FP1": existing_fp}},
+        "rear_port_templates": {("device", 1): {"RP1": rp}},
+    }
+
+    # 2-tuple: legacy ChangeDetector cannot include rp_name
+    new_mappings_set = frozenset({(1, 3)})
+    old_mappings_set = frozenset({(1, 1)})
+
+    changes = [
+        ComponentChange(
+            component_type="front-ports",
+            component_name="FP1",
+            change_type=ChangeType.COMPONENT_CHANGED,
+            property_changes=[PropertyChange("_mappings", old_mappings_set, new_mappings_set)],
+        ),
+    ]
+
+    yaml_data = {
+        "front-ports": [
+            {
+                "name": "FP1",
+                "_mappings": [{"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 3}],
+            }
+        ]
+    }
+
+    endpoint = mock_nb_api.dcim.front_port_templates
+    dt.update_components(yaml_data, 1, changes, parent_type="device")
+
+    endpoint.update.assert_called_once()
+    update_payload = endpoint.update.call_args[0][0][0]
+    assert update_payload["id"] == 10
+    assert "_mappings" not in update_payload
+    assert "rear_ports" not in update_payload
+    assert update_payload["rear_port"] == 99
+    assert update_payload["rear_port_position"] == 3
 
 
 def test_update_components_legacy_mapping_empty_clears_rear_port(
