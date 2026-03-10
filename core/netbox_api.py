@@ -2307,12 +2307,6 @@ class DeviceTypes:
                     continue
 
                 if m2m:
-                    if len(resolved) > 1 and not m2m:
-                        ctx = f" (Context: {context})" if context else ""
-                        self.handle.log(
-                            f'Multiple mappings for {label} "{port["name"]}" on NetBox < 4.5: '
-                            f"only first mapping applied{ctx}"
-                        )
                     # "position" is the correct API field name — the NetBox serializer
                     # declares `position = IntegerField(source='front_port_position')`,
                     # so the REST API accepts "position", NOT "front_port_position".
