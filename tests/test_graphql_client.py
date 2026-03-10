@@ -1416,6 +1416,8 @@ class TestGetComponentTemplatesFrontPortFallback:
             client = self._make_client()
             with pytest.raises(GraphQLError):
                 client.get_component_templates("front_port_templates")
+            # Guard must fire immediately — no fallback POST should be attempted.
+            assert mock_post.call_count == 1
 
 
 class TestCustomPageSize:
