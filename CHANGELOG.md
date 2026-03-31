@@ -2,6 +2,37 @@
 
 <!-- version list -->
 
+## v1.3.0 (2026-03-31)
+
+### Chores
+
+- **deps**: Bump pygments from 2.19.2 to 2.20.0 (#44, [`67f1780`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/67f178027063851b9465d75ddd614747f25e8f2c))
+- **ci**: Bump astral-sh/setup-uv in the github-actions group (#43, [`3c6c7a0`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/3c6c7a0b85ec20edcab59197200c86de2a334acb))
+- **deps**: Bump requests from 2.32.5 to 2.33.0 (#42, [`11c1da0`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/11c1da0e67c6d6f3c3a6d1a71dd8554f83ac4a46))
+- **deps**: Bump the python-deps group with 2 updates (#41, [`6ff350c`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/6ff350c6922ba2ee696fd11e82e226272626ad07))
+- **ci**: Bump astral-sh/setup-uv in the github-actions group (#40, [`9b53248`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/9b53248084c205a9f872b3b157f87d15df2c0d66))
+- **deps**: Bump ruff from 0.15.5 to 0.15.6 in the python-deps group (#39, [`04f116c`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/04f116c0db01481f21308d9d655c62b9f6e04a72))
+- **ci**: Bump astral-sh/setup-uv in the github-actions group (#38, [`18d2aed`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/18d2aed0b3b87c3f17b6da2629393db41ce0380b))
+- **ci**: Bump docker/setup-buildx-action in the github-actions group (#37, [`29fba71`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/29fba719c1b842beb93f63927dc9207c0c14067f))
+- **ci**: Sha-pin all workflow actions and group dependabot updates ([`af0b4b1`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/af0b4b1aea572af65975e37d2d5180e45c9501b5))
+
+
+### Features
+
+- Resolve module type profile string to name dict for netbox api (#46, [`23603b2`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/23603b28f1a4dfb4a5f460a7d68d8f40d4a88164))
+- Resolve module type profile string to name dict for netbox api (#46, [`23603b2`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/23603b28f1a4dfb4a5f460a7d68d8f40d4a88164))
+
+
+### Testing
+
+- Add edge-case tests for profile already-dict and null (#46, [`23603b2`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/23603b28f1a4dfb4a5f460a7d68d8f40d4a88164))
+
+
+
+### Contributors
+
+@dependabot[bot], @marcinpsk, Marcin Zieba
+
 ## v1.2.0 (2026-03-10)
 
 ### Bug Fixes
