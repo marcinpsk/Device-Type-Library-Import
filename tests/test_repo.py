@@ -859,3 +859,25 @@ def test_parse_single_file_without_profile(tmp_path):
 
     result = parse_single_file(str(yaml_file))
     assert "profile" not in result
+
+
+def test_parse_single_file_profile_already_dict(tmp_path):
+    """Profile that is already a dict should pass through unchanged."""
+    from core.repo import parse_single_file
+
+    yaml_file = tmp_path / "test.yaml"
+    yaml_file.write_text("manufacturer: Test\nmodel: M1\nprofile:\n  name: Fan\n")
+
+    result = parse_single_file(str(yaml_file))
+    assert result["profile"] == {"name": "Fan"}
+
+
+def test_parse_single_file_profile_null(tmp_path):
+    """Profile set to null should pass through as None."""
+    from core.repo import parse_single_file
+
+    yaml_file = tmp_path / "test.yaml"
+    yaml_file.write_text("manufacturer: Test\nmodel: M1\nprofile: null\n")
+
+    result = parse_single_file(str(yaml_file))
+    assert result["profile"] is None
