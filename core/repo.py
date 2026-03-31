@@ -219,6 +219,8 @@ def parse_single_file(file):
             # Use only slug for manufacturer lookup - more resilient to case mismatches
             # (e.g., RuggedCOM vs RuggedCom in upstream data)
             data["manufacturer"] = {"slug": re_sub(r"\W+", "-", manufacturer.lower())}
+            if "profile" in data and isinstance(data["profile"], str):
+                data["profile"] = {"name": data["profile"]}
             data["src"] = file
             err = normalize_port_mappings(data)
             if err:
