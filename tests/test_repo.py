@@ -837,3 +837,25 @@ def test_parse_device_type_returns_error_when_normalize_fails(tmp_path):
     with patch("core.repo.normalize_port_mappings", return_value="Error: invalid mapping"):
         result = parse_single_file(str(yaml_file))
     assert result == "Error: invalid mapping"
+
+
+def test_parse_single_file_converts_profile_to_dict(tmp_path):
+    """Profile string should be converted to a name-based dict for pynetbox."""
+    from core.repo import parse_single_file
+
+    yaml_file = tmp_path / "test.yaml"
+    yaml_file.write_text("manufacturer: Test\nmodel: M1\nprofile: Power supply\n")
+
+    result = parse_single_file(str(yaml_file))
+    assert result["profile"] == {"name": "Power supply"}
+
+
+def test_parse_single_file_without_profile(tmp_path):
+    """Files without a profile field should parse without error."""
+    from core.repo import parse_single_file
+
+    yaml_file = tmp_path / "test.yaml"
+    yaml_file.write_text("manufacturer: Test\nmodel: M1\n")
+
+    result = parse_single_file(str(yaml_file))
+    assert "profile" not in result
