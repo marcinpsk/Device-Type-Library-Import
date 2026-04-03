@@ -203,6 +203,14 @@ class NetBoxGraphQLClient:
             )
             response.raise_for_status()
             body = response.json()
+        except requests.exceptions.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 403:
+                raise GraphQLError(
+                    f"403 Forbidden from {self.graphql_url}\n"
+                    "Hint: Verify that your API token has the required permissions "
+                    "and that GraphQL is enabled in the NetBox configuration."
+                ) from exc
+            raise GraphQLError(str(exc)) from exc
         except requests.RequestException as exc:
             raise GraphQLError(str(exc)) from exc
         except ValueError as exc:

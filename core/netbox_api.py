@@ -11,7 +11,7 @@ import glob
 from pathlib import Path
 
 from core.change_detector import COMPONENT_ALIASES, ChangeType
-from core.graphql_client import NetBoxGraphQLClient
+from core.graphql_client import GraphQLError, NetBoxGraphQLClient
 
 
 def _build_auth_header(token):
@@ -128,7 +128,10 @@ class NetBox:
             log_handler=self.handle,
             page_size=settings.GRAPHQL_PAGE_SIZE,
         )
-        self.existing_manufacturers = self.get_manufacturers()
+        try:
+            self.existing_manufacturers = self.get_manufacturers()
+        except GraphQLError as e:
+            system_exit(f"GraphQL error: {e}")
         self.device_types = DeviceTypes(
             self.netbox,
             self.handle,
