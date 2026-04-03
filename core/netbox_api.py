@@ -387,7 +387,9 @@ class NetBox:
                     except pynetbox.RequestError as e:
                         self.handle.log(f"Error updating device type {dt.model}: {e.error}")
                     except _RETRYABLE_EXCEPTIONS as e:
-                        self.handle.log(f"Connection error updating device type {dt.model}: {e}")
+                        self.handle.log(
+                            f"Connection error updating device type {dt.model} after {_MAX_RETRIES} retries: {e}"
+                        )
 
             # Apply component changes
             if dt_change.component_changes:
@@ -642,7 +644,10 @@ class NetBox:
                     except pynetbox.RequestError as e:
                         self.handle.log(f"Error updating Rack Type {model}: {e.error} (Context: {src_file})")
                     except _RETRYABLE_EXCEPTIONS as e:
-                        self.handle.log(f"Connection error updating Rack Type {model}: {e} (Context: {src_file})")
+                        self.handle.log(
+                            f"Connection error updating Rack Type {model} after {_MAX_RETRIES} retries:"
+                            f" {e} (Context: {src_file})"
+                        )
                 else:
                     self.handle.verbose_log(f"Rack Type Unchanged: {manufacturer_slug} - {model} - {existing.id}")
             else:
@@ -654,7 +659,10 @@ class NetBox:
                 except pynetbox.RequestError as excep:
                     self.handle.log(f"Error creating Rack Type: {excep.error} (Context: {src_file})")
                 except _RETRYABLE_EXCEPTIONS as e:
-                    self.handle.log(f"Connection error creating Rack Type {model}: {e} (Context: {src_file})")
+                    self.handle.log(
+                        f"Connection error creating Rack Type {model} after {_MAX_RETRIES} retries:"
+                        f" {e} (Context: {src_file})"
+                    )
 
     @staticmethod
     def _find_existing_module_type(module_type, all_module_types):
@@ -2016,7 +2024,9 @@ class DeviceTypes:
             except pynetbox.RequestError as e:
                 self.handle.log(f"Error updating {comp_type} (ID: {update_data['id']}): {e.error}")
             except _RETRYABLE_EXCEPTIONS as e:
-                self.handle.log(f"Connection error updating {comp_type} (ID: {update_data['id']}): {e}")
+                self.handle.log(
+                    f"Connection error updating {comp_type} (ID: {update_data['id']}) after {_MAX_RETRIES} retries: {e}"
+                )
 
         if success_count:
             self.counter.update({"components_updated": success_count})
@@ -2163,7 +2173,9 @@ class DeviceTypes:
                 except pynetbox.RequestError as e:
                     self.handle.log(f"Error removing {comp_type} (ID: {comp_id}): {e.error}")
                 except _RETRYABLE_EXCEPTIONS as e:
-                    self.handle.log(f"Connection error removing {comp_type} (ID: {comp_id}): {e}")
+                    self.handle.log(
+                        f"Connection error removing {comp_type} (ID: {comp_id}) after {_MAX_RETRIES} retries: {e}"
+                    )
 
             if success_count:
                 self.counter.update({"components_removed": success_count})
@@ -2225,7 +2237,9 @@ class DeviceTypes:
                 except pynetbox.RequestError as e:
                     self.handle.log(f"Error bridging interfaces: {e} (Context: {context})")
                 except _RETRYABLE_EXCEPTIONS as e:
-                    self.handle.log(f"Connection error bridging interfaces: {e} (Context: {context})")
+                    self.handle.log(
+                        f"Connection error bridging interfaces after {_MAX_RETRIES} retries: {e} (Context: {context})"
+                    )
 
     def create_power_ports(self, power_ports, device_type, context=None):
         """Create power port templates for a device type."""
