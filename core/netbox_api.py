@@ -6,6 +6,7 @@ import re
 import pynetbox
 import requests
 import os
+from sys import exit as system_exit
 import glob
 from pathlib import Path
 
@@ -166,7 +167,21 @@ class NetBox:
         """
         # nb.version should be the version in the form '3.2'
         # Strip non-numeric suffixes (e.g. "4.1-beta") before converting to int.
-        _raw = [int(re.sub(r"\D.*", "", x.strip()) or "0") for x in self.netbox.version.split(".")]
+        try:
+            nb_version = self.netbox.version
+        except requests.exceptions.ProxyError as e:
+            system_exit(
+                f"Proxy error while connecting to NetBox at {self.url}: {e}\n"
+                f"Hint: If NetBox is running locally, ensure that the NETBOX_URL host "
+                f"is included in your 'no_proxy' / 'NO_PROXY' environment variable "
+                f"(both with and without brackets for IPv6, e.g. '::1,[::1]')."
+            )
+        except requests.exceptions.ConnectionError as e:
+            system_exit(
+                f"Connection error while connecting to NetBox at {self.url}: {e}\n"
+                f"Hint: Verify that NetBox is running and reachable at {self.url}."
+            )
+        _raw = [int(re.sub(r"\D.*", "", x.strip()) or "0") for x in nb_version.split(".")]
         version_split = (_raw + [0, 0])[:2]  # pad to (major, minor) to guard against single-component strings
 
         # Later than 3.2
