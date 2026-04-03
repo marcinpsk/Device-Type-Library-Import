@@ -157,16 +157,19 @@ class NetBox:
             self.existing_manufacturers = self.get_manufacturers()
         except GraphQLError as e:
             system_exit(f"GraphQL error: {e}")
-        self.device_types = DeviceTypes(
-            self.netbox,
-            self.handle,
-            self.counter,
-            self.ignore_ssl,
-            self.new_filters,
-            graphql=self.graphql,
-            m2m_front_ports=self.m2m_front_ports,
-            max_threads=settings.PRELOAD_THREADS,
-        )
+        try:
+            self.device_types = DeviceTypes(
+                self.netbox,
+                self.handle,
+                self.counter,
+                self.ignore_ssl,
+                self.new_filters,
+                graphql=self.graphql,
+                m2m_front_ports=self.m2m_front_ports,
+                max_threads=settings.PRELOAD_THREADS,
+            )
+        except GraphQLError as e:
+            system_exit(f"GraphQL error fetching device types: {e}")
 
     def connect_api(self):
         """Connect to the NetBox API using the stored URL and token credentials."""
