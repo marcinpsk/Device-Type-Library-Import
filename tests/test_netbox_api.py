@@ -1383,12 +1383,48 @@ class TestDiscoverModuleImageFiles:
         src = module_dir / "mymodule.yaml"
         src.write_text("model: X")
 
-        img_dir = tmp_path / "module-images" / "vendor" / "mymodule"
+        img_dir = tmp_path / "module-images" / "vendor"
         img_dir.mkdir(parents=True)
-        (img_dir / "front.jpg").write_bytes(b"img")
+        (img_dir / "mymodule.front.jpg").write_bytes(b"img")
+        (img_dir / "mymodule.rear.jpg").write_bytes(b"img")
 
         result = NetBox._discover_module_image_files(str(src))
-        assert any("front.jpg" in r for r in result)
+        assert any("mymodule.front.jpg" in r for r in result)
+        assert any("mymodule.rear.jpg" in r for r in result)
+
+    def test_does_not_match_other_modules_with_shared_prefix(self, tmp_path):
+        """Globbing must not bleed across modules whose names share a prefix."""
+        from core.netbox_api import NetBox
+
+        module_dir = tmp_path / "module-types" / "vendor"
+        module_dir.mkdir(parents=True)
+        src = module_dir / "LC.yaml"
+        src.write_text("model: LC")
+
+        img_dir = tmp_path / "module-images" / "vendor"
+        img_dir.mkdir(parents=True)
+        (img_dir / "LC.front.png").write_bytes(b"img")
+        (img_dir / "LC-TR.front.png").write_bytes(b"img")  # different module
+
+        result = NetBox._discover_module_image_files(str(src))
+        assert any("LC.front.png" in r for r in result)
+        assert not any("LC-TR.front.png" in r for r in result)
+
+    def test_matches_legacy_bare_name(self, tmp_path):
+        """Backwards-compat: bare `<stem>.<ext>` (pre-3944) is still discovered."""
+        from core.netbox_api import NetBox
+
+        module_dir = tmp_path / "module-types" / "vendor"
+        module_dir.mkdir(parents=True)
+        src = module_dir / "legacy.yaml"
+        src.write_text("model: legacy")
+
+        img_dir = tmp_path / "module-images" / "vendor"
+        img_dir.mkdir(parents=True)
+        (img_dir / "legacy.png").write_bytes(b"img")
+
+        result = NetBox._discover_module_image_files(str(src))
+        assert any("legacy.png" in r for r in result)
 
 
 class TestCreateModuleTypes:
@@ -1830,14 +1866,13 @@ class TestCountModuleTypeImages:
         src = module_dir / "mymodule.yaml"
         src.write_text("model: X")
 
-        img_dir = tmp_path / "module-images" / "vendor" / "mymodule"
+        img_dir = tmp_path / "module-images" / "vendor"
         img_dir.mkdir(parents=True)
-        (img_dir / "front.jpg").write_bytes(b"img")
+        (img_dir / "mymodule.front.jpg").write_bytes(b"img")
 
         from core.netbox_api import NetBox as NB
 
-        with patch("glob.glob", return_value=[str(img_dir / "front.jpg")]):
-            count = NB.count_module_type_images([{"manufacturer": {"slug": "vendor"}, "model": "X", "src": str(src)}])
+        count = NB.count_module_type_images([{"manufacturer": {"slug": "vendor"}, "model": "X", "src": str(src)}])
         assert count == 1
 
     def test_existing_module_with_image_not_counted(self, tmp_path):
@@ -1846,23 +1881,23 @@ class TestCountModuleTypeImages:
         src = module_dir / "mymodule.yaml"
         src.write_text("model: X")
 
-        img_dir = tmp_path / "module-images" / "vendor" / "mymodule"
+        img_dir = tmp_path / "module-images" / "vendor"
         img_dir.mkdir(parents=True)
-        (img_dir / "front.jpg").write_bytes(b"img")
+        (img_dir / "mymodule.front.jpg").write_bytes(b"img")
 
         existing_mt = MagicMock()
         existing_mt.id = 10
         all_mts = {"vendor": {"X": existing_mt}}
-        existing_images = {10: {"front"}}
+        # NetBox stores the basename sans final extension → "mymodule.front"
+        existing_images = {10: {"mymodule.front"}}
 
         from core.netbox_api import NetBox as NB
 
-        with patch("glob.glob", return_value=[str(img_dir / "front.jpg")]):
-            count = NB.count_module_type_images(
-                [{"manufacturer": {"slug": "vendor"}, "model": "X", "src": str(src)}],
-                all_module_types=all_mts,
-                module_type_existing_images=existing_images,
-            )
+        count = NB.count_module_type_images(
+            [{"manufacturer": {"slug": "vendor"}, "model": "X", "src": str(src)}],
+            all_module_types=all_mts,
+            module_type_existing_images=existing_images,
+        )
         assert count == 0
 
     def test_no_src_returns_zero(self):
@@ -2558,9 +2593,9 @@ class TestFilterActionableModuleTypesEdge:
         src = module_dir / "lc.yaml"
         src.write_text("model: LC")
 
-        img_dir = tmp_path / "module-images" / "cisco" / "lc"
+        img_dir = tmp_path / "module-images" / "cisco"
         img_dir.mkdir(parents=True)
-        img = img_dir / "front.jpg"
+        img = img_dir / "lc.front.jpg"
         img.write_bytes(b"img")
 
         module_type = {
@@ -2689,22 +2724,21 @@ class TestCountModuleTypeImagesExisting:
         src = module_dir / "mymodule.yaml"
         src.write_text("model: X")
 
-        img_dir = tmp_path / "module-images" / "vendor" / "mymodule"
+        img_dir = tmp_path / "module-images" / "vendor"
         img_dir.mkdir(parents=True)
-        (img_dir / "new_image.jpg").write_bytes(b"img")
+        (img_dir / "mymodule.front.jpg").write_bytes(b"img")
 
         existing_mt = MagicMock()
         existing_mt.id = 10
         all_mts = {"vendor": {"X": existing_mt}}
-        # existing_images does NOT contain "new_image"
-        existing_images = {10: {"old_image"}}
+        # existing_images does NOT contain "mymodule.front"
+        existing_images = {10: {"mymodule.rear"}}
 
-        with patch("glob.glob", return_value=[str(img_dir / "new_image.jpg")]):
-            count = NB.count_module_type_images(
-                [{"manufacturer": {"slug": "vendor"}, "model": "X", "src": str(src)}],
-                all_module_types=all_mts,
-                module_type_existing_images=existing_images,
-            )
+        count = NB.count_module_type_images(
+            [{"manufacturer": {"slug": "vendor"}, "model": "X", "src": str(src)}],
+            all_module_types=all_mts,
+            module_type_existing_images=existing_images,
+        )
         assert count == 1
 
 
@@ -2726,21 +2760,20 @@ class TestUploadModuleTypeImages:
         src = module_dir / "mymodule.yaml"
         src.write_text("model: X")
 
-        img_dir = tmp_path / "module-images" / "vendor" / "mymodule"
+        img_dir = tmp_path / "module-images" / "vendor"
         img_dir.mkdir(parents=True)
-        img = img_dir / "front.jpg"
-        img.write_bytes(b"img")
+        (img_dir / "mymodule.front.jpg").write_bytes(b"img")
 
         mt_res = MagicMock()
         mt_res.id = 10
         mt_res.model = "X"
 
         nb.device_types.upload_image_attachment = MagicMock(return_value=True)
-        existing_images = {10: {"front"}}  # "front" already uploaded
+        # "mymodule.front" already uploaded (NetBox stores basename sans last extension)
+        existing_images = {10: {"mymodule.front"}}
 
         mock_settings.handle.verbose_log.reset_mock()
-        with patch("glob.glob", return_value=[str(img)]):
-            nb._upload_module_type_images(mt_res, str(src), existing_images)
+        nb._upload_module_type_images(mt_res, str(src), existing_images)
 
         nb.device_types.upload_image_attachment.assert_not_called()
         assert any("already exists" in str(c) for c in mock_settings.handle.verbose_log.call_args_list)
@@ -2755,10 +2788,9 @@ class TestUploadModuleTypeImages:
         src = module_dir / "mymodule.yaml"
         src.write_text("model: X")
 
-        img_dir = tmp_path / "module-images" / "vendor" / "mymodule"
+        img_dir = tmp_path / "module-images" / "vendor"
         img_dir.mkdir(parents=True)
-        img = img_dir / "new_img.jpg"
-        img.write_bytes(b"img")
+        (img_dir / "mymodule.front.jpg").write_bytes(b"img")
 
         mt_res = MagicMock()
         mt_res.id = 10
@@ -2767,11 +2799,10 @@ class TestUploadModuleTypeImages:
         nb.device_types.upload_image_attachment = MagicMock(return_value=True)
         existing_images = {}
 
-        with patch("glob.glob", return_value=[str(img)]):
-            nb._upload_module_type_images(mt_res, str(src), existing_images)
+        nb._upload_module_type_images(mt_res, str(src), existing_images)
 
         nb.device_types.upload_image_attachment.assert_called_once()
-        assert "new_img" in existing_images.get(10, set())
+        assert "mymodule.front" in existing_images.get(10, set())
 
 
 # ---------------------------------------------------------------------------

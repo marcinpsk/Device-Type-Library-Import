@@ -1000,8 +1000,12 @@ class NetBox:
         """Locate image files associated with a module-type YAML source file.
 
         Derives the image directory by replacing the ``module-types`` component in the source
-        path with ``module-images`` and appending the file stem as a subdirectory, then
-        returns all files with recognised image extensions.
+        path with ``module-images``. Upstream devicetype-library stores module images flat
+        under ``module-images/<manufacturer>/`` and (per netbox-community/devicetype-library#3944)
+        names them ``<module-name>.(front|rear).<ext>``. This function matches any image
+        whose basename begins with the YAML stem followed by a dot, which covers both the
+        new ``<stem>.front.<ext>`` / ``<stem>.rear.<ext>`` naming and legacy bare
+        ``<stem>.<ext>`` files for users on older forks.
 
         Args:
             src_file (str): Path to the module-type YAML file.
@@ -1023,17 +1027,21 @@ class NetBox:
             return []
 
         parts[idx] = "module-images"
-        image_dir = Path(*parts) / src_path.stem
-        image_files = glob.glob(str(image_dir / "*"))
+        image_dir = Path(*parts)
+        # Match `<stem>.<anything>` flat in the vendor directory (e.g. `LC.front.png`,
+        # `LC.rear.jpg`, or legacy bare `LC.png`).
+        image_files = glob.glob(str(image_dir / f"{src_path.stem}.*"))
         return [f for f in image_files if os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS]
 
     def _upload_module_type_images(self, module_type_res, src_file, module_type_existing_images):
         """Discover and upload images for a module type, skipping duplicates.
 
         Derives an image directory by replacing the 'module-types' path component
-        with 'module-images' and appending the module filename (without extension).
-        Only uploads images whose name (basename without extension) is not already
-        present in module_type_existing_images for this module type.
+        with 'module-images' (flat layout — no per-module subdirectory) and matches
+        files whose basename begins with the module filename stem (e.g.
+        ``<stem>.front.<ext>``, ``<stem>.rear.<ext>``). Only uploads images whose name
+        (basename without extension) is not already present in
+        module_type_existing_images for this module type.
 
         Args:
             module_type_res: pynetbox Record for the module type.
