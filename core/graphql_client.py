@@ -172,6 +172,10 @@ class NetBoxGraphQLClient:
             }
         )
         self._session.verify = not self.ignore_ssl
+        if self.ignore_ssl:
+            import urllib3
+
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
     def close(self):
         """Close the underlying HTTP session."""
