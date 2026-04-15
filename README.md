@@ -71,13 +71,13 @@ and device, creating anything that is missing from NetBox while skipping entries
 | `GRAPHQL_PAGE_SIZE` | | `5000` | Items per GraphQL page |
 | `PRELOAD_THREADS` | | `8` | Threads for concurrent component preloading |
 
-> ⚠️ **Tokens** Please note there is a difference in setting the token based on wether you are using v1 or v2 tokens
+> ⚠️ **Tokens:** Please note there is a difference in setting the token based on whether you are using v1 or v2 tokens
 >
 > For v1, your token will simply be the secret part generated when you create the api token in netbox:
 >
 > `NETBOX_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
 >
-> For v2 tokens, you also need to include the bearer key (represented here by capital X-es):
+> For v2 tokens, you need to include prefix "nbt_", the bearer key (represented here by capital X-es), a dot, and finally the secret token (represented by lowercase x-es):
 >
 >`NETBOX_TOKEN=nbt_XXXXXXXXXXXX.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
 
