@@ -7,19 +7,19 @@ repos:
     hooks:
       - id: ruff-check
         name: ruff
-        entry: uv run --system-certs ruff check --fix
+        entry: uv run --native-tls ruff check --fix
         language: system
         types: [python]
         require_serial: true
       - id: ruff-format
         name: ruff-format
-        entry: uv run --system-certs ruff format
+        entry: uv run --native-tls ruff format
         language: system
         types: [python]
         require_serial: true
       - id: pytest
         name: pytest
-        entry: uv run --system-certs pytest --cov --cov-report=term-missing
+        entry: uv run --native-tls pytest --cov --cov-report=term-missing
         language: system
         types: [python]
         pass_filenames: false
