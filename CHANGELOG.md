@@ -2,6 +2,25 @@
 
 <!-- version list -->
 
+## v1.3.3 (2026-04-15)
+
+### Bug Fixes
+
+- Suppress insecurerequestwarning when ignore_ssl_errors is enabled (#56, [`46c4967`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/46c4967169cc85b5216b7ffd48c33ecda97ccf19))
+- Use --native-tls instead of invalid --system-certs in pre-commit hooks (#56, [`46c4967`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/46c4967169cc85b5216b7ffd48c33ecda97ccf19))
+
+
+### Chores
+
+- **deps**: Bump pytest from 9.0.2 to 9.0.3 (#54, [`e977c4d`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/e977c4d252522357a2762bfcfa96e3e3c34c5c49))
+- **ci**: Bump the github-actions group with 2 updates (#52, [`837d293`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/837d29310401c64c4e1ea2e39e639633b197b097))
+
+
+
+### Contributors
+
+@dependabot[bot], @marcinpsk
+
 ## v1.3.2 (2026-04-09)
 
 ### Bug Fixes
