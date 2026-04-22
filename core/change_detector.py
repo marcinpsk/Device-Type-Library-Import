@@ -186,7 +186,6 @@ class ChangeDetector:
 
         return report
 
-
     def _compare_device_type_properties(self, yaml_data: dict, netbox_dt) -> List[PropertyChange]:
         """Compare YAML device type properties against NetBox device type.
 
@@ -229,6 +228,10 @@ class ChangeDetector:
         YAML uses boolean flags (front_image: true) meaning "an image should exist",
         while NetBox stores a URL string (or None). This only flags missing images
         (YAML=true, NetBox=empty). Omitted keys and false values are ignored.
+
+        Note: this only detects images missing from NetBox; modifications to local
+        files with the same name are not redetected because NetBox stores only the
+        URL, not a content hash.
 
         Args:
             yaml_data: Parsed YAML device type dictionary
@@ -470,6 +473,19 @@ class ChangeDetector:
 
         return ct_removed
 
+    def _log_property_diffs(self, prop_changes: List[PropertyChange], indent: str) -> None:
+        """Emit diff-u style lines for *prop_changes* at the given *indent*."""
+        if not prop_changes:
+            return
+        pad = min(max(len(pc.property_name) for pc in prop_changes), 30)
+        for pc in prop_changes:
+            name = f"{pc.property_name}:{'':{max(0, pad - len(pc.property_name))}}"
+            blank = " " * len(name)
+            for i, line in enumerate(str(pc.old_value).splitlines() or [""]):
+                self.handle.verbose_log(f"{indent}- {name if i == 0 else blank} {line}")
+            for i, line in enumerate(str(pc.new_value).splitlines() or [""]):
+                self.handle.verbose_log(f"{indent}+ {name if i == 0 else blank} {line}")
+
     def _log_modified_device_details(self, dt: DeviceTypeChange):
         """Log the per-device detail section for a single modified device type.
 
@@ -490,15 +506,7 @@ class ChangeDetector:
 
         if prop_changes or image_changes:
             self.handle.verbose_log("    Properties:")
-            pad = max((len(pc.property_name) for pc in prop_changes), default=0)
-            pad = min(pad, 30)
-            for pc in prop_changes:
-                name = f"{pc.property_name}:{'':{max(0, pad - len(pc.property_name))}}"
-                blank = " " * len(name)
-                for i, line in enumerate(str(pc.old_value).splitlines() or [""]):
-                    self.handle.verbose_log(f"      - {name if i == 0 else blank} {line}")
-                for i, line in enumerate(str(pc.new_value).splitlines() or [""]):
-                    self.handle.verbose_log(f"      + {name if i == 0 else blank} {line}")
+            self._log_property_diffs(prop_changes, "      ")
             for pc in image_changes:
                 label = pc.property_name.replace("_", " ").title()
                 self.handle.verbose_log(f"      ~ {label}: missing in NetBox (YAML defines image)")
@@ -511,15 +519,7 @@ class ChangeDetector:
             self.handle.verbose_log(f"      ~ {len(changed)} changed component(s)")
             for comp in changed:
                 self.handle.verbose_log(f"        ~ {comp.component_type}: {comp.component_name}")
-                if comp.property_changes:
-                    pad = min(max(len(pc.property_name) for pc in comp.property_changes), 30)
-                    for pc in comp.property_changes:
-                        name = f"{pc.property_name}:{'':{max(0, pad - len(pc.property_name))}}"
-                        blank = " " * len(name)
-                        for i, line in enumerate(str(pc.old_value).splitlines() or [""]):
-                            self.handle.verbose_log(f"            - {name if i == 0 else blank} {line}")
-                        for i, line in enumerate(str(pc.new_value).splitlines() or [""]):
-                            self.handle.verbose_log(f"            + {name if i == 0 else blank} {line}")
+                self._log_property_diffs(comp.property_changes, "            ")
         if removed:
             self.handle.log(f"      - {len(removed)} removed component(s) (not deleted without --remove-components)")
             for comp in removed:

@@ -1,11 +1,11 @@
 from unittest.mock import MagicMock
 
-import pytest
-
 from core.normalization import normalize_values, values_equal
 
 
 class TestNormalizeValues:
+    """Tests for normalize_values."""
+
     def test_netbox_choice_object_reads_value(self):
         choice = MagicMock()
         choice.value = "1000base-t"
@@ -71,6 +71,8 @@ class TestNormalizeValues:
 
 
 class TestValuesEqual:
+    """Tests for values_equal."""
+
     def test_equal_strings(self):
         assert values_equal("abc", "abc")
 

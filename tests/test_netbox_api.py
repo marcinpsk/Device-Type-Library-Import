@@ -9,7 +9,6 @@ from core.netbox_api import (
 from helpers import paginate_dispatch
 
 
-
 # All component list keys used by the GraphQL client for empty-response fallback.
 _ALL_COMPONENT_KEYS = [
     "interface_template_list",
@@ -1302,6 +1301,49 @@ class TestUploadImageAttachment:
         dt = make_device_types(nb_api=mock_nb_api)
         result = dt.upload_image_attachment("http://nb", "token", "/nonexistent/img.png", "dcim.moduletype", 42)
         assert result is False
+
+
+class TestImageDirForYaml:
+    """Tests for the _image_dir_for_yaml module-level helper."""
+
+    def test_empty_src_returns_none(self):
+        from core.netbox_api import _image_dir_for_yaml
+
+        assert _image_dir_for_yaml("", "device-types", "elevation-images") is None
+
+    def test_unknown_src_returns_none(self):
+        from core.netbox_api import _image_dir_for_yaml
+
+        assert _image_dir_for_yaml("Unknown", "device-types", "elevation-images") is None
+
+    def test_missing_segment_returns_none(self):
+        from core.netbox_api import _image_dir_for_yaml
+
+        assert _image_dir_for_yaml("/some/path/without/segment/file.yaml", "device-types", "elevation-images") is None
+
+    def test_replaces_segment(self, tmp_path):
+        from core.netbox_api import _image_dir_for_yaml
+
+        src = str(tmp_path / "device-types" / "vendor" / "file.yaml")
+        result = _image_dir_for_yaml(src, "device-types", "elevation-images")
+        expected = tmp_path / "elevation-images" / "vendor"
+        assert result == expected
+
+    def test_replaces_last_occurrence_when_segment_appears_twice(self, tmp_path):
+        from core.netbox_api import _image_dir_for_yaml
+
+        src = str(tmp_path / "device-types" / "device-types" / "vendor" / "file.yaml")
+        result = _image_dir_for_yaml(src, "device-types", "elevation-images")
+        expected = tmp_path / "device-types" / "elevation-images" / "vendor"
+        assert result == expected
+
+    def test_module_types_segment(self, tmp_path):
+        from core.netbox_api import _image_dir_for_yaml
+
+        src = str(tmp_path / "module-types" / "vendor" / "file.yaml")
+        result = _image_dir_for_yaml(src, "module-types", "module-images")
+        expected = tmp_path / "module-images" / "vendor"
+        assert result == expected
 
 
 class TestDiscoverModuleImageFiles:

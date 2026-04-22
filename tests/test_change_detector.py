@@ -58,7 +58,6 @@ class TestChangeDetectorInit:
         assert detector.handle is handle
 
 
-
 class TestCompareDeviceTypeProperties:
     """Tests for TestCompareDeviceTypeProperties."""
 
