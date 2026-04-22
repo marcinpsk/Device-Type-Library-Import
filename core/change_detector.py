@@ -533,17 +533,35 @@ class ChangeDetector:
         else:
             self.handle.verbose_log(f"  ~ {dt.manufacturer_slug}/{dt.model}")
 
-        for pc in dt.property_changes:
-            if pc.property_name in IMAGE_PROPERTIES:
+        prop_changes = [pc for pc in dt.property_changes if pc.property_name not in IMAGE_PROPERTIES]
+        image_changes = [pc for pc in dt.property_changes if pc.property_name in IMAGE_PROPERTIES]
+
+        if prop_changes or image_changes:
+            self.handle.verbose_log("    Properties:")
+            pad = max((len(pc.property_name) for pc in prop_changes), default=0)
+            pad = min(pad, 30)
+            for pc in prop_changes:
+                name = f"{pc.property_name}:{'':{max(0, pad - len(pc.property_name))}}"
+                self.handle.verbose_log(f"      - {name} {pc.old_value}")
+                self.handle.verbose_log(f"      + {name} {pc.new_value}")
+            for pc in image_changes:
                 label = pc.property_name.replace("_", " ").title()
-                self.handle.verbose_log(f"      {label}: missing in NetBox (YAML defines image)")
-            else:
-                self.handle.verbose_log(f"      Property '{pc.property_name}': '{pc.old_value}' -> '{pc.new_value}'")
+                self.handle.verbose_log(f"      ~ {label}: missing in NetBox (YAML defines image)")
 
         if added:
             self.handle.verbose_log(f"      + {len(added)} new component(s)")
+            for comp in added:
+                self.handle.verbose_log(f"        + {comp.component_type}: {comp.component_name}")
         if changed:
             self.handle.verbose_log(f"      ~ {len(changed)} changed component(s)")
+            for comp in changed:
+                self.handle.verbose_log(f"        ~ {comp.component_type}: {comp.component_name}")
+                if comp.property_changes:
+                    pad = min(max(len(pc.property_name) for pc in comp.property_changes), 30)
+                    for pc in comp.property_changes:
+                        name = f"{pc.property_name}:{'':{max(0, pad - len(pc.property_name))}}"
+                        self.handle.verbose_log(f"            - {name} {pc.old_value}")
+                        self.handle.verbose_log(f"            + {name} {pc.new_value}")
         if removed:
             self.handle.log(f"      - {len(removed)} removed component(s) (not deleted without --remove-components)")
             for comp in removed:
