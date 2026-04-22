@@ -985,10 +985,10 @@ class NetBox:
             list[str]: Absolute paths of discovered image files; empty if the directory cannot
                 be derived or contains no recognised images.
         """
-        src_path = Path(src_file)
         image_dir = _image_dir_for_yaml(src_file, "module-types", "module-images")
         if image_dir is None:
             return []
+        src_path = Path(src_file)
         # Match `<stem>.<anything>` flat in the vendor directory (e.g. `LC.front.png`,
         # `LC.rear.jpg`, or legacy bare `LC.png`).
         image_files = glob.glob(str(image_dir / f"{src_path.stem}.*"))

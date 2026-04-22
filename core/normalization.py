@@ -24,17 +24,16 @@ def normalize_values(yaml_val, nb_val):
     if hasattr(nb_val, "value"):
         nb_val = nb_val.value
 
-    # Normalize empty string to None
-    if yaml_val == "":
-        yaml_val = None
-    if nb_val == "":
-        nb_val = None
-
-    # Strip trailing whitespace (YAML literal blocks add \n; editors add spaces)
+    # Strip trailing whitespace first (YAML literal blocks add \n; editors add spaces),
+    # then normalize empty/whitespace-only strings to None.
     if isinstance(yaml_val, str):
         yaml_val = yaml_val.rstrip()
     if isinstance(nb_val, str):
         nb_val = nb_val.rstrip()
+    if yaml_val == "":
+        yaml_val = None
+    if nb_val == "":
+        nb_val = None
 
     # Coerce numeric strings.  GraphQL / pynetbox serialise some numeric fields
     # as strings (e.g. "166.00" for int 166, "26.10" for float 26.1).  We

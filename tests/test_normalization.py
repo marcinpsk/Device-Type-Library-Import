@@ -17,6 +17,11 @@ class TestNormalizeValues:
         assert y is None
         assert n is None
 
+    def test_whitespace_only_normalized_to_none(self):
+        y, n = normalize_values("   ", "\t\n")
+        assert y is None
+        assert n is None
+
     def test_trailing_whitespace_stripped(self):
         y, n = normalize_values("hello  ", "world\n")
         assert y == "hello"
