@@ -151,6 +151,15 @@ no longer present in the YAML definition.
 
 We're happy about any pull requests!
 
+### Keeping import paths in sync
+
+`create_device_types` in `core/netbox_api.py` has three branches that run per device type: the
+`only_new` early-return path, the `update` path, and the default (creation) path. Each branch
+has its own image-progress block. The same three-branch pattern repeats in `create_module_types`.
+`create_rack_types` follows a similar existing/update/create structure but does **not** handle
+images, so image-handling changes only need to be applied to `create_device_types` and
+`create_module_types`.
+
 ## License
 
 MIT

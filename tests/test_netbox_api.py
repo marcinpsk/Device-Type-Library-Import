@@ -5,65 +5,8 @@ from core.netbox_api import (
     NetBox,
     DeviceTypes,
     _FrontPortRecordWithMappings,
-    _values_equal,
 )
 from helpers import paginate_dispatch
-
-
-class TestValuesEqual:
-    """Tests for the _values_equal normalization helper."""
-
-    def test_equal_strings(self):
-        assert _values_equal("abc", "abc")
-
-    def test_unequal_strings(self):
-        assert not _values_equal("abc", "xyz")
-
-    def test_none_vs_empty_string(self):
-        assert _values_equal(None, "")
-
-    def test_empty_string_vs_none(self):
-        assert _values_equal("", None)
-
-    def test_int_vs_float_string(self):
-        """NetBox returns weight as '166.00'; YAML has int 166."""
-        assert _values_equal(166, "166.00")
-
-    def test_float_vs_float_string(self):
-        assert _values_equal(26.1, "26.10")
-
-    def test_int_vs_float_string_different(self):
-        assert not _values_equal(166, "167.00")
-
-    def test_yaml_literal_block_trailing_newline(self):
-        """YAML '|' blocks append a trailing newline; NetBox strips it."""
-        assert _values_equal("line1\nline2\n", "line1\nline2")
-
-    def test_both_have_trailing_newline(self):
-        assert _values_equal("line1\n", "line1\n")
-
-    def test_bool_not_coerced(self):
-        assert _values_equal(True, True)
-        assert not _values_equal(True, False)
-
-    def test_type_error_in_coercion_returns_false(self):
-        """Regression: _values_equal must return False (not raise) on non-numeric coercions.
-
-        Covers netbox_api.py lines 65-66: the except (ValueError, TypeError) branch.
-        """
-
-        class Uncoercible:
-            def __eq__(self, other):
-                return NotImplemented
-
-            def __float__(self):
-                raise TypeError("cannot convert")
-
-        assert _values_equal(Uncoercible(), "anything") is False
-        assert _values_equal("1.0", Uncoercible()) is False
-        # Standard numeric coercion: "1" == 1 (yaml int vs netbox string)
-        assert _values_equal(1, "1") is True
-        assert _values_equal(1, "1.5") is False
 
 
 # All component list keys used by the GraphQL client for empty-response fallback.
@@ -1358,6 +1301,49 @@ class TestUploadImageAttachment:
         dt = make_device_types(nb_api=mock_nb_api)
         result = dt.upload_image_attachment("http://nb", "token", "/nonexistent/img.png", "dcim.moduletype", 42)
         assert result is False
+
+
+class TestImageDirForYaml:
+    """Tests for the _image_dir_for_yaml module-level helper."""
+
+    def test_empty_src_returns_none(self):
+        from core.netbox_api import _image_dir_for_yaml
+
+        assert _image_dir_for_yaml("", "device-types", "elevation-images") is None
+
+    def test_unknown_src_returns_none(self):
+        from core.netbox_api import _image_dir_for_yaml, _UNKNOWN_SRC
+
+        assert _image_dir_for_yaml(_UNKNOWN_SRC, "device-types", "elevation-images") is None
+
+    def test_missing_segment_returns_none(self):
+        from core.netbox_api import _image_dir_for_yaml
+
+        assert _image_dir_for_yaml("/some/path/without/segment/file.yaml", "device-types", "elevation-images") is None
+
+    def test_replaces_segment(self, tmp_path):
+        from core.netbox_api import _image_dir_for_yaml
+
+        src = str(tmp_path / "device-types" / "vendor" / "file.yaml")
+        result = _image_dir_for_yaml(src, "device-types", "elevation-images")
+        expected = tmp_path / "elevation-images" / "vendor"
+        assert result == expected
+
+    def test_replaces_last_occurrence_when_segment_appears_twice(self, tmp_path):
+        from core.netbox_api import _image_dir_for_yaml
+
+        src = str(tmp_path / "device-types" / "device-types" / "vendor" / "file.yaml")
+        result = _image_dir_for_yaml(src, "device-types", "elevation-images")
+        expected = tmp_path / "device-types" / "elevation-images" / "vendor"
+        assert result == expected
+
+    def test_module_types_segment(self, tmp_path):
+        from core.netbox_api import _image_dir_for_yaml
+
+        src = str(tmp_path / "module-types" / "vendor" / "file.yaml")
+        result = _image_dir_for_yaml(src, "module-types", "module-images")
+        expected = tmp_path / "module-images" / "vendor"
+        assert result == expected
 
 
 class TestDiscoverModuleImageFiles:

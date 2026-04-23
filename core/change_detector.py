@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from typing import Any, List, Optional
 from enum import Enum
 
+from core.normalization import normalize_values
+
 
 class ChangeType(Enum):
     """Types of changes that can be detected."""
@@ -184,57 +186,6 @@ class ChangeDetector:
 
         return report
 
-    @staticmethod
-    def _normalize_values(yaml_value, netbox_value):
-        """Normalize a pair of values for comparison.
-
-        Converts NetBox choice objects by reading .value, normalizes empty
-        strings to None on both sides, and strips trailing whitespace from
-        strings.
-
-        Args:
-            yaml_value: Value from parsed YAML data
-            netbox_value: Value from NetBox (pynetbox attribute)
-
-        Returns:
-            Tuple of (normalized_yaml_value, normalized_netbox_value)
-        """
-        # Handle NetBox choice fields (pynetbox Record objects with .value attribute)
-        if hasattr(netbox_value, "value"):
-            netbox_value = netbox_value.value
-
-        # Normalize empty string to None for comparison
-        if yaml_value == "":
-            yaml_value = None
-        if netbox_value == "":
-            netbox_value = None
-
-        # Normalize trailing whitespace for string comparisons (YAML often has trailing newlines)
-        if isinstance(yaml_value, str):
-            yaml_value = yaml_value.rstrip()
-        if isinstance(netbox_value, str):
-            netbox_value = netbox_value.rstrip()
-
-        # Coerce numeric strings for comparison (GraphQL serializes decimal fields as strings).
-        # Guard against bool since bool is a subclass of int; boolean fields (is_full_depth,
-        # mgmt_only, enabled) must never be coerced to float.
-        if isinstance(yaml_value, (int, float)) and not isinstance(yaml_value, bool) and isinstance(netbox_value, str):
-            try:
-                netbox_value = float(netbox_value)
-            except (ValueError, TypeError):
-                pass
-        elif (
-            isinstance(netbox_value, (int, float))
-            and not isinstance(netbox_value, bool)
-            and isinstance(yaml_value, str)
-        ):
-            try:
-                yaml_value = float(yaml_value)
-            except (ValueError, TypeError):
-                pass
-
-        return yaml_value, netbox_value
-
     def _compare_device_type_properties(self, yaml_data: dict, netbox_dt) -> List[PropertyChange]:
         """Compare YAML device type properties against NetBox device type.
 
@@ -257,7 +208,7 @@ class ChangeDetector:
             yaml_value = yaml_data.get(prop)
             netbox_value = getattr(netbox_dt, prop, None)
 
-            yaml_value, netbox_value = self._normalize_values(yaml_value, netbox_value)
+            yaml_value, netbox_value = normalize_values(yaml_value, netbox_value)
 
             if yaml_value != netbox_value:
                 changes.append(
@@ -277,6 +228,10 @@ class ChangeDetector:
         YAML uses boolean flags (front_image: true) meaning "an image should exist",
         while NetBox stores a URL string (or None). This only flags missing images
         (YAML=true, NetBox=empty). Omitted keys and false values are ignored.
+
+        Note: this only detects images missing from NetBox; modifications to local
+        files with the same name are not redetected because NetBox stores only the
+        URL, not a content hash.
 
         Args:
             yaml_data: Parsed YAML device type dictionary
@@ -462,7 +417,7 @@ class ChangeDetector:
             yaml_value = yaml_comp.get(prop)
             netbox_value = getattr(netbox_comp, prop, None)
 
-            yaml_value, netbox_value = self._normalize_values(yaml_value, netbox_value)
+            yaml_value, netbox_value = normalize_values(yaml_value, netbox_value)
 
             if yaml_value != netbox_value:
                 changes.append(
@@ -518,6 +473,19 @@ class ChangeDetector:
 
         return ct_removed
 
+    def _log_property_diffs(self, prop_changes: List[PropertyChange], indent: str) -> None:
+        """Emit diff-u style lines for *prop_changes* at the given *indent*."""
+        if not prop_changes:
+            return
+        pad = min(max(len(pc.property_name) for pc in prop_changes), 30)
+        for pc in prop_changes:
+            name = f"{pc.property_name}:{'':{max(0, pad - len(pc.property_name))}}"
+            blank = " " * len(name)
+            for i, line in enumerate(str(pc.old_value).splitlines() or [""]):
+                self.handle.verbose_log(f"{indent}- {name if i == 0 else blank} {line}")
+            for i, line in enumerate(str(pc.new_value).splitlines() or [""]):
+                self.handle.verbose_log(f"{indent}+ {name if i == 0 else blank} {line}")
+
     def _log_modified_device_details(self, dt: DeviceTypeChange):
         """Log the per-device detail section for a single modified device type.
 
@@ -533,17 +501,25 @@ class ChangeDetector:
         else:
             self.handle.verbose_log(f"  ~ {dt.manufacturer_slug}/{dt.model}")
 
-        for pc in dt.property_changes:
-            if pc.property_name in IMAGE_PROPERTIES:
+        prop_changes = [pc for pc in dt.property_changes if pc.property_name not in IMAGE_PROPERTIES]
+        image_changes = [pc for pc in dt.property_changes if pc.property_name in IMAGE_PROPERTIES]
+
+        if prop_changes or image_changes:
+            self.handle.verbose_log("    Properties:")
+            self._log_property_diffs(prop_changes, "      ")
+            for pc in image_changes:
                 label = pc.property_name.replace("_", " ").title()
-                self.handle.verbose_log(f"      {label}: missing in NetBox (YAML defines image)")
-            else:
-                self.handle.verbose_log(f"      Property '{pc.property_name}': '{pc.old_value}' -> '{pc.new_value}'")
+                self.handle.verbose_log(f"      ~ {label}: missing in NetBox (YAML defines image)")
 
         if added:
             self.handle.verbose_log(f"      + {len(added)} new component(s)")
+            for comp in added:
+                self.handle.verbose_log(f"        + {comp.component_type}: {comp.component_name}")
         if changed:
             self.handle.verbose_log(f"      ~ {len(changed)} changed component(s)")
+            for comp in changed:
+                self.handle.verbose_log(f"        ~ {comp.component_type}: {comp.component_name}")
+                self._log_property_diffs(comp.property_changes, "            ")
         if removed:
             self.handle.log(f"      - {len(removed)} removed component(s) (not deleted without --remove-components)")
             for comp in removed:

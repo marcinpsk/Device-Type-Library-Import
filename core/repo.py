@@ -239,14 +239,6 @@ class DTLRepo:
     for locating YAML device and module type files, and exposes a parallel file parser.
     """
 
-    def __new__(cls, *args, **kwargs):
-        """Allocate and return a new instance of the class using the default object allocator.
-
-        Returns:
-            instance: A newly created instance of the class `cls`.
-        """
-        return super().__new__(cls)
-
     def __init__(self, args, repo_path, exception_handler):
         """Initialize repository management, updating an existing clone or creating a new one.
 

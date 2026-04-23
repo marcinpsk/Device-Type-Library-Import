@@ -58,47 +58,6 @@ class TestChangeDetectorInit:
         assert detector.handle is handle
 
 
-class TestNormalizeValues:
-    """Tests for TestNormalizeValues."""
-
-    def test_netbox_choice_object_reads_value(self):
-        choice = MagicMock()
-        choice.value = "1000base-t"
-        y, n = ChangeDetector._normalize_values("1000base-t", choice)
-        assert n == "1000base-t"
-
-    def test_empty_string_normalized_to_none(self):
-        y, n = ChangeDetector._normalize_values("", "")
-        assert y is None
-        assert n is None
-
-    def test_trailing_whitespace_stripped(self):
-        y, n = ChangeDetector._normalize_values("hello  ", "world\n")
-        assert y == "hello"
-        assert n == "world"
-
-    def test_numeric_yaml_coerces_string_netbox(self):
-        y, n = ChangeDetector._normalize_values(1.0, "1.0")
-        assert n == 1.0
-
-    def test_numeric_netbox_coerces_string_yaml(self):
-        y, n = ChangeDetector._normalize_values("2.5", 2.5)
-        assert y == 2.5
-
-    def test_bool_not_coerced(self):
-        y, n = ChangeDetector._normalize_values(True, "1")
-        assert y is True
-        assert n == "1"
-
-    def test_non_numeric_string_netbox_stays_string(self):
-        y, n = ChangeDetector._normalize_values(1.0, "notanumber")
-        assert n == "notanumber"
-
-    def test_non_numeric_string_yaml_stays_string(self):
-        y, n = ChangeDetector._normalize_values("notanumber", 1.0)
-        assert y == "notanumber"
-
-
 class TestCompareDeviceTypeProperties:
     """Tests for TestCompareDeviceTypeProperties."""
 

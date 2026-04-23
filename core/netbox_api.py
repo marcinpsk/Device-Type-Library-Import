@@ -13,6 +13,7 @@ from pathlib import Path
 
 from core.change_detector import COMPONENT_ALIASES, ChangeType
 from core.graphql_client import GraphQLError, NetBoxGraphQLClient
+from core.normalization import values_equal
 
 
 def _build_auth_header(token):
@@ -26,6 +27,10 @@ _RETRYABLE_EXCEPTIONS = (requests.exceptions.ConnectionError, requests.exception
 
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = (2, 5, 10)  # seconds to wait before each retry attempt
+
+# Sentinel used when a YAML record has no "src" key (e.g. synthesised entries).
+# _image_dir_for_yaml treats this value as "no path known" and returns None.
+_UNKNOWN_SRC = "Unknown"
 
 
 def _retry_on_connection_error(func, *args, **kwargs):
@@ -62,37 +67,6 @@ IMAGE_EXTENSIONS = {
 FILTER_CHUNK_SIZE = 200
 
 
-def _values_equal(yaml_val, nb_val):
-    """Compare a YAML value with a NetBox/GraphQL value with normalization.
-
-    Handles type mismatches common between YAML and GraphQL responses:
-    numeric strings vs ints/floats, empty string vs None, and trailing
-    whitespace/newlines added by YAML literal-block scalars (``|``).
-    """
-    # Normalize empty string to None
-    if yaml_val == "":
-        yaml_val = None
-    if nb_val == "":
-        nb_val = None
-    # YAML literal-block scalars (|) append a trailing newline; NetBox strips it
-    if isinstance(yaml_val, str):
-        yaml_val = yaml_val.rstrip("\n")
-    if isinstance(nb_val, str):
-        nb_val = nb_val.rstrip("\n")
-    # Coerce numeric strings (GraphQL serializes some fields as strings, e.g. "166.00" for int 166)
-    if isinstance(yaml_val, (int, float)) and not isinstance(yaml_val, bool) and isinstance(nb_val, str):
-        try:
-            tmp = float(nb_val)
-            # Only cast to int if the float value is integral (avoid truncating "19.5" to 19)
-            if isinstance(yaml_val, int):
-                nb_val = int(tmp) if tmp.is_integer() else tmp
-            else:
-                nb_val = tmp
-        except (ValueError, TypeError):
-            pass
-    return yaml_val == nb_val
-
-
 def _chunked(iterable, size):
     """Yield successive *size*-length chunks from *iterable*.
 
@@ -106,15 +80,29 @@ def _chunked(iterable, size):
         yield chunk
 
 
+def _image_dir_for_yaml(src_file: str, src_segment: str, dst_segment: str) -> "Path | None":
+    """Derive an image directory path from a YAML source file path.
+
+    Replaces the last occurrence of *src_segment* in the parent-directory parts of
+    *src_file* with *dst_segment* and returns the resulting Path.  Returns None when
+    *src_file* is empty, equals ``_UNKNOWN_SRC``, or does not contain *src_segment*.
+    """
+    if not src_file or src_file == _UNKNOWN_SRC:
+        return None
+    parts = list(Path(src_file).parent.parts)
+    try:
+        idx = len(parts) - 1 - parts[::-1].index(src_segment)
+    except ValueError:
+        return None
+    parts[idx] = dst_segment
+    return Path(*parts)
+
+
 # from pynetbox import RequestError as APIRequestError
 
 
 class NetBox:
     """Interface to the NetBox API for importing device and module types."""
-
-    def __new__(cls, *args, **kwargs):
-        """Allocate a new NetBox instance using the default object allocator."""
-        return super().__new__(cls)
 
     def __init__(self, settings, handle):
         """Initialize NetBox API connection, verify version compatibility, and load manufacturers/device types.
@@ -299,14 +287,8 @@ class NetBox:
                 local file path for images that were found on disk.
         """
         saved_images = {}
-        _src = Path(src_file)
-        _parts = list(_src.parent.parts)
-        try:
-            _idx = len(_parts) - 1 - _parts[::-1].index("device-types")
-            _parts[_idx] = "elevation-images"
-            image_base = str(Path(*_parts))
-        except ValueError:
-            image_base = None  # "device-types" not in path; skip image discovery
+        _image_base_path = _image_dir_for_yaml(src_file, "device-types", "elevation-images")
+        image_base = str(_image_base_path) if _image_base_path is not None else None
         for i in ["front_image", "rear_image"]:
             if i in device_type:
                 if device_type[i] and image_base is not None and device_type.get("slug"):
@@ -349,9 +331,6 @@ class NetBox:
             dt_change: ChangeEntry for this device type, or None if no changes detected.
             remove_components (bool): When True (with *dt_change*), remove components
                 absent from the YAML.
-
-        Returns:
-            bool: Always True; signals the caller to ``continue`` to the next device type.
         """
         if saved_images:
             if "front_image" in saved_images and getattr(dt, "front_image", None):
@@ -370,7 +349,7 @@ class NetBox:
                 f"Device Type Cached: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
                 f"Skipping updates (images already handled)."
             )
-            return True
+            return
 
         if dt_change is not None:
             # Apply property changes (exclude image properties — uploads are handled separately)
@@ -416,7 +395,6 @@ class NetBox:
                 f"Device Type Cached: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
                 "No pending updates; skipping component creation."
             )
-        return True
 
     def _create_new_device_type(self, device_type, src_file):
         """Attempt to create a new device type record in NetBox.
@@ -544,7 +522,7 @@ class NetBox:
 
             if dt is not None:
                 dt_change = change_by_key.get((manufacturer_slug, device_type.get("model", "")))
-                if self._handle_existing_device_type(
+                self._handle_existing_device_type(
                     dt,
                     device_type,
                     manufacturer_slug,
@@ -552,8 +530,8 @@ class NetBox:
                     only_new,
                     dt_change,
                     remove_components,
-                ):
-                    continue
+                )
+                continue
 
             # Device type doesn't exist - create it
             dt, should_continue = self._create_new_device_type(device_type, src_file)
@@ -599,7 +577,7 @@ class NetBox:
 
         iterator = progress if progress is not None else rack_types
         for rack_type in iterator:
-            src_file = rack_type.get("src", "Unknown")
+            src_file = rack_type.get("src", _UNKNOWN_SRC)
             if "src" in rack_type:
                 del rack_type["src"]
 
@@ -633,7 +611,7 @@ class NetBox:
                 updates = {
                     field: rack_type[field]
                     for field in fields_to_compare
-                    if field in rack_type and not _values_equal(rack_type[field], getattr(existing, field, None))
+                    if field in rack_type and not values_equal(rack_type[field], getattr(existing, field, None))
                 }
                 if updates:
                     try:
@@ -892,7 +870,7 @@ class NetBox:
 
         iterator = progress if progress is not None else module_types
         for curr_mt in iterator:
-            src_file = curr_mt.get("src", "Unknown")
+            src_file = curr_mt.get("src", _UNKNOWN_SRC)
             if "src" in curr_mt:
                 del curr_mt["src"]
             if not self._process_single_module_type(
@@ -922,16 +900,10 @@ class NetBox:
         count = 0
         for device_type in device_types_to_add:
             src_file = device_type.get("src", "")
-            if not src_file:
+            _image_base_path = _image_dir_for_yaml(src_file, "device-types", "elevation-images")
+            if _image_base_path is None:
                 continue
-            _src = Path(src_file)
-            _parts = list(_src.parent.parts)
-            try:
-                _idx = len(_parts) - 1 - _parts[::-1].index("device-types")
-                _parts[_idx] = "elevation-images"
-                image_base = str(Path(*_parts))
-            except ValueError:
-                continue
+            image_base = str(_image_base_path)
 
             manufacturer_slug = device_type.get("manufacturer", {}).get("slug", "")
             device_slug = device_type.get("slug", "")
@@ -1016,20 +988,10 @@ class NetBox:
             list[str]: Absolute paths of discovered image files; empty if the directory cannot
                 be derived or contains no recognised images.
         """
-        if not src_file or src_file == "Unknown":
+        image_dir = _image_dir_for_yaml(src_file, "module-types", "module-images")
+        if image_dir is None:
             return []
-
         src_path = Path(src_file)
-        parts = list(src_path.parent.parts)
-        try:
-            # Replace the last occurrence — handles edge cases where
-            # "module-types" could appear earlier in the path as well.
-            idx = len(parts) - 1 - parts[::-1].index("module-types")
-        except ValueError:
-            return []
-
-        parts[idx] = "module-images"
-        image_dir = Path(*parts)
         # Match `<stem>.<anything>` flat in the vendor directory (e.g. `LC.front.png`,
         # `LC.rear.jpg`, or legacy bare `LC.png`).
         image_files = glob.glob(str(image_dir / f"{src_path.stem}.*"))
@@ -1151,10 +1113,6 @@ class _FrontPortRecordWithMappings:
 
 class DeviceTypes:
     """Manages caching and creation of device-type component templates in NetBox."""
-
-    def __new__(cls, *args, **kwargs):
-        """Allocate a new DeviceTypes instance using the default object allocator."""
-        return super().__new__(cls)
 
     def __init__(
         self,
