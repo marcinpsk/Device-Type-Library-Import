@@ -116,18 +116,20 @@ class TestValuesEqual:
         assert not values_equal(True, "1")
         assert not values_equal(True, "1.0")
 
-    def test_type_error_in_coercion_returns_false(self):
-        """Regression: must return False (not raise) on non-numeric coercions."""
+    def test_type_error_in_coercion_is_swallowed(self):
+        """TypeError from float() during coercion is caught; values compare unequal."""
 
-        class Uncoercible:
-            def __eq__(self, other):
-                return NotImplemented
+        class BadStr(str):
+            """str subclass whose __float__ raises TypeError."""
 
             def __float__(self):
                 raise TypeError("cannot convert")
 
-        assert values_equal(Uncoercible(), "anything") is False
-        assert values_equal("1.0", Uncoercible()) is False
+        # yaml side is numeric, nb side is a str subclass — triggers the coercion
+        # branch and calls float(nb_val), which invokes BadStr.__float__.
+        assert values_equal(1, BadStr("bad")) is False
+        assert values_equal(1.0, BadStr("bad")) is False
+        # Sanity: normal numeric-vs-string coercion still works
         assert values_equal(1, "1") is True
         assert values_equal(1, "1.5") is False
 

@@ -28,6 +28,10 @@ _RETRYABLE_EXCEPTIONS = (requests.exceptions.ConnectionError, requests.exception
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = (2, 5, 10)  # seconds to wait before each retry attempt
 
+# Sentinel used when a YAML record has no "src" key (e.g. synthesised entries).
+# _image_dir_for_yaml treats this value as "no path known" and returns None.
+_UNKNOWN_SRC = "Unknown"
+
 
 def _retry_on_connection_error(func, *args, **kwargs):
     """Call *func* with retries on transient connection errors.
@@ -81,10 +85,9 @@ def _image_dir_for_yaml(src_file: str, src_segment: str, dst_segment: str) -> "P
 
     Replaces the last occurrence of *src_segment* in the parent-directory parts of
     *src_file* with *dst_segment* and returns the resulting Path.  Returns None when
-    *src_file* is empty, is the sentinel ``"Unknown"``, or does not contain
-    *src_segment*.
+    *src_file* is empty, equals ``_UNKNOWN_SRC``, or does not contain *src_segment*.
     """
-    if not src_file or src_file == "Unknown":
+    if not src_file or src_file == _UNKNOWN_SRC:
         return None
     parts = list(Path(src_file).parent.parts)
     try:
@@ -574,7 +577,7 @@ class NetBox:
 
         iterator = progress if progress is not None else rack_types
         for rack_type in iterator:
-            src_file = rack_type.get("src", "Unknown")
+            src_file = rack_type.get("src", _UNKNOWN_SRC)
             if "src" in rack_type:
                 del rack_type["src"]
 
@@ -867,7 +870,7 @@ class NetBox:
 
         iterator = progress if progress is not None else module_types
         for curr_mt in iterator:
-            src_file = curr_mt.get("src", "Unknown")
+            src_file = curr_mt.get("src", _UNKNOWN_SRC)
             if "src" in curr_mt:
                 del curr_mt["src"]
             if not self._process_single_module_type(

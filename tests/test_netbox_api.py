@@ -1312,9 +1312,9 @@ class TestImageDirForYaml:
         assert _image_dir_for_yaml("", "device-types", "elevation-images") is None
 
     def test_unknown_src_returns_none(self):
-        from core.netbox_api import _image_dir_for_yaml
+        from core.netbox_api import _image_dir_for_yaml, _UNKNOWN_SRC
 
-        assert _image_dir_for_yaml("Unknown", "device-types", "elevation-images") is None
+        assert _image_dir_for_yaml(_UNKNOWN_SRC, "device-types", "elevation-images") is None
 
     def test_missing_segment_returns_none(self):
         from core.netbox_api import _image_dir_for_yaml
