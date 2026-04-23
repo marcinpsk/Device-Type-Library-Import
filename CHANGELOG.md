@@ -2,6 +2,39 @@
 
 <!-- version list -->
 
+## v1.4.0 (2026-04-23)
+
+### Bug Fixes
+
+- Centralize _unknown_src sentinel and fix coercion typeerror test (#61, [`0d74d42`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/0d74d429efece9ef9bbb7828a6b24ace88e6348d))
+
+
+### Chores
+
+- **ci**: Bump astral-sh/setup-uv in the github-actions group (#59, [`5a340e3`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/5a340e389ba8fdc2c4b19605fd87efc2f84c28ab))
+- **deps**: Bump ruff from 0.15.10 to 0.15.11 in the python-deps group (#60, [`a761779`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/a76177932516f2ab505443fb0f8544dc6e3c0546))
+- Document --slugs argument (#58, [`633c354`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/633c3540d4b913ae101aa66e15a19445261cf9c4))
+- Small fixes (#58, [`633c354`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/633c3540d4b913ae101aa66e15a19445261cf9c4))
+- Add info about v1 vs v2 tokens in readme (#57, [`126e445`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/126e445c97d6004937407410ca87ad04b908a388))
+- **deps**: Bump the python-deps group with 3 updates (#53, [`85127a3`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/85127a39e8f7e8f7be29a4a206c2b9cf56cae6c3))
+
+
+### Features
+
+- Improve --verbose diff output for modified device types (#61, [`0d74d42`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/0d74d429efece9ef9bbb7828a6b24ace88e6348d))
+- Improve --verbose diff output for modified device types (#61, [`0d74d42`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/0d74d429efece9ef9bbb7828a6b24ace88e6348d))
+
+
+### Refactoring
+
+- Extract shared normalize_values / values_equal helper (#61, [`0d74d42`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/0d74d429efece9ef9bbb7828a6b24ace88e6348d))
+
+
+
+### Contributors
+
+@dependabot[bot], @Frigyes06, @marcinpsk, Aaron Axvig
+
 ## v1.3.3 (2026-04-15)
 
 ### Bug Fixes
