@@ -970,12 +970,11 @@ class NetBox:
                 )
                 return False
 
-            # Module type was just created — upload images now that the object exists
-            # and its id can be used as the attachment target.
-            self._upload_module_type_images(module_type_res, src_file, module_type_existing_images)
-
         if only_new and not is_new:
             return True
+
+        # Upload images for both cached and newly created module types
+        self._upload_module_type_images(module_type_res, src_file, module_type_existing_images)
 
         # Module component keys often use hyphens in YAML
         if "interfaces" in curr_mt:
@@ -1898,7 +1897,7 @@ class DeviceTypes:
         ``filter()`` call per chunk of up to ``FILTER_CHUNK_SIZE`` module-type IDs
         (filtering by module_type_id=[...]) and distributes the returned items into
         per-module-type cache entries so that subsequent ``_get_cached_or_fetch``
-        calls hit the cache.
+        calls hit the cache.  All component types are fetched in parallel.
         """
         if not module_type_ids:
             return
@@ -1915,18 +1914,31 @@ class DeviceTypes:
         filter_key = "module_type_id" if self.new_filters else "moduletype_id"
         id_list = sorted(module_type_ids)
 
-        for endpoint_attr, cache_name in targets:
-            endpoint = getattr(self.netbox.dcim, endpoint_attr)
+        # Pre-populate empty entries so cache hits return {} for IDs with no components.
+        for _, cache_name in targets:
             cache = self.cached_components.setdefault(cache_name, {})
-            # Pre-populate empty entries so cache hits return {} for IDs with no components
             for mid in id_list:
                 cache.setdefault(("module", mid), {})
+
+        def _fetch_one(endpoint_attr, cache_name):
+            endpoint = getattr(self.netbox.dcim, endpoint_attr)
+            results = []
             for chunk in _chunked(id_list, FILTER_CHUNK_SIZE):
                 for item in endpoint.filter(**{filter_key: chunk}):
                     module_type = getattr(item, "module_type", None)
                     if module_type is None:
                         continue
-                    mid = module_type.id
+                    if cache_name == "front_port_templates":
+                        item = _FrontPortRecordWithMappings(item)
+                    results.append((module_type.id, item))
+            return cache_name, results
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(targets)) as executor:
+            futures = {executor.submit(_fetch_one, ea, cn): (ea, cn) for ea, cn in targets}
+            for future in concurrent.futures.as_completed(futures):
+                cache_name, results = future.result()
+                cache = self.cached_components[cache_name]
+                for mid, item in results:
                     cache.setdefault(("module", mid), {})[item.name] = item
 
     def _create_generic(
