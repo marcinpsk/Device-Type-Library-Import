@@ -654,7 +654,7 @@ def _log_run_summary(handle, netbox, start_time):
     handle.log(f"{netbox.counter['components_removed']} components removed")
     handle.verbose_log(f"{netbox.counter['images']} images uploaded")
     handle.log(f"{netbox.counter['manufacturer']} manufacturers created")
-    if settings.NETBOX_FEATURES["modules"]:
+    if netbox.modules:
         handle.log(f"{netbox.counter['module_added']} modules created")
         handle.log(f"{netbox.counter['module_updated']} modules updated")
     if netbox.rack_types:

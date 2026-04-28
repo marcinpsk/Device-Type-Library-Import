@@ -803,15 +803,14 @@ class TestMain:
             nb_dt_import.main()
 
     def test_settings_netbox_features_modules_logs_module_count(self, nb_dt_import):
-        """When NETBOX_FEATURES['modules'] is True, module_added counter is logged."""
+        """When netbox.modules is True, module_added/updated counters are logged."""
         with (
             patch.object(sys, "argv", ["nb-dt-import.py", "--only-new"]),
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
-            patch.object(nb_dt_import.settings, "NETBOX_FEATURES", {"modules": True}),
         ):
             MockRepo.return_value = _make_mock_repo()
-            MockNetBox.return_value = _make_mock_netbox()
+            MockNetBox.return_value = _make_mock_netbox(modules=True)
 
             nb_dt_import.main()  # should not raise
 
