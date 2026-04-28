@@ -516,10 +516,14 @@ def test_filter_actionable_module_types_skips_unchanged_existing_module(
 
     existing_interface = MagicMock()
     existing_interface.name = "xe-0/0/0"
-    existing_interface.module_type.id = 42
-    mock_nb_api.dcim.interface_templates.filter.return_value = [existing_interface]
 
     nb = NetBox(mock_settings, mock_settings.handle)
+    # Simulate the global GraphQL preload having already populated the cache for module 42.
+    nb.device_types._global_preload_done = True
+    nb.device_types.cached_components["interface_templates"] = {
+        ("module", 42): {"xe-0/0/0": existing_interface}
+    }
+
     module_types = [
         {
             "manufacturer": {"slug": "juniper"},
@@ -561,9 +565,11 @@ def test_filter_actionable_module_types_includes_module_with_missing_component(
         }
     )
 
-    mock_nb_api.dcim.interface_templates.filter.return_value = []
-
     nb = NetBox(mock_settings, mock_settings.handle)
+    # Global preload done; module 42 has no interfaces cached → component is missing.
+    nb.device_types._global_preload_done = True
+    nb.device_types.cached_components["interface_templates"] = {("module", 42): {}}
+
     module_type = {
         "manufacturer": {"slug": "juniper"},
         "model": "Linecard 1",

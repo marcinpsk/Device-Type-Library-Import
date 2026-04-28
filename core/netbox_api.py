@@ -785,8 +785,9 @@ class NetBox:
         """Determine which module types need to be created or updated in NetBox.
 
         For ``only_new=True``, returns only module types absent from NetBox. Otherwise,
-        bulk-preloads component caches for all existing module types and includes any
-        whose images or components differ from NetBox.
+        ensures the component cache is populated via the global GraphQL preload (running
+        it on demand if device-type processing already ran it) and includes any module
+        types whose images, scalar properties, or components differ from NetBox.
 
         Args:
             module_types (list[dict]): Parsed YAML module-type dicts.
@@ -808,27 +809,19 @@ class NetBox:
         actionable_module_types = []
         # Collects (mfr_slug, model, [(field, old_val, new_val)]) for diff-u logging.
         changed_property_log = []
-        component_keys = (
-            "interfaces",
-            "power-ports",
-            "console-ports",
-            "power-outlets",
-            "console-server-ports",
-            "rear-ports",
-            "front-ports",
-        )
 
-        # Bulk-preload components for all existing module types so the per-module
-        # loop below hits the cache instead of issuing individual API calls.
+        # Ensure the component cache is populated with GraphQL data (which carries correct
+        # mappings for front-port templates).  The global preload already ran during device-type
+        # processing in normal mode; this call is a no-op then.  When no device types were
+        # present (e.g. vendor-filtered runs or --only-new was used for device types) the
+        # preload is triggered here so module-type comparisons still hit accurate cache data.
+        if not self.device_types._global_preload_done:
+            self.device_types.preload_all_components()
+
         existing_module_map = {}
-        existing_module_ids = set()
         for module_type in module_types:
             existing_module = self._find_existing_module_type(module_type, all_module_types)
             existing_module_map[id(module_type)] = existing_module
-            if existing_module is not None:
-                existing_module_ids.add(existing_module.id)
-        if existing_module_ids:
-            self.device_types.preload_module_type_components(existing_module_ids, component_keys)
 
         detector = ChangeDetector(self.device_types, self.handle)
 
@@ -1308,6 +1301,7 @@ class DeviceTypes:
         self.m2m_front_ports = m2m_front_ports
         self.max_threads = max_threads
         self.cached_components = {}
+        self._global_preload_done = False
         self._image_progress = None
         self.existing_device_types, self.existing_device_types_by_slug = self.get_device_types()
 
@@ -1529,9 +1523,11 @@ class DeviceTypes:
                 preload_job=preload_job,
                 progress=progress,
             )
+            self._global_preload_done = True
             return
 
         self._preload_global(components, progress_wrapper, progress=progress)
+        self._global_preload_done = True
 
     def _preload_track_progress(
         self,
