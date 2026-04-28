@@ -888,7 +888,8 @@ class NetBox:
         """Apply pending field updates to an existing module type in NetBox.
 
         Returns:
-            bool: False on error, True otherwise (including when no updates are needed).
+            tuple[bool, bool]: ``(success, updated)`` where *success* is False on error and
+                *updated* is True when at least one field was actually patched.
         """
         updates = {
             field: curr_mt[field]
@@ -896,7 +897,7 @@ class NetBox:
             if field in curr_mt and not values_equal(curr_mt[field], getattr(module_type_res, field, None))
         }
         if not updates:
-            return True
+            return True, False
         try:
             _retry_on_connection_error(self.netbox.dcim.module_types.update, [{"id": module_type_res.id, **updates}])
             self.counter["module_updated"] += 1
@@ -907,29 +908,35 @@ class NetBox:
             )
         except pynetbox.RequestError as excep:
             self.handle.log(f"Error updating Module Type: {excep.error} (Context: {src_file})")
-            return False
+            return False, False
         except _RETRYABLE_EXCEPTIONS as e:
             self.handle.log(
                 f"Connection error updating Module Type after {_MAX_RETRIES} retries: {e} (Context: {src_file})"
             )
-            return False
-        return True
+            return False, False
+        return True, True
 
     def _process_single_module_type(self, curr_mt, src_file, all_module_types, module_type_existing_images, only_new):
-        """Find or create a single module type and create its component templates.
+        """Find or create a single module type and create or update its component templates.
+
+        For new module types all component templates are created directly.  For existing
+        module types in update mode (``only_new=False``) scalar properties are patched and
+        component changes (additions, modifications) are applied via
+        :meth:`DeviceTypes.update_components`.
 
         Args:
             curr_mt (dict): Parsed YAML module-type dict (with ``src`` key already removed).
             src_file (str): Source file path for error messages and image discovery.
             all_module_types (dict): Existing module types cache; updated in-place on creation.
             module_type_existing_images (dict): Existing image map by module type ID.
-            only_new (bool): When True, skip component creation for existing module types.
+            only_new (bool): When True, skip all updates for existing module types.
 
         Returns:
             bool: False if an error occurred and the caller should skip to the next iteration;
                 True otherwise.
         """
         is_new = False
+        properties_updated = False
         module_type_res = self._find_existing_module_type(curr_mt, all_module_types)
         if module_type_res is not None:
             self.handle.verbose_log(
@@ -941,7 +948,8 @@ class NetBox:
             # NetBox so the attachment POST can reference its id immediately).
             self._upload_module_type_images(module_type_res, src_file, module_type_existing_images)
             if not only_new:
-                if not self._try_update_module_type(curr_mt, module_type_res, src_file):
+                ok, properties_updated = self._try_update_module_type(curr_mt, module_type_res, src_file)
+                if not ok:
                     return False
         else:
             try:
@@ -966,30 +974,49 @@ class NetBox:
         if only_new and not is_new:
             return True
 
-        # Upload images for both cached and newly created module types
-        self._upload_module_type_images(module_type_res, src_file, module_type_existing_images)
-
-        # Module component keys often use hyphens in YAML
-        if "interfaces" in curr_mt:
-            self.device_types.create_module_interfaces(curr_mt["interfaces"], module_type_res.id, context=src_file)
-        if "power-ports" in curr_mt:
-            self.device_types.create_module_power_ports(curr_mt["power-ports"], module_type_res.id, context=src_file)
-        if "console-ports" in curr_mt:
-            self.device_types.create_module_console_ports(
-                curr_mt["console-ports"], module_type_res.id, context=src_file
-            )
-        if "power-outlets" in curr_mt:
-            self.device_types.create_module_power_outlets(
-                curr_mt["power-outlets"], module_type_res.id, context=src_file
-            )
-        if "console-server-ports" in curr_mt:
-            self.device_types.create_module_console_server_ports(
-                curr_mt["console-server-ports"], module_type_res.id, context=src_file
-            )
-        if "rear-ports" in curr_mt:
-            self.device_types.create_module_rear_ports(curr_mt["rear-ports"], module_type_res.id, context=src_file)
-        if "front-ports" in curr_mt:
-            self.device_types.create_module_front_ports(curr_mt["front-ports"], module_type_res.id, context=src_file)
+        if is_new:
+            # New module type: upload images and create all component templates directly.
+            self._upload_module_type_images(module_type_res, src_file, module_type_existing_images)
+            if "interfaces" in curr_mt:
+                self.device_types.create_module_interfaces(
+                    curr_mt["interfaces"], module_type_res.id, context=src_file
+                )
+            if "power-ports" in curr_mt:
+                self.device_types.create_module_power_ports(
+                    curr_mt["power-ports"], module_type_res.id, context=src_file
+                )
+            if "console-ports" in curr_mt:
+                self.device_types.create_module_console_ports(
+                    curr_mt["console-ports"], module_type_res.id, context=src_file
+                )
+            if "power-outlets" in curr_mt:
+                self.device_types.create_module_power_outlets(
+                    curr_mt["power-outlets"], module_type_res.id, context=src_file
+                )
+            if "console-server-ports" in curr_mt:
+                self.device_types.create_module_console_server_ports(
+                    curr_mt["console-server-ports"], module_type_res.id, context=src_file
+                )
+            if "rear-ports" in curr_mt:
+                self.device_types.create_module_rear_ports(
+                    curr_mt["rear-ports"], module_type_res.id, context=src_file
+                )
+            if "front-ports" in curr_mt:
+                self.device_types.create_module_front_ports(
+                    curr_mt["front-ports"], module_type_res.id, context=src_file
+                )
+        else:
+            # Existing module type in update mode: detect and apply component changes.
+            # The global GraphQL cache is already populated, so _compare_components is a
+            # pure dict-lookup with no API calls.
+            detector = ChangeDetector(self.device_types, self.handle)
+            component_changes = detector._compare_components(curr_mt, module_type_res.id, parent_type="module")
+            if component_changes:
+                self.device_types.update_components(
+                    curr_mt, module_type_res.id, component_changes, parent_type="module"
+                )
+                if not properties_updated:
+                    self.counter["module_updated"] += 1
         return True
 
     def create_module_types(
