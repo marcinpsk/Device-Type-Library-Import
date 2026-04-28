@@ -878,6 +878,10 @@ class NetBox:
                 f"Module Type Cached: {module_type_res.manufacturer.name} - "
                 + f"{module_type_res.model} - {module_type_res.id}"
             )
+            # Upload images before the scalar PATCH so attachments are created
+            # even if the property update later fails (module already exists in
+            # NetBox so the attachment POST can reference its id immediately).
+            self._upload_module_type_images(module_type_res, src_file, module_type_existing_images)
             if not only_new:
                 if not self._try_update_module_type(curr_mt, module_type_res, src_file):
                     return False
@@ -901,8 +905,9 @@ class NetBox:
                 )
                 return False
 
-        # Upload images for both cached and newly created module types
-        self._upload_module_type_images(module_type_res, src_file, module_type_existing_images)
+            # Module type was just created — upload images now that the object exists
+            # and its id can be used as the attachment target.
+            self._upload_module_type_images(module_type_res, src_file, module_type_existing_images)
 
         if only_new and not is_new:
             return True
