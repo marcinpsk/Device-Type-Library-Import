@@ -15,6 +15,7 @@ from core.change_detector import COMPONENT_ALIASES, ChangeType
 from core.formatting import log_property_diffs
 from core.graphql_client import GraphQLError, NetBoxGraphQLClient
 from core.normalization import values_equal
+from core.schema_reader import load_properties_for_type
 
 
 def _build_auth_header(token):
@@ -51,14 +52,45 @@ def _retry_on_connection_error(func, *args, **kwargs):
             time.sleep(wait)
 
 
-# Module type scalar properties that can be compared and updated
-MODULE_TYPE_PROPERTIES = [
+# Module type scalar properties that can be compared and updated.
+# Loaded from the cloned devicetype-library schema at runtime; the list below
+# serves as a fallback when the schema is not yet available (e.g. before the
+# first repo clone).  Identity fields (manufacturer, model) and complex objects
+# (attribute_data) are excluded by the schema reader.
+_MODULE_TYPE_PROPERTIES_FALLBACK = [
     "part_number",
     "description",
     "comments",
+    "airflow",
     "weight",
     "weight_unit",
 ]
+
+_MODULE_TYPE_SCHEMA_EXCLUDE = {"manufacturer", "model", "attribute_data"}
+
+
+def _load_module_type_properties():
+    """Load module type scalar properties from the schema, falling back to hardcoded list."""
+    try:
+        from core import settings as _settings
+
+        props = load_properties_for_type(
+            os.path.join(_settings.REPO_PATH, "schema"),
+            "moduletype",
+            exclude=_MODULE_TYPE_SCHEMA_EXCLUDE,
+        )
+        return props if props else list(_MODULE_TYPE_PROPERTIES_FALLBACK)
+    except Exception:
+        return list(_MODULE_TYPE_PROPERTIES_FALLBACK)
+
+
+MODULE_TYPE_PROPERTIES = _load_module_type_properties()
+
+# Sentinel used to distinguish "attribute missing from record" from a genuine
+# None/null value returned by NetBox.  When a property is in the schema-derived
+# comparison list but was not fetched by the GraphQL query, getattr returns this
+# sentinel and the property is skipped to avoid false-positive change detection.
+_MISSING = object()
 
 # Supported image file extensions for module-type image uploads
 IMAGE_EXTENSIONS = {
@@ -787,11 +819,16 @@ class NetBox:
                 actionable_module_types.append(module_type)
                 continue
 
-            changed_fields_info = [
-                (field, getattr(existing_module, field, None), module_type[field])
-                for field in MODULE_TYPE_PROPERTIES
-                if field in module_type and not values_equal(module_type[field], getattr(existing_module, field, None))
-            ]
+            changed_fields_info = []
+            for f in MODULE_TYPE_PROPERTIES:
+                if f not in module_type:
+                    continue
+                nb_val = getattr(existing_module, f, _MISSING)
+                if nb_val is _MISSING:
+                    # Field not fetched from NetBox yet; skip to avoid false positives.
+                    continue
+                if not values_equal(module_type[f], nb_val):
+                    changed_fields_info.append((f, nb_val, module_type[f]))
             if changed_fields_info:
                 changed_property_log.append(
                     (

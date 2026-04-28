@@ -4,12 +4,14 @@ Provides functionality to detect differences between device type definitions
 in the repository and existing data in NetBox, supporting the --update workflow.
 """
 
+import os
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 from enum import Enum
 
 from core.normalization import normalize_values
 from core.formatting import log_property_diffs
+from core.schema_reader import load_properties_for_type
 
 
 class ChangeType(Enum):
@@ -73,8 +75,12 @@ class ChangeReport:
     unchanged_count: int = 0
 
 
-# Device type properties that can be compared and updated
-DEVICE_TYPE_PROPERTIES = [
+# Device type properties that can be compared and updated.
+# Loaded from the cloned devicetype-library schema at runtime; the list below
+# serves as a fallback when the schema is not yet available.  Identity fields
+# (manufacturer, model, slug) and image fields (front_image, rear_image) are
+# excluded by the schema reader — images are handled separately via IMAGE_PROPERTIES.
+_DEVICE_TYPE_PROPERTIES_FALLBACK = [
     "u_height",
     "part_number",
     "is_full_depth",
@@ -82,8 +88,35 @@ DEVICE_TYPE_PROPERTIES = [
     "airflow",
     "weight",
     "weight_unit",
+    "description",
     "comments",
 ]
+
+_DEVICE_TYPE_SCHEMA_EXCLUDE = {"manufacturer", "model", "slug", "front_image", "rear_image"}
+
+
+def _load_device_type_properties():
+    """Load device type scalar properties from the schema, falling back to hardcoded list."""
+    try:
+        from core import settings as _settings
+
+        props = load_properties_for_type(
+            os.path.join(_settings.REPO_PATH, "schema"),
+            "devicetype",
+            exclude=_DEVICE_TYPE_SCHEMA_EXCLUDE,
+        )
+        return props if props else list(_DEVICE_TYPE_PROPERTIES_FALLBACK)
+    except Exception:
+        return list(_DEVICE_TYPE_PROPERTIES_FALLBACK)
+
+
+DEVICE_TYPE_PROPERTIES = _load_device_type_properties()
+
+# Sentinel used to distinguish "attribute missing from record" from a genuine
+# None/null value returned by NetBox.  When a property is in the schema-derived
+# comparison list but was not fetched by the GraphQL query, getattr returns this
+# sentinel and the property is skipped to avoid false-positive change detection.
+_MISSING = object()
 
 # Image properties: YAML uses boolean flags, NetBox stores URL strings.
 # Only existence is compared (YAML=true vs NetBox=empty).
@@ -205,9 +238,14 @@ class ChangeDetector:
             # matching the component semantics (absent key != removal).
             if prop not in yaml_data:
                 continue
+            # Only compare properties that were actually fetched from NetBox.
+            # If the GraphQL query doesn't include a field yet, skip it to
+            # avoid false-positive change detections.
+            netbox_value = getattr(netbox_dt, prop, _MISSING)
+            if netbox_value is _MISSING:
+                continue
 
             yaml_value = yaml_data.get(prop)
-            netbox_value = getattr(netbox_dt, prop, None)
 
             yaml_value, netbox_value = normalize_values(yaml_value, netbox_value)
 

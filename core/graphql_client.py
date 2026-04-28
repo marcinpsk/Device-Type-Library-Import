@@ -345,6 +345,7 @@ class NetBoxGraphQLClient:
             airflow
             weight
             weight_unit
+            description
             comments
             front_image { url }
             rear_image { url }
@@ -385,6 +386,7 @@ class NetBoxGraphQLClient:
             id
             model
             part_number
+            airflow
             description
             comments
             weight
