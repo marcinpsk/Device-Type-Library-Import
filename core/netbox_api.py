@@ -710,6 +710,22 @@ class NetBox:
         self.handle.verbose_log("    Properties:")
         log_property_diffs(fields_info, self.handle.verbose_log)
 
+    def _module_type_has_missing_components(self, module_type, existing_module, component_keys):
+        """Return True if any YAML-defined components are absent from the existing module type in NetBox."""
+        for component_key in component_keys:
+            components = module_type.get(component_key)
+            if not components:
+                continue
+            endpoint_attr, cache_name = ENDPOINT_CACHE_MAP[component_key]
+            endpoint = getattr(self.netbox.dcim, endpoint_attr)
+            existing_components = self.device_types._get_cached_or_fetch(
+                cache_name, existing_module.id, "module", endpoint
+            )
+            requested_names = {c.get("name") for c in components if c.get("name")}
+            if any(name not in existing_components for name in requested_names):
+                return True
+        return False
+
     def filter_actionable_module_types(self, module_types, all_module_types, only_new=False):
         """Determine which module types need to be created or updated in NetBox.
 
@@ -774,35 +790,20 @@ class NetBox:
             changed_fields_info = [
                 (field, getattr(existing_module, field, None), module_type[field])
                 for field in MODULE_TYPE_PROPERTIES
-                if field in module_type
-                and not values_equal(module_type[field], getattr(existing_module, field, None))
+                if field in module_type and not values_equal(module_type[field], getattr(existing_module, field, None))
             ]
             if changed_fields_info:
-                changed_property_log.append((
-                    module_type["manufacturer"]["slug"],
-                    module_type["model"],
-                    changed_fields_info,
-                ))
+                changed_property_log.append(
+                    (
+                        module_type["manufacturer"]["slug"],
+                        module_type["model"],
+                        changed_fields_info,
+                    )
+                )
                 actionable_module_types.append(module_type)
                 continue
 
-            has_missing_components = False
-            for component_key in component_keys:
-                components = module_type.get(component_key)
-                if not components:
-                    continue
-
-                endpoint_attr, cache_name = ENDPOINT_CACHE_MAP[component_key]
-                endpoint = getattr(self.netbox.dcim, endpoint_attr)
-                existing_components = self.device_types._get_cached_or_fetch(
-                    cache_name, existing_module.id, "module", endpoint
-                )
-                requested_names = {component.get("name") for component in components if component.get("name")}
-                if any(name not in existing_components for name in requested_names):
-                    has_missing_components = True
-                    break
-
-            if has_missing_components:
+            if self._module_type_has_missing_components(module_type, existing_module, component_keys):
                 actionable_module_types.append(module_type)
 
         if changed_property_log:
@@ -824,6 +825,37 @@ class NetBox:
             f"Found {len(module_type_existing_images)} module type(s) with existing image attachments."
         )
         return module_type_existing_images
+
+    def _try_update_module_type(self, curr_mt, module_type_res, src_file):
+        """Apply pending field updates to an existing module type in NetBox.
+
+        Returns:
+            bool: False on error, True otherwise (including when no updates are needed).
+        """
+        updates = {
+            field: curr_mt[field]
+            for field in MODULE_TYPE_PROPERTIES
+            if field in curr_mt and not values_equal(curr_mt[field], getattr(module_type_res, field, None))
+        }
+        if not updates:
+            return True
+        try:
+            _retry_on_connection_error(self.netbox.dcim.module_types.update, [{"id": module_type_res.id, **updates}])
+            self.counter["module_updated"] += 1
+            self.handle.verbose_log(
+                f"Module Type Updated: {module_type_res.manufacturer.name} - "
+                f"{module_type_res.model} - {module_type_res.id} "
+                f"(changed: {list(updates.keys())})"
+            )
+        except pynetbox.RequestError as excep:
+            self.handle.log(f"Error updating Module Type: {excep.error} (Context: {src_file})")
+            return False
+        except _RETRYABLE_EXCEPTIONS as e:
+            self.handle.log(
+                f"Connection error updating Module Type after {_MAX_RETRIES} retries: {e} (Context: {src_file})"
+            )
+            return False
+        return True
 
     def _process_single_module_type(self, curr_mt, src_file, all_module_types, module_type_existing_images, only_new):
         """Find or create a single module type and create its component templates.
@@ -847,34 +879,8 @@ class NetBox:
                 + f"{module_type_res.model} - {module_type_res.id}"
             )
             if not only_new:
-                updates = {
-                    field: curr_mt[field]
-                    for field in MODULE_TYPE_PROPERTIES
-                    if field in curr_mt
-                    and not values_equal(curr_mt[field], getattr(module_type_res, field, None))
-                }
-                if updates:
-                    try:
-                        _retry_on_connection_error(
-                            self.netbox.dcim.module_types.update, [{"id": module_type_res.id, **updates}]
-                        )
-                        self.counter["module_updated"] += 1
-                        self.handle.verbose_log(
-                            f"Module Type Updated: {module_type_res.manufacturer.name} - "
-                            f"{module_type_res.model} - {module_type_res.id} "
-                            f"(changed: {list(updates.keys())})"
-                        )
-                    except pynetbox.RequestError as excep:
-                        self.handle.log(
-                            f"Error updating Module Type: {excep.error} (Context: {src_file})"
-                        )
-                        return False
-                    except _RETRYABLE_EXCEPTIONS as e:
-                        self.handle.log(
-                            f"Connection error updating Module Type after {_MAX_RETRIES} retries:"
-                            f" {e} (Context: {src_file})"
-                        )
-                        return False
+                if not self._try_update_module_type(curr_mt, module_type_res, src_file):
+                    return False
         else:
             try:
                 module_type_res = _retry_on_connection_error(self.netbox.dcim.module_types.create, curr_mt)

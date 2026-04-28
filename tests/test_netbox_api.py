@@ -2678,8 +2678,6 @@ class TestFilterActionableModuleTypesEdge:
         assert actionable == []
 
 
-
-
 class TestCreateModuleTypesEdge:
     """Edge-case tests for create_module_types."""
 
@@ -2774,7 +2772,12 @@ class TestCreateModuleTypesEdge:
         nb = NetBox(mock_settings, mock_settings.handle)
 
         existing_mt = DotDict(
-            {"id": 5, "model": "IOM-s-3.0T", "part_number": "OLD_PN", "manufacturer": {"name": "Nokia", "slug": "nokia"}}
+            {
+                "id": 5,
+                "model": "IOM-s-3.0T",
+                "part_number": "OLD_PN",
+                "manufacturer": {"name": "Nokia", "slug": "nokia"},
+            }
         )
         all_module_types = {"nokia": {"IOM-s-3.0T": existing_mt}}
 
@@ -2800,7 +2803,12 @@ class TestCreateModuleTypesEdge:
         nb = NetBox(mock_settings, mock_settings.handle)
 
         existing_mt = DotDict(
-            {"id": 5, "model": "IOM-s-3.0T", "part_number": "3HE16474AA", "manufacturer": {"name": "Nokia", "slug": "nokia"}}
+            {
+                "id": 5,
+                "model": "IOM-s-3.0T",
+                "part_number": "3HE16474AA",
+                "manufacturer": {"name": "Nokia", "slug": "nokia"},
+            }
         )
         all_module_types = {"nokia": {"IOM-s-3.0T": existing_mt}}
 
@@ -2826,7 +2834,12 @@ class TestCreateModuleTypesEdge:
         nb = NetBox(mock_settings, mock_settings.handle)
 
         existing_mt = DotDict(
-            {"id": 5, "model": "IOM-s-3.0T", "part_number": "OLD_PN", "manufacturer": {"name": "Nokia", "slug": "nokia"}}
+            {
+                "id": 5,
+                "model": "IOM-s-3.0T",
+                "part_number": "OLD_PN",
+                "manufacturer": {"name": "Nokia", "slug": "nokia"},
+            }
         )
         all_module_types = {"nokia": {"IOM-s-3.0T": existing_mt}}
 
@@ -2844,8 +2857,6 @@ class TestCreateModuleTypesEdge:
         )
         mock_pynetbox.api.return_value.dcim.module_types.update.assert_not_called()
         assert nb.counter["module_updated"] == 0
-
-
 
 
 class TestCountModuleTypeImagesExisting:

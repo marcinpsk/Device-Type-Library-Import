@@ -77,7 +77,8 @@ and device, creating anything that is missing from NetBox while skipping entries
 >
 > `NETBOX_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
 >
-> For v2 tokens, you need to include prefix "nbt_", the bearer key (represented here by capital X-es), a dot, and finally the secret token (represented by lowercase x-es):
+> For v2 tokens, you need to include prefix "nbt_", the bearer key (represented here by capital
+> X-es), a dot, and finally the secret token (represented by lowercase x-es):
 >
 >`NETBOX_TOKEN=nbt_XXXXXXXXXXXX.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx`
 
