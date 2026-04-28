@@ -384,6 +384,11 @@ class NetBoxGraphQLClient:
           module_type_list(pagination: $pagination) {
             id
             model
+            part_number
+            description
+            comments
+            weight
+            weight_unit
             manufacturer {
               id
               name

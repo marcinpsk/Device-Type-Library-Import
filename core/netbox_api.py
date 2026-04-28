@@ -50,6 +50,15 @@ def _retry_on_connection_error(func, *args, **kwargs):
             time.sleep(wait)
 
 
+# Module type scalar properties that can be compared and updated
+MODULE_TYPE_PROPERTIES = [
+    "part_number",
+    "description",
+    "comments",
+    "weight",
+    "weight_unit",
+]
+
 # Supported image file extensions for module-type image uploads
 IMAGE_EXTENSIONS = {
     ".png",
@@ -116,6 +125,7 @@ class NetBox:
             components_added=0,
             manufacturer=0,
             module_added=0,
+            module_updated=0,
             rack_type_added=0,
             rack_type_updated=0,
             images=0,
@@ -735,6 +745,15 @@ class NetBox:
                 actionable_module_types.append(module_type)
                 continue
 
+            has_changed_properties = any(
+                field in module_type
+                and not values_equal(module_type[field], getattr(existing_module, field, None))
+                for field in MODULE_TYPE_PROPERTIES
+            )
+            if has_changed_properties:
+                actionable_module_types.append(module_type)
+                continue
+
             has_missing_components = False
             for component_key in component_keys:
                 components = module_type.get(component_key)
@@ -789,6 +808,35 @@ class NetBox:
                 f"Module Type Cached: {module_type_res.manufacturer.name} - "
                 + f"{module_type_res.model} - {module_type_res.id}"
             )
+            if not only_new:
+                updates = {
+                    field: curr_mt[field]
+                    for field in MODULE_TYPE_PROPERTIES
+                    if field in curr_mt
+                    and not values_equal(curr_mt[field], getattr(module_type_res, field, None))
+                }
+                if updates:
+                    try:
+                        _retry_on_connection_error(
+                            self.netbox.dcim.module_types.update, [{"id": module_type_res.id, **updates}]
+                        )
+                        self.counter["module_updated"] += 1
+                        self.handle.verbose_log(
+                            f"Module Type Updated: {module_type_res.manufacturer.name} - "
+                            f"{module_type_res.model} - {module_type_res.id} "
+                            f"(changed: {list(updates.keys())})"
+                        )
+                    except pynetbox.RequestError as excep:
+                        self.handle.log(
+                            f"Error updating Module Type: {excep.error} (Context: {src_file})"
+                        )
+                        return False
+                    except _RETRYABLE_EXCEPTIONS as e:
+                        self.handle.log(
+                            f"Connection error updating Module Type after {_MAX_RETRIES} retries:"
+                            f" {e} (Context: {src_file})"
+                        )
+                        return False
         else:
             try:
                 module_type_res = _retry_on_connection_error(self.netbox.dcim.module_types.create, curr_mt)

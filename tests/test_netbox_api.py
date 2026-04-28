@@ -2599,11 +2599,85 @@ class TestFilterActionableModuleTypesEdge:
                 result, _ = nb.filter_actionable_module_types([module_type], all_mts, only_new=False)
         assert result == [module_type]
 
+    def test_existing_module_with_changed_property_is_actionable(
+        self, mock_settings, mock_pynetbox, mock_graphql_requests
+    ):
+        """Existing module type with a changed scalar property (e.g. part_number) is actionable."""
+        from core.graphql_client import DotDict
 
-# ---------------------------------------------------------------------------
-# create_module_types: existing module verbose_log + RequestError + only_new
-# + component branches (lines 528, 531, 565, 579, 583, 589)
-# ---------------------------------------------------------------------------
+        mock_pynetbox.api.return_value.version = "3.5"
+        mock_graphql_requests.side_effect = paginate_dispatch(
+            {
+                "manufacturer_list": [],
+                "device_type_list": [],
+                "module_type_list": [],
+                "image_attachment_list": [],
+            }
+        )
+        nb = NetBox(mock_settings, mock_settings.handle)
+
+        existing_mt = DotDict(
+            {"id": 42, "model": "IOM-s-3.0T", "part_number": "OLD_PN", "manufacturer": {"slug": "nokia"}}
+        )
+        all_mts = {"nokia": {"IOM-s-3.0T": existing_mt}}
+
+        module_type = {
+            "manufacturer": {"slug": "nokia"},
+            "model": "IOM-s-3.0T",
+            "part_number": "3HE16474AA",
+            "src": "/tmp/repo/module-types/Nokia/IOM-s-3.0T.yaml",
+        }
+
+        with patch("glob.glob", return_value=[]):
+            with patch.object(nb, "_fetch_module_type_existing_images", return_value={}):
+                actionable, _ = nb.filter_actionable_module_types(
+                    [module_type],
+                    all_mts,
+                    only_new=False,
+                )
+
+        assert actionable == [module_type]
+
+    def test_existing_module_with_unchanged_property_is_not_actionable(
+        self, mock_settings, mock_pynetbox, mock_graphql_requests
+    ):
+        """Existing module type whose properties all match NetBox is not actionable."""
+        from core.graphql_client import DotDict
+
+        mock_pynetbox.api.return_value.version = "3.5"
+        mock_graphql_requests.side_effect = paginate_dispatch(
+            {
+                "manufacturer_list": [],
+                "device_type_list": [],
+                "module_type_list": [],
+                "image_attachment_list": [],
+            }
+        )
+        nb = NetBox(mock_settings, mock_settings.handle)
+
+        existing_mt = DotDict(
+            {"id": 42, "model": "IOM-s-3.0T", "part_number": "3HE16474AA", "manufacturer": {"slug": "nokia"}}
+        )
+        all_mts = {"nokia": {"IOM-s-3.0T": existing_mt}}
+
+        module_type = {
+            "manufacturer": {"slug": "nokia"},
+            "model": "IOM-s-3.0T",
+            "part_number": "3HE16474AA",
+            "src": "/tmp/repo/module-types/Nokia/IOM-s-3.0T.yaml",
+        }
+
+        with patch("glob.glob", return_value=[]):
+            with patch.object(nb, "_fetch_module_type_existing_images", return_value={}):
+                actionable, _ = nb.filter_actionable_module_types(
+                    [module_type],
+                    all_mts,
+                    only_new=False,
+                )
+
+        assert actionable == []
+
+
 
 
 class TestCreateModuleTypesEdge:
@@ -2692,10 +2766,86 @@ class TestCreateModuleTypesEdge:
         nb.device_types.create_module_console_server_ports.assert_called_once()
         nb.device_types.create_module_front_ports.assert_called_once()
 
+    def test_existing_module_type_property_update_calls_api(self, mock_settings, mock_pynetbox):
+        """Existing module type with changed part_number calls module_types.update and increments counter."""
+        from core.graphql_client import DotDict
 
-# ---------------------------------------------------------------------------
-# count_module_type_images: existing MT with non-matching image (line 680)
-# ---------------------------------------------------------------------------
+        mock_pynetbox.api.return_value.version = "3.5"
+        nb = NetBox(mock_settings, mock_settings.handle)
+
+        existing_mt = DotDict(
+            {"id": 5, "model": "IOM-s-3.0T", "part_number": "OLD_PN", "manufacturer": {"name": "Nokia", "slug": "nokia"}}
+        )
+        all_module_types = {"nokia": {"IOM-s-3.0T": existing_mt}}
+
+        module_type = {
+            "manufacturer": {"slug": "nokia"},
+            "model": "IOM-s-3.0T",
+            "part_number": "3HE16474AA",
+            "src": "/repo/module-types/Nokia/IOM-s-3.0T.yaml",
+        }
+        nb.create_module_types(
+            [module_type],
+            all_module_types=all_module_types,
+            module_type_existing_images={},
+        )
+        mock_pynetbox.api.return_value.dcim.module_types.update.assert_called_once()
+        assert nb.counter["module_updated"] == 1
+
+    def test_existing_module_type_property_unchanged_no_api_call(self, mock_settings, mock_pynetbox):
+        """Existing module type with matching part_number does not call module_types.update."""
+        from core.graphql_client import DotDict
+
+        mock_pynetbox.api.return_value.version = "3.5"
+        nb = NetBox(mock_settings, mock_settings.handle)
+
+        existing_mt = DotDict(
+            {"id": 5, "model": "IOM-s-3.0T", "part_number": "3HE16474AA", "manufacturer": {"name": "Nokia", "slug": "nokia"}}
+        )
+        all_module_types = {"nokia": {"IOM-s-3.0T": existing_mt}}
+
+        module_type = {
+            "manufacturer": {"slug": "nokia"},
+            "model": "IOM-s-3.0T",
+            "part_number": "3HE16474AA",
+            "src": "/repo/module-types/Nokia/IOM-s-3.0T.yaml",
+        }
+        nb.create_module_types(
+            [module_type],
+            all_module_types=all_module_types,
+            module_type_existing_images={},
+        )
+        mock_pynetbox.api.return_value.dcim.module_types.update.assert_not_called()
+        assert nb.counter["module_updated"] == 0
+
+    def test_existing_module_type_only_new_skips_property_update(self, mock_settings, mock_pynetbox):
+        """only_new=True skips property update even when part_number differs."""
+        from core.graphql_client import DotDict
+
+        mock_pynetbox.api.return_value.version = "3.5"
+        nb = NetBox(mock_settings, mock_settings.handle)
+
+        existing_mt = DotDict(
+            {"id": 5, "model": "IOM-s-3.0T", "part_number": "OLD_PN", "manufacturer": {"name": "Nokia", "slug": "nokia"}}
+        )
+        all_module_types = {"nokia": {"IOM-s-3.0T": existing_mt}}
+
+        module_type = {
+            "manufacturer": {"slug": "nokia"},
+            "model": "IOM-s-3.0T",
+            "part_number": "3HE16474AA",
+            "src": "/repo/module-types/Nokia/IOM-s-3.0T.yaml",
+        }
+        nb.create_module_types(
+            [module_type],
+            only_new=True,
+            all_module_types=all_module_types,
+            module_type_existing_images={},
+        )
+        mock_pynetbox.api.return_value.dcim.module_types.update.assert_not_called()
+        assert nb.counter["module_updated"] == 0
+
+
 
 
 class TestCountModuleTypeImagesExisting:
