@@ -212,6 +212,17 @@ class NetBox:
                 f"Connection error while connecting to NetBox at {self.url}: {e}\n"
                 f"Hint: Verify that NetBox is running and reachable at {self.url}."
             )
+        except pynetbox.core.query.RequestError as e:
+            endpoint = getattr(e, "base", self.url)
+            status = getattr(e.req, "status_code", "?") if hasattr(e, "req") else "?"
+            reason = getattr(e.req, "reason", "") if hasattr(e, "req") else ""
+            body = (getattr(e, "error", "") or "").strip()[:500]
+            details = f"HTTP {status} {reason}".strip()
+            msg = f"NetBox returned an error connecting to {endpoint} ({details})."
+            if body:
+                msg += f"\nResponse body (may be from an intermediate proxy):\n{body}"
+            msg += f"\nHint: Verify that {self.url} is reachable and not blocked by a proxy."
+            system_exit(msg)
         _raw = [int(re.sub(r"\D.*", "", x.strip()) or "0") for x in nb_version.split(".")]
         version_split = (_raw + [0, 0])[:2]  # pad to (major, minor) to guard against single-component strings
 
@@ -686,6 +697,25 @@ class NetBox:
                 new_module_types.append(module_type)
         return new_module_types
 
+    def _log_module_property_diffs(self, mfr_slug, model, fields_info):
+        """Emit diff-u style lines for changed module type properties.
+
+        Args:
+            mfr_slug (str): Manufacturer slug.
+            model (str): Module type model name.
+            fields_info (list[tuple]): List of ``(field, old_val, new_val)`` tuples.
+        """
+        self.handle.verbose_log(f"  ~ {mfr_slug}/{model}")
+        self.handle.verbose_log("    Properties:")
+        pad = min(max(len(field) for field, _, _ in fields_info), 30)
+        for field, old_val, new_val in fields_info:
+            name = f"{field}:{'':{max(0, pad - len(field))}}"
+            blank = " " * len(name)
+            for i, line in enumerate(str(old_val if old_val is not None else "").splitlines() or [""]):
+                self.handle.verbose_log(f"      - {name if i == 0 else blank} {line}")
+            for i, line in enumerate(str(new_val if new_val is not None else "").splitlines() or [""]):
+                self.handle.verbose_log(f"      + {name if i == 0 else blank} {line}")
+
     def filter_actionable_module_types(self, module_types, all_module_types, only_new=False):
         """Determine which module types need to be created or updated in NetBox.
 
@@ -711,6 +741,8 @@ class NetBox:
         module_type_existing_images = self._fetch_module_type_existing_images()
 
         actionable_module_types = []
+        # Collects (mfr_slug, model, [(field, old_val, new_val)]) for diff-u logging.
+        changed_property_log = []
         component_keys = (
             "interfaces",
             "power-ports",
@@ -745,12 +777,18 @@ class NetBox:
                 actionable_module_types.append(module_type)
                 continue
 
-            has_changed_properties = any(
-                field in module_type
-                and not values_equal(module_type[field], getattr(existing_module, field, None))
+            changed_fields_info = [
+                (field, getattr(existing_module, field, None), module_type[field])
                 for field in MODULE_TYPE_PROPERTIES
-            )
-            if has_changed_properties:
+                if field in module_type
+                and not values_equal(module_type[field], getattr(existing_module, field, None))
+            ]
+            if changed_fields_info:
+                changed_property_log.append((
+                    module_type["manufacturer"]["slug"],
+                    module_type["model"],
+                    changed_fields_info,
+                ))
                 actionable_module_types.append(module_type)
                 continue
 
@@ -772,6 +810,12 @@ class NetBox:
 
             if has_missing_components:
                 actionable_module_types.append(module_type)
+
+        if changed_property_log:
+            self.handle.verbose_log("-" * 60)
+            self.handle.verbose_log("MODIFIED MODULE TYPES:")
+            for mfr_slug, model, fields_info in changed_property_log:
+                self._log_module_property_diffs(mfr_slug, model, fields_info)
 
         return actionable_module_types, module_type_existing_images
 

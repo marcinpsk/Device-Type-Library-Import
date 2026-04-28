@@ -346,7 +346,7 @@ class DTLRepo:
 
             # -B creates the branch if absent or resets it to the remote ref if present
             self.repo.git.checkout("-B", self.branch, f"origin/{self.branch}")
-            self.handle.verbose_log(f"Updated repo from {self.repo.remotes.origin.url}")
+            self.handle.verbose_log(f"Updated repo from {self.repo.remotes.origin.url} (branch: {self.branch})")
         except exc.GitCommandError as git_error:
             self.handle.exception("GitCommandError", self.repo.remotes.origin.url, git_error)
         except Exception as git_error:

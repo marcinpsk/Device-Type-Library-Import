@@ -533,27 +533,29 @@ def _process_module_types(
 
     module_only_new = should_only_create_new_modules(args)
     existing_module_types = netbox.get_existing_module_types()
+    # Always run full change detection (unless --only-new is explicitly set) so that
+    # modified module types are reported even without --update.
     module_types_to_process, module_type_existing_images = netbox.filter_actionable_module_types(
         module_types,
         existing_module_types,
-        only_new=module_only_new,
+        only_new=args.only_new,
     )
 
     new_module_count = len(NetBox.filter_new_module_types(module_types, existing_module_types))
-    if module_only_new:
-        handle.log("============================================================")
+    handle.log("============================================================")
+    handle.log("MODULE TYPE CHANGE DETECTION")
+    handle.log("============================================================")
+    if args.only_new:
         handle.log(f"New module types: {new_module_count}")
-        handle.log("============================================================")
     else:
         module_changed_count = len(module_types_to_process) - new_module_count
         module_unchanged_count = len(module_types) - len(module_types_to_process)
-        handle.log("============================================================")
-        handle.log("MODULE TYPE CHANGE DETECTION")
-        handle.log("============================================================")
         handle.log(f"New module types:       {new_module_count}")
         handle.log(f"Unchanged module types: {module_unchanged_count}")
         handle.log(f"Modified module types:  {module_changed_count}")
-        handle.log("------------------------------------------------------------")
+        if module_changed_count and not args.update:
+            handle.log("  (Run with --update to apply changes to existing module types)")
+    handle.log("------------------------------------------------------------")
 
     if module_types_to_process:
         netbox.create_manufacturers(module_vendors)
