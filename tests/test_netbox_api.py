@@ -2867,14 +2867,19 @@ class TestCreateModuleTypesEdge:
     def test_existing_module_type_component_update_calls_update_components(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types
     ):
-        """Existing module type with changed component property calls update_components."""
+        """Existing module type with changed component property calls update_components and increments counter."""
         from core.change_detector import ChangeType, ComponentChange
         from core.graphql_client import DotDict
 
         mock_pynetbox.api.return_value.version = "3.5"
         nb = NetBox(mock_settings, mock_settings.handle)
         nb.device_types = make_device_types(nb_api=mock_pynetbox.api.return_value)
-        nb.device_types.update_components = MagicMock()
+
+        # Simulate update_components actually updating a component (increments components_updated)
+        def _do_update(*args, **kwargs):
+            nb.counter["components_updated"] += 1
+
+        nb.device_types.update_components = MagicMock(side_effect=_do_update)
 
         existing_mt = DotDict(
             {
@@ -2917,7 +2922,12 @@ class TestCreateModuleTypesEdge:
         mock_pynetbox.api.return_value.version = "3.5"
         nb = NetBox(mock_settings, mock_settings.handle)
         nb.device_types = make_device_types(nb_api=mock_pynetbox.api.return_value)
-        nb.device_types.update_components = MagicMock()
+
+        # Simulate update_components actually updating a component
+        def _do_update(*args, **kwargs):
+            nb.counter["components_updated"] += 1
+
+        nb.device_types.update_components = MagicMock(side_effect=_do_update)
 
         existing_mt = DotDict(
             {
@@ -2950,6 +2960,54 @@ class TestCreateModuleTypesEdge:
         nb.device_types.update_components.assert_called_once()
         # property update already incremented; component path should NOT double-count
         assert nb.counter["module_updated"] == 1
+
+    def test_existing_module_type_removal_only_no_counter_increment(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
+    ):
+        """COMPONENT_REMOVED-only changes call update_components but do NOT increment module_updated."""
+        from core.graphql_client import DotDict
+
+        mock_pynetbox.api.return_value.version = "3.5"
+        nb = NetBox(mock_settings, mock_settings.handle)
+        nb.device_types = make_device_types(nb_api=mock_pynetbox.api.return_value)
+        # update_components is a no-op for removals (no counter change)
+        nb.device_types.update_components = MagicMock()
+
+        existing_mt = DotDict(
+            {
+                "id": 5,
+                "model": "IOM-s-3.0T",
+                "part_number": "3HE16474AA",
+                "manufacturer": {"name": "Nokia", "slug": "nokia"},
+            }
+        )
+        all_module_types = {"nokia": {"IOM-s-3.0T": existing_mt}}
+
+        # Cache has an interface that YAML doesn't have → COMPONENT_REMOVED
+        nb.device_types.cached_components = {
+            "interface_templates": {
+                ("module", 5): {
+                    "xe-0": DotDict({"id": "10", "name": "xe-0", "description": ""}),
+                    "xe-extra": DotDict({"id": "11", "name": "xe-extra", "description": ""}),
+                }
+            },
+        }
+
+        module_type = {
+            "manufacturer": {"slug": "nokia"},
+            "model": "IOM-s-3.0T",
+            "part_number": "3HE16474AA",
+            "interfaces": [{"name": "xe-0", "type": "10gbase-x-sfpp", "description": ""}],
+            "src": "/repo/module-types/Nokia/IOM-s-3.0T.yaml",
+        }
+        nb.create_module_types(
+            [module_type],
+            all_module_types=all_module_types,
+            module_type_existing_images={},
+        )
+        nb.device_types.update_components.assert_called_once()
+        # removal-only: update_components did nothing (no counter bumps) → module_updated stays 0
+        assert nb.counter["module_updated"] == 0
     """Tests for count_module_type_images with existing module types."""
 
     def test_existing_module_new_image_counted(self, tmp_path):

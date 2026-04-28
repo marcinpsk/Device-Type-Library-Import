@@ -1012,10 +1012,16 @@ class NetBox:
             detector = ChangeDetector(self.device_types, self.handle)
             component_changes = detector._compare_components(curr_mt, module_type_res.id, parent_type="module")
             if component_changes:
+                before_updated = self.counter["components_updated"]
+                before_added = self.counter["components_added"]
                 self.device_types.update_components(
                     curr_mt, module_type_res.id, component_changes, parent_type="module"
                 )
-                if not properties_updated:
+                actually_changed = (
+                    self.counter["components_updated"] > before_updated
+                    or self.counter["components_added"] > before_added
+                )
+                if actually_changed and not properties_updated:
                     self.counter["module_updated"] += 1
         return True
 

@@ -123,7 +123,10 @@ COMPONENT_TEMPLATE_FIELDS = {
 }
 
 # Endpoints whose GraphQL schema has no ``module_type`` parent field.
-_NO_MODULE_TYPE = {"device_bay_templates", "module_bay_templates"}
+# Note: module_bay_templates is intentionally excluded from this set — NetBox's
+# module_bay_template_list DOES support module_type { id }, so we must include it
+# in the query to correctly cache module bays owned by module types.
+_NO_MODULE_TYPE = {"device_bay_templates"}
 
 
 class NetBoxGraphQLClient:

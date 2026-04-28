@@ -1005,7 +1005,7 @@ class TestGetComponentTemplates:
         assert records[0].id == 30
 
     def test_module_bay_templates_fields(self, mock_post):
-        """module_bay_templates should return records with the expected fields."""
+        """module_bay_templates should return records with the expected fields, including module_type."""
         data = {
             "module_bay_template_list": [
                 {
@@ -1013,7 +1013,8 @@ class TestGetComponentTemplates:
                     "name": "Bay 1",
                     "position": "1",
                     "label": "",
-                    "device_type": {"id": "3"},
+                    "device_type": None,
+                    "module_type": {"id": "7"},
                 },
             ]
         }
@@ -1024,9 +1025,11 @@ class TestGetComponentTemplates:
 
         assert records[0].name == "Bay 1"
         assert records[0].id == 40
-        # Verify the generated query does not include module_type (not in schema for module_bay_templates)
+        assert records[0].module_type.id == 7
+        # module_bay_templates DOES have module_type { id } in NetBox's schema, so the query
+        # should include it (unlike device_bay_templates which truly has no module_type field)
         sent_query = mock_post.call_args_list[0][1]["json"]["query"]
-        assert "module_type" not in sent_query
+        assert "module_type" in sent_query
 
 
 class TestDotDictSetattr:
