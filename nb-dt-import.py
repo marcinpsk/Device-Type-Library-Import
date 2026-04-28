@@ -10,6 +10,8 @@ from core.netbox_api import NetBox
 from core.log_handler import LogHandler
 from core.repo import DTLRepo
 from core.change_detector import ChangeDetector, IMAGE_PROPERTIES
+from core.graphql_client import GraphQLError
+from pynetbox.core.query import RequestError as NetBoxRequestError
 
 
 import sys
@@ -832,3 +834,16 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Interrupted by user (Ctrl-C). Exiting.")
         raise SystemExit(130)
+    except GraphQLError as exc:
+        print(
+            f"[{datetime.now().strftime('%H:%M:%S')}] Error: NetBox GraphQL request failed — {exc}\n"
+            f"[{datetime.now().strftime('%H:%M:%S')}] This may be a temporary connectivity issue. "
+            "Check that NetBox is reachable and try again."
+        )
+        raise SystemExit(1)
+    except NetBoxRequestError as exc:
+        print(
+            f"[{datetime.now().strftime('%H:%M:%S')}] Error: NetBox REST API request failed — {exc}\n"
+            f"[{datetime.now().strftime('%H:%M:%S')}] Check that NetBox is reachable and the API token has the required permissions."
+        )
+        raise SystemExit(1)
