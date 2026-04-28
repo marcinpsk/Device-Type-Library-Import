@@ -258,6 +258,10 @@ class DTLRepo:
         """
         self.handle = exception_handler
         self.yaml_extensions = ["yaml", "yml"]
+        # Duplicate (manufacturer_slug, model) definitions found while parsing.
+        # Populated by parse_files; consumed by the run summary so users can fix upstream.
+        # Each entry: {"manufacturer": str, "model": str, "kept": str, "ignored": [str, ...]}
+        self.duplicate_definitions = []
         self.url = args.url
         self.repo_path = repo_path
         self.branch = args.branch
@@ -441,4 +445,41 @@ class DTLRepo:
                 executor.shutdown(wait=False, cancel_futures=True)
                 raise
 
-        return deviceTypes
+        # Deduplicate by (manufacturer_slug, model).  The upstream devicetype-library
+        # occasionally contains two YAML files (e.g. ``Foo.yaml`` and ``Foo.yml`` or two
+        # different filenames) that resolve to the same NetBox key.  Loading both causes
+        # them to overwrite each other on every run, so the entry oscillates and is
+        # reported as "modified" forever.  Keep the first occurrence (sorted by source
+        # path for determinism) and record the rest so the run summary can list them
+        # for the user to fix upstream.
+        deduped = []
+        seen = {}  # key -> kept item
+        groups = {}  # key -> list of all srcs in sorted order
+        for item in sorted(deviceTypes, key=lambda d: d.get("src", "")):
+            try:
+                key = (item["manufacturer"]["slug"], item.get("model"))
+            except (KeyError, TypeError):
+                deduped.append(item)
+                continue
+            groups.setdefault(key, []).append(item.get("src", "?"))
+            if key not in seen:
+                seen[key] = item
+                deduped.append(item)
+
+        for key, srcs in groups.items():
+            if len(srcs) > 1:
+                mfr_slug, model = key
+                self.handle.log(
+                    f"WARNING: duplicate definition for {mfr_slug}/{model} — "
+                    f"keeping {srcs[0]}, ignoring {', '.join(srcs[1:])}"
+                )
+                self.duplicate_definitions.append(
+                    {
+                        "manufacturer": mfr_slug,
+                        "model": model,
+                        "kept": srcs[0],
+                        "ignored": srcs[1:],
+                    }
+                )
+
+        return deduped

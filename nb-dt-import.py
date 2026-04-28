@@ -640,13 +640,16 @@ def _process_rack_types(args, netbox, dtl_repo, handle, progress, selected_vendo
         )
 
 
-def _log_run_summary(handle, netbox, start_time):
+def _log_run_summary(handle, netbox, start_time, dtl_repo=None):
     """Log the final import summary counters to *handle*.
 
     Args:
         handle (LogHandler): Logging handler for output.
         netbox (NetBox): NetBox API wrapper whose ``counter`` is read.
         start_time (datetime): Timestamp from the start of the run for elapsed-time reporting.
+        dtl_repo (DTLRepo, optional): Repository helper; if provided, any duplicate
+            ``(manufacturer, model)`` definitions detected during YAML parsing are listed
+            so the user can fix them upstream.
     """
     handle.log("---")
     handle.verbose_log(f"Script took {(datetime.now() - start_time)} to run")
@@ -663,6 +666,22 @@ def _log_run_summary(handle, netbox, start_time):
     if netbox.rack_types:
         handle.log(f"{netbox.counter['rack_type_added']} rack types created")
         handle.log(f"{netbox.counter['rack_type_updated']} rack types updated")
+
+    if dtl_repo is not None and dtl_repo.duplicate_definitions:
+        handle.log("---")
+        handle.log(
+            f"WARNING: {len(dtl_repo.duplicate_definitions)} duplicate "
+            "(manufacturer, model) definition(s) detected in the source repository:"
+        )
+        for dup in dtl_repo.duplicate_definitions:
+            handle.log(f"  {dup['manufacturer']}/{dup['model']}")
+            handle.log(f"    kept:    {dup['kept']}")
+            for ignored in dup["ignored"]:
+                handle.log(f"    ignored: {ignored}")
+        handle.log(
+            "These duplicates would otherwise oscillate on every run. "
+            "Please report/fix them upstream."
+        )
 
 
 def main():
@@ -825,7 +844,7 @@ def main():
                 _module_parse_executor.shutdown(wait=False, cancel_futures=True)
             handle.set_console(None)
 
-    _log_run_summary(handle, netbox, startTime)
+    _log_run_summary(handle, netbox, startTime, dtl_repo=dtl_repo)
 
 
 if __name__ == "__main__":
