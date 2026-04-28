@@ -93,6 +93,8 @@ COMPONENT_TEMPLATE_FIELDS = {
         "enabled",
         "poe_mode",
         "poe_type",
+        "description",
+        "rf_role",
     ],
     "power_port_templates": [
         "id",
@@ -101,20 +103,23 @@ COMPONENT_TEMPLATE_FIELDS = {
         "maximum_draw",
         "allocated_draw",
         "label",
+        "description",
     ],
-    "console_port_templates": ["id", "name", "type", "label"],
-    "console_server_port_templates": ["id", "name", "type", "label"],
-    "power_outlet_templates": ["id", "name", "type", "feed_leg", "label"],
-    "rear_port_templates": ["id", "name", "type", "positions", "label"],
+    "console_port_templates": ["id", "name", "type", "label", "description"],
+    "console_server_port_templates": ["id", "name", "type", "label", "description"],
+    "power_outlet_templates": ["id", "name", "type", "feed_leg", "label", "description"],
+    "rear_port_templates": ["id", "name", "type", "positions", "label", "description", "color"],
     "front_port_templates": [
         "id",
         "name",
         "type",
         "label",
+        "description",
+        "color",
         "mappings { id front_port_position rear_port_position rear_port { id name } }",
     ],
-    "device_bay_templates": ["id", "name", "label"],
-    "module_bay_templates": ["id", "name", "position", "label"],
+    "device_bay_templates": ["id", "name", "label", "description"],
+    "module_bay_templates": ["id", "name", "position", "label", "description"],
 }
 
 # Endpoints whose GraphQL schema has no ``module_type`` parent field.

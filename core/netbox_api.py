@@ -11,7 +11,7 @@ from sys import exit as system_exit
 import glob
 from pathlib import Path
 
-from core.change_detector import COMPONENT_ALIASES, ChangeType
+from core.change_detector import COMPONENT_ALIASES, ChangeDetector, ChangeType
 from core.formatting import log_property_diffs
 from core.graphql_client import GraphQLError, NetBoxGraphQLClient
 from core.normalization import values_equal
@@ -66,7 +66,7 @@ _MODULE_TYPE_PROPERTIES_FALLBACK = [
     "weight_unit",
 ]
 
-_MODULE_TYPE_SCHEMA_EXCLUDE = {"manufacturer", "model", "attribute_data"}
+_MODULE_TYPE_SCHEMA_EXCLUDE = {"manufacturer", "model", "attribute_data", "profile"}
 
 
 def _load_module_type_properties():
@@ -730,17 +730,40 @@ class NetBox:
                 new_module_types.append(module_type)
         return new_module_types
 
-    def _log_module_property_diffs(self, mfr_slug, model, fields_info):
-        """Emit diff-u style lines for changed module type properties.
+    def _log_module_property_diffs(self, mfr_slug, model, fields_info, component_changes=None):
+        """Emit diff-u style lines for changed module type properties and component changes.
 
         Args:
             mfr_slug (str): Manufacturer slug.
             model (str): Module type model name.
             fields_info (list[tuple]): List of ``(field, old_val, new_val)`` tuples.
+            component_changes (list | None): Optional list of ComponentChange objects.
         """
         self.handle.verbose_log(f"  ~ {mfr_slug}/{model}")
-        self.handle.verbose_log("    Properties:")
-        log_property_diffs(fields_info, self.handle.verbose_log)
+        if fields_info:
+            self.handle.verbose_log("    Properties:")
+            log_property_diffs(fields_info, self.handle.verbose_log)
+        if component_changes:
+            added = [c for c in component_changes if c.change_type == ChangeType.COMPONENT_ADDED]
+            changed = [c for c in component_changes if c.change_type == ChangeType.COMPONENT_CHANGED]
+            removed = [c for c in component_changes if c.change_type == ChangeType.COMPONENT_REMOVED]
+            if added:
+                self.handle.verbose_log(f"      + {len(added)} new component(s)")
+                for comp in added:
+                    self.handle.verbose_log(f"        + {comp.component_type}: {comp.component_name}")
+            if changed:
+                self.handle.verbose_log(f"      ~ {len(changed)} changed component(s)")
+                for comp in changed:
+                    self.handle.verbose_log(f"        ~ {comp.component_type}: {comp.component_name}")
+                    log_property_diffs(
+                        [(pc.property_name, pc.old_value, pc.new_value) for pc in comp.property_changes],
+                        self.handle.verbose_log,
+                        "            ",
+                    )
+            if removed:
+                self.handle.log(f"      - {len(removed)} removed component(s) (not deleted without --remove-components)")
+                for comp in removed:
+                    self.handle.verbose_log(f"        - {comp.component_type}: {comp.component_name}")
 
     def _module_type_has_missing_components(self, module_type, existing_module, component_keys):
         """Return True if any YAML-defined components are absent from the existing module type in NetBox."""
@@ -807,6 +830,8 @@ class NetBox:
         if existing_module_ids:
             self.device_types.preload_module_type_components(existing_module_ids, component_keys)
 
+        detector = ChangeDetector(self.device_types, self.handle)
+
         for module_type in module_types:
             existing_module = existing_module_map[id(module_type)]
             if existing_module is None:
@@ -829,25 +854,28 @@ class NetBox:
                     continue
                 if not values_equal(module_type[f], nb_val):
                     changed_fields_info.append((f, nb_val, module_type[f]))
-            if changed_fields_info:
+
+            component_changes = detector._compare_components(
+                module_type, existing_module.id, parent_type="module"
+            )
+
+            if changed_fields_info or component_changes:
                 changed_property_log.append(
                     (
                         module_type["manufacturer"]["slug"],
                         module_type["model"],
                         changed_fields_info,
+                        component_changes,
                     )
                 )
                 actionable_module_types.append(module_type)
-                continue
 
-            if self._module_type_has_missing_components(module_type, existing_module, component_keys):
-                actionable_module_types.append(module_type)
 
         if changed_property_log:
             self.handle.verbose_log("-" * 60)
             self.handle.verbose_log("MODIFIED MODULE TYPES:")
-            for mfr_slug, model, fields_info in changed_property_log:
-                self._log_module_property_diffs(mfr_slug, model, fields_info)
+            for mfr_slug, model, fields_info, comp_changes in changed_property_log:
+                self._log_module_property_diffs(mfr_slug, model, fields_info, comp_changes)
 
         return actionable_module_types, module_type_existing_images
 

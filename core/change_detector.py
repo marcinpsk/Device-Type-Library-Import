@@ -126,22 +126,22 @@ IMAGE_PROPERTIES = ["front_image", "rear_image"]
 COMPONENT_TYPES = {
     "interfaces": (
         "interface_templates",
-        ["name", "type", "mgmt_only", "label", "enabled", "poe_mode", "poe_type"],
+        ["name", "type", "mgmt_only", "label", "enabled", "poe_mode", "poe_type", "description", "rf_role"],
     ),
     "power-ports": (
         "power_port_templates",
-        ["name", "type", "maximum_draw", "allocated_draw", "label"],
+        ["name", "type", "maximum_draw", "allocated_draw", "label", "description"],
     ),
-    "console-ports": ("console_port_templates", ["name", "type", "label"]),
-    "power-outlets": ("power_outlet_templates", ["name", "type", "feed_leg", "label"]),
+    "console-ports": ("console_port_templates", ["name", "type", "label", "description"]),
+    "power-outlets": ("power_outlet_templates", ["name", "type", "feed_leg", "label", "description"]),
     "console-server-ports": (
         "console_server_port_templates",
-        ["name", "type", "label"],
+        ["name", "type", "label", "description"],
     ),
-    "rear-ports": ("rear_port_templates", ["name", "type", "positions", "label"]),
-    "front-ports": ("front_port_templates", ["name", "type", "_mappings", "label"]),
-    "device-bays": ("device_bay_templates", ["name", "label"]),
-    "module-bays": ("module_bay_templates", ["name", "position", "label"]),
+    "rear-ports": ("rear_port_templates", ["name", "type", "positions", "label", "description", "color"]),
+    "front-ports": ("front_port_templates", ["name", "type", "_mappings", "label", "description", "color"]),
+    "device-bays": ("device_bay_templates", ["name", "label", "description"]),
+    "module-bays": ("module_bay_templates", ["name", "position", "label", "description"]),
 }
 
 # Aliases for YAML keys that map to the same component type.
