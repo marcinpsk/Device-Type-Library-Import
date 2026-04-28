@@ -535,7 +535,7 @@ def _process_module_types(
     existing_module_types = netbox.get_existing_module_types()
     # Always run full change detection (unless --only-new is explicitly set) so that
     # modified module types are reported even without --update.
-    module_types_to_process, module_type_existing_images = netbox.filter_actionable_module_types(
+    module_types_to_process, module_type_existing_images, changed_property_log = netbox.filter_actionable_module_types(
         module_types,
         existing_module_types,
         only_new=args.only_new,
@@ -556,6 +556,7 @@ def _process_module_types(
         if module_changed_count and not args.update:
             handle.log("  (Run with --update to apply changes to existing module types)")
     handle.log("------------------------------------------------------------")
+    netbox.log_module_type_changes(changed_property_log)
 
     if module_types_to_process:
         netbox.create_manufacturers(module_vendors)

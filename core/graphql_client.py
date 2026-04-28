@@ -6,6 +6,7 @@ compatible with the existing REST-based code in ``netbox_api.py``.
 """
 
 import threading
+import time
 
 import requests
 
@@ -197,8 +198,12 @@ class NetBoxGraphQLClient:
 
     # ── Low-level ──────────────────────────────────────────────────────────
 
-    def query(self, graphql_query, variables=None):
+    def query(self, graphql_query, variables=None, _retries=3):
         """Execute a single GraphQL query and return the ``data`` portion.
+
+        Retries up to *_retries* times (with exponential back-off) on transient
+        connection errors so that a single dropped connection during a long
+        paginated fetch does not silently empty a component cache.
 
         Raises:
             GraphQLError: On HTTP errors or if the response contains GraphQL errors.
@@ -207,32 +212,40 @@ class NetBoxGraphQLClient:
         if variables is not None:
             payload["variables"] = variables
 
-        try:
-            response = self._session.post(
-                self.graphql_url,
-                json=payload,
-                timeout=60,
-            )
-            response.raise_for_status()
-            body = response.json()
-        except requests.exceptions.HTTPError as exc:
-            if exc.response is not None and exc.response.status_code == 403:
-                raise GraphQLError(
-                    f"403 Forbidden from {self.graphql_url}\n"
-                    "Hint: Verify that your API token has the required permissions "
-                    "and that GraphQL is enabled in the NetBox configuration."
-                ) from exc
-            raise GraphQLError(str(exc)) from exc
-        except requests.RequestException as exc:
-            raise GraphQLError(str(exc)) from exc
-        except ValueError as exc:
-            raise GraphQLError(f"Invalid JSON response from NetBox GraphQL endpoint: {exc}") from exc
+        last_exc = None
+        for attempt in range(1 + _retries):
+            try:
+                response = self._session.post(
+                    self.graphql_url,
+                    json=payload,
+                    timeout=60,
+                )
+                response.raise_for_status()
+                body = response.json()
+            except requests.exceptions.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 403:
+                    raise GraphQLError(
+                        f"403 Forbidden from {self.graphql_url}\n"
+                        "Hint: Verify that your API token has the required permissions "
+                        "and that GraphQL is enabled in the NetBox configuration."
+                    ) from exc
+                # Non-403 HTTP errors are not retried.
+                raise GraphQLError(str(exc)) from exc
+            except requests.RequestException as exc:
+                last_exc = exc
+                if attempt < _retries:
+                    backoff = 2**attempt
+                    time.sleep(backoff)
+                    continue
+                raise GraphQLError(str(exc)) from exc
+            except ValueError as exc:
+                raise GraphQLError(f"Invalid JSON response from NetBox GraphQL endpoint: {exc}") from exc
 
-        if "errors" in body:
-            messages = "; ".join(e.get("message", str(e)) for e in body["errors"])
-            raise GraphQLError(messages)
+            if "errors" in body:
+                messages = "; ".join(e.get("message", str(e)) for e in body["errors"])
+                raise GraphQLError(messages)
 
-        return body.get("data", {})
+            return body.get("data", {})
 
     def query_all(self, graphql_query, list_key, page_size=None, variables=None, on_page=None):
         """Auto-paginate a GraphQL list query using offset/limit.

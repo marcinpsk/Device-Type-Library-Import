@@ -799,10 +799,10 @@ class NetBox:
                 ``{module_type_id: set_of_image_names}``.
         """
         if not module_types:
-            return [], {}
+            return [], {}, []
 
         if only_new:
-            return self.filter_new_module_types(module_types, all_module_types), {}
+            return self.filter_new_module_types(module_types, all_module_types), {}, []
 
         module_type_existing_images = self._fetch_module_type_existing_images()
 
@@ -863,14 +863,19 @@ class NetBox:
                 )
                 actionable_module_types.append(module_type)
 
+        return actionable_module_types, module_type_existing_images, changed_property_log
 
+    def log_module_type_changes(self, changed_property_log):
+        """Emit verbose diff output for modified module types.
+
+        Args:
+            changed_property_log: List of ``(mfr_slug, model, fields_info, comp_changes)``
+                tuples as returned by :meth:`filter_actionable_module_types`.
+        """
         if changed_property_log:
-            self.handle.verbose_log("-" * 60)
             self.handle.verbose_log("MODIFIED MODULE TYPES:")
             for mfr_slug, model, fields_info, comp_changes in changed_property_log:
                 self._log_module_property_diffs(mfr_slug, model, fields_info, comp_changes)
-
-        return actionable_module_types, module_type_existing_images
 
     def _fetch_module_type_existing_images(self):
         """Query NetBox for all image attachments on module types via GraphQL and return a mapping.

@@ -310,7 +310,7 @@ def _make_mock_netbox(modules=False, rack_types=False):
     mock_nb.device_types.existing_device_types_by_slug = {}
     mock_nb.count_device_type_images.return_value = 0
     mock_nb.count_module_type_images.return_value = 0
-    mock_nb.filter_actionable_module_types.return_value = ([], [])
+    mock_nb.filter_actionable_module_types.return_value = ([], [], [])
     mock_nb.get_existing_module_types.return_value = {}
     mock_nb.get_existing_rack_types.return_value = {}
     return mock_nb
@@ -713,7 +713,7 @@ class TestMain:
             patch("nb_dt_import.ChangeDetector") as MockDetector,
         ):
             mock_nb = _make_mock_netbox(modules=True)
-            mock_nb.filter_actionable_module_types.return_value = ([module_type], [])
+            mock_nb.filter_actionable_module_types.return_value = ([module_type], [], [])
             MockNetBox.return_value = mock_nb
             MockNetBox.filter_new_module_types.return_value = []
 
@@ -741,7 +741,7 @@ class TestMain:
             patch("nb_dt_import.ChangeDetector") as MockDetector,
         ):
             mock_nb = _make_mock_netbox(modules=True)
-            mock_nb.filter_actionable_module_types.return_value = ([], [])
+            mock_nb.filter_actionable_module_types.return_value = ([], [], [])
             MockNetBox.return_value = mock_nb
             MockNetBox.filter_new_module_types.return_value = []
             MockRepo.return_value = _make_mock_repo()

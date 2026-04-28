@@ -535,7 +535,7 @@ def test_filter_actionable_module_types_skips_unchanged_existing_module(
     ]
 
     with patch("glob.glob", return_value=[]):
-        actionable, _ = nb.filter_actionable_module_types(
+        actionable, _, _ = nb.filter_actionable_module_types(
             module_types,
             nb.get_existing_module_types(),
             only_new=False,
@@ -579,7 +579,7 @@ def test_filter_actionable_module_types_includes_module_with_missing_component(
     }
 
     with patch("glob.glob", return_value=[]):
-        actionable, _ = nb.filter_actionable_module_types(
+        actionable, _, _ = nb.filter_actionable_module_types(
             [module_type],
             nb.get_existing_module_types(),
             only_new=False,
@@ -2521,7 +2521,7 @@ class TestFilterActionableModuleTypesEdge:
         """Empty module_types list returns [], {} immediately."""
         mock_pynetbox.api.return_value.version = "3.5"
         nb = NetBox(mock_settings, mock_settings.handle)
-        result, images = nb.filter_actionable_module_types([], {}, only_new=False)
+        result, images, _ = nb.filter_actionable_module_types([], {}, only_new=False)
         assert result == []
         assert images == {}
 
@@ -2535,7 +2535,7 @@ class TestFilterActionableModuleTypesEdge:
             {"manufacturer": {"slug": "cisco"}, "model": "LC"},
             {"manufacturer": {"slug": "cisco"}, "model": "NEW"},
         ]
-        result, images = nb.filter_actionable_module_types(module_types, all_mts, only_new=True)
+        result, images, _ = nb.filter_actionable_module_types(module_types, all_mts, only_new=True)
         assert len(result) == 1
         assert result[0]["model"] == "NEW"
         assert images == {}
@@ -2558,7 +2558,7 @@ class TestFilterActionableModuleTypesEdge:
             "src": "/repo/module-types/cisco/new.yaml",
         }
         with patch("glob.glob", return_value=[]):
-            result, _ = nb.filter_actionable_module_types([module_type], {}, only_new=False)
+            result, _, _ = nb.filter_actionable_module_types([module_type], {}, only_new=False)
         assert result == [module_type]
 
     def test_existing_module_with_new_image_is_actionable(
@@ -2602,7 +2602,7 @@ class TestFilterActionableModuleTypesEdge:
                 "core.netbox_api.NetBox._discover_module_image_files",
                 return_value=[str(img)],
             ):
-                result, _ = nb.filter_actionable_module_types([module_type], all_mts, only_new=False)
+                result, _, _ = nb.filter_actionable_module_types([module_type], all_mts, only_new=False)
         assert result == [module_type]
 
     def test_existing_module_with_changed_property_is_actionable(
@@ -2636,7 +2636,7 @@ class TestFilterActionableModuleTypesEdge:
 
         with patch("glob.glob", return_value=[]):
             with patch.object(nb, "_fetch_module_type_existing_images", return_value={}):
-                actionable, _ = nb.filter_actionable_module_types(
+                actionable, _, _ = nb.filter_actionable_module_types(
                     [module_type],
                     all_mts,
                     only_new=False,
@@ -2675,7 +2675,7 @@ class TestFilterActionableModuleTypesEdge:
 
         with patch("glob.glob", return_value=[]):
             with patch.object(nb, "_fetch_module_type_existing_images", return_value={}):
-                actionable, _ = nb.filter_actionable_module_types(
+                actionable, _, _ = nb.filter_actionable_module_types(
                     [module_type],
                     all_mts,
                     only_new=False,
