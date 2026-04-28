@@ -9,6 +9,7 @@ from typing import Any, List, Optional
 from enum import Enum
 
 from core.normalization import normalize_values
+from core.formatting import log_property_diffs
 
 
 class ChangeType(Enum):
@@ -475,16 +476,11 @@ class ChangeDetector:
 
     def _log_property_diffs(self, prop_changes: List[PropertyChange], indent: str) -> None:
         """Emit diff-u style lines for *prop_changes* at the given *indent*."""
-        if not prop_changes:
-            return
-        pad = min(max(len(pc.property_name) for pc in prop_changes), 30)
-        for pc in prop_changes:
-            name = f"{pc.property_name}:{'':{max(0, pad - len(pc.property_name))}}"
-            blank = " " * len(name)
-            for i, line in enumerate(str(pc.old_value).splitlines() or [""]):
-                self.handle.verbose_log(f"{indent}- {name if i == 0 else blank} {line}")
-            for i, line in enumerate(str(pc.new_value).splitlines() or [""]):
-                self.handle.verbose_log(f"{indent}+ {name if i == 0 else blank} {line}")
+        log_property_diffs(
+            [(pc.property_name, pc.old_value, pc.new_value) for pc in prop_changes],
+            self.handle.verbose_log,
+            indent,
+        )
 
     def _log_modified_device_details(self, dt: DeviceTypeChange):
         """Log the per-device detail section for a single modified device type.

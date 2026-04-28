@@ -12,6 +12,7 @@ import glob
 from pathlib import Path
 
 from core.change_detector import COMPONENT_ALIASES, ChangeType
+from core.formatting import log_property_diffs
 from core.graphql_client import GraphQLError, NetBoxGraphQLClient
 from core.normalization import values_equal
 
@@ -707,14 +708,7 @@ class NetBox:
         """
         self.handle.verbose_log(f"  ~ {mfr_slug}/{model}")
         self.handle.verbose_log("    Properties:")
-        pad = min(max(len(field) for field, _, _ in fields_info), 30)
-        for field, old_val, new_val in fields_info:
-            name = f"{field}:{'':{max(0, pad - len(field))}}"
-            blank = " " * len(name)
-            for i, line in enumerate(str(old_val if old_val is not None else "").splitlines() or [""]):
-                self.handle.verbose_log(f"      - {name if i == 0 else blank} {line}")
-            for i, line in enumerate(str(new_val if new_val is not None else "").splitlines() or [""]):
-                self.handle.verbose_log(f"      + {name if i == 0 else blank} {line}")
+        log_property_diffs(fields_info, self.handle.verbose_log)
 
     def filter_actionable_module_types(self, module_types, all_module_types, only_new=False):
         """Determine which module types need to be created or updated in NetBox.
