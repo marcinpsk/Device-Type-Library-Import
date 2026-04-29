@@ -761,7 +761,10 @@ class NetBox:
                         "            ",
                     )
             if removed:
-                self.handle.log(f"      - {len(removed)} removed component(s) (not deleted without --remove-components)")
+                self.handle.verbose_log(
+                    f"      - {len(removed)} removed component(s) "
+                    "(not deleted without --remove-components)"
+                )
                 for comp in removed:
                     self.handle.verbose_log(f"        - {comp.component_type}: {comp.component_name}")
 
@@ -1981,7 +1984,8 @@ class DeviceTypes:
                     results.append((module_type.id, item))
             return cache_name, results
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=len(targets)) as executor:
+        max_workers = max(1, min(len(targets), self.max_threads))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_fetch_one, ea, cn): (ea, cn) for ea, cn in targets}
             for future in concurrent.futures.as_completed(futures):
                 cache_name, results = future.result()

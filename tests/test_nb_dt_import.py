@@ -1034,8 +1034,10 @@ class TestProcessModuleTypesHints:
         )
 
     def test_pending_removal_counters_and_hints(self, nb_dt_import):
-        """changed_property_log with COMPONENT_REMOVED entries increments pending counters
-        and emits both --update and --remove-components hints when flags are absent."""
+        """changed_property_log with COMPONENT_REMOVED entries increments pending counters.
+
+        Emits both --update and --remove-components hints when flags are absent.
+        """
         from core.change_detector import ChangeType
 
         comp_change = MagicMock()

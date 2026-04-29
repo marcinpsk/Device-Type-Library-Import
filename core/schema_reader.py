@@ -43,12 +43,14 @@ def load_scalar_properties(schema_path, exclude=None):
 
     if "properties" not in schema:
         raise ValueError(f"Schema {schema_path} has no 'properties' key")
+    if not isinstance(schema["properties"], dict):
+        raise ValueError(f"Schema {schema_path} has non-object 'properties'")
 
     result = []
     for name, defn in schema["properties"].items():
         if name in exclude:
             continue
-        prop_type = defn.get("type")
+        prop_type = defn.get("type") if isinstance(defn, dict) else None
         if prop_type in ("array", "object"):
             continue
         result.append(name)

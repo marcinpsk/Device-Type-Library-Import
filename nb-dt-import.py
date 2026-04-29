@@ -884,7 +884,8 @@ if __name__ == "__main__":
     except NetBoxRequestError as exc:
         print(
             f"[{datetime.now().strftime('%H:%M:%S')}] Error: NetBox REST API request failed — {exc}\n"
-            f"[{datetime.now().strftime('%H:%M:%S')}] Check that NetBox is reachable and the API token has the required permissions.",
+            f"[{datetime.now().strftime('%H:%M:%S')}] Check that NetBox is reachable and"
+            " the API token has the required permissions.",
             file=sys.stderr,
         )
         raise SystemExit(1)

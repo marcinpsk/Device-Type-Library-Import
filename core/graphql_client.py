@@ -212,7 +212,6 @@ class NetBoxGraphQLClient:
         if variables is not None:
             payload["variables"] = variables
 
-        last_exc = None
         for attempt in range(1 + _retries):
             try:
                 response = self._session.post(
@@ -237,7 +236,6 @@ class NetBoxGraphQLClient:
                 # Non-transient HTTP errors are not retried.
                 raise GraphQLError(str(exc)) from exc
             except requests.RequestException as exc:
-                last_exc = exc
                 if attempt < _retries:
                     backoff = 2**attempt
                     time.sleep(backoff)

@@ -2868,7 +2868,6 @@ class TestCreateModuleTypesEdge:
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types
     ):
         """Existing module type with changed component property calls update_components and increments counter."""
-        from core.change_detector import ChangeType, ComponentChange
         from core.graphql_client import DotDict
 
         mock_pynetbox.api.return_value.version = "3.5"
@@ -5374,7 +5373,6 @@ class TestProcessSingleModuleTypeRemoveComponents:
         self, mock_settings, mock_pynetbox, mock_graphql_requests, make_device_types
     ):
         """When remove_components=True and there are component changes, remove_components is called."""
-        from core.change_detector import ChangeType, ComponentChange
 
         mock_nb_api = mock_pynetbox.api.return_value
         mock_nb_api.version = "3.5"
