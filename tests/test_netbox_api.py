@@ -4735,7 +4735,9 @@ class TestStartComponentPreloadProgressCallback:
         progress = MagicMock()
         progress.add_task.return_value = 1
 
-        with patch.object(dt, "_get_endpoint_totals", return_value={ep: 0 for ep, _ in dt._component_preload_targets()}):
+        with patch.object(
+            dt, "_get_endpoint_totals", return_value={ep: 0 for ep, _ in dt._component_preload_targets()}
+        ):
             with patch.object(dt, "_fetch_global_endpoint_records", side_effect=fake_fetch):
                 preload_job = dt.start_component_preload(progress=progress)
                 # Let the futures complete

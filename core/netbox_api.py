@@ -89,6 +89,7 @@ def _load_module_type_properties():
     except Exception:
         return list(_MODULE_TYPE_PROPERTIES_FALLBACK)
 
+
 # Sentinel used to distinguish "attribute missing from record" from a genuine
 # None/null value returned by NetBox.  When a property is in the schema-derived
 # comparison list but was not fetched by the GraphQL query, getattr returns this
@@ -1436,17 +1437,12 @@ class DeviceTypes:
         Returns:
             dict: ``{endpoint_name: count}`` for graphql endpoints, ``0`` for REST-only.
         """
-        graphql_endpoints = [
-            ep for ep, _label in components if ep not in self.REST_ONLY_ENDPOINTS
-        ]
+        graphql_endpoints = [ep for ep, _label in components if ep not in self.REST_ONLY_ENDPOINTS]
         totals = {ep: 0 for ep, _label in components}
 
         max_workers = max(1, min(len(graphql_endpoints), self.max_threads))
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_ep = {
-                executor.submit(self._get_rest_component_count, ep): ep
-                for ep in graphql_endpoints
-            }
+            future_to_ep = {executor.submit(self._get_rest_component_count, ep): ep for ep in graphql_endpoints}
             for future in concurrent.futures.as_completed(future_to_ep):
                 ep = future_to_ep[future]
                 result = future.result()
