@@ -1,3 +1,5 @@
+"""Logging utilities for the Device Type Library Import tool."""
+
 from datetime import datetime
 from sys import exit as system_exit
 

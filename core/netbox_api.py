@@ -1,3 +1,5 @@
+"""NetBox REST and GraphQL API client for importing device and module type libraries."""
+
 from collections import Counter
 import concurrent.futures
 from functools import lru_cache
@@ -14,7 +16,7 @@ from pathlib import Path
 
 from core.change_detector import COMPONENT_ALIASES, ChangeDetector, ChangeType
 from core.formatting import log_property_diffs
-from core.graphql_client import GraphQLError, NetBoxGraphQLClient
+from core.graphql_client import GraphQLCountMismatchError, GraphQLError, NetBoxGraphQLClient
 from core.normalization import values_equal
 from core.schema_reader import load_properties_for_type
 
@@ -1291,6 +1293,12 @@ class _FrontPortRecordWithMappings:
     __slots__ = ("_record", "_mappings_canonical")
 
     def __init__(self, record):
+        """Wrap *record* and pre-compute a canonical mappings list for ChangeDetector compatibility.
+
+        Normalises the ``mappings`` field (NetBox >= 4.5 list of ``PortTemplateMapping`` objects)
+        or the ``rear_port_position`` scalar (NetBox < 4.5) into a uniform list of dicts stored
+        in ``_mappings_canonical``.
+        """
         object.__setattr__(self, "_record", record)
         mappings_raw = getattr(record, "mappings", None)
         if mappings_raw is not None:
@@ -1329,6 +1337,7 @@ class _FrontPortRecordWithMappings:
         object.__setattr__(self, "_mappings_canonical", canonical)
 
     def __getattr__(self, name):
+        """Delegate attribute access to the wrapped record."""
         return getattr(self._record, name)
 
 
@@ -1446,7 +1455,7 @@ class DeviceTypes:
             for future in concurrent.futures.as_completed(future_to_ep):
                 ep = future_to_ep[future]
                 result = future.result()
-                if result is not None:
+                if isinstance(result, int) and not isinstance(result, bool):
                     totals[ep] = result
 
         return totals
@@ -1472,6 +1481,7 @@ class DeviceTypes:
                 }
 
             def update_progress(endpoint_name, advance):
+                """Put a progress update onto the queue for the main thread to consume."""
                 progress_updates.put((endpoint_name, advance))
 
             futures = {
@@ -1666,6 +1676,8 @@ class DeviceTypes:
             for endpoint_name in already_done:
                 try:
                     records_by_endpoint[endpoint_name] = future_map[endpoint_name].result()
+                except GraphQLCountMismatchError:
+                    raise
                 except Exception as exc:
                     self.handle.log(f"Preload failed for {endpoint_name}: {exc}")
                     records_by_endpoint[endpoint_name] = []
@@ -1733,6 +1745,8 @@ class DeviceTypes:
                 pending.remove(endpoint_name)
                 try:
                     records_by_endpoint[endpoint_name] = future_map[endpoint_name].result()
+                except GraphQLCountMismatchError:
+                    raise
                 except Exception as exc:
                     self.handle.log(f"Preload failed for {endpoint_name}: {exc}")
                     records_by_endpoint[endpoint_name] = []
@@ -1782,6 +1796,8 @@ class DeviceTypes:
             self.handle.verbose_log(f"Pre-fetching {label}...")
             try:
                 records_by_endpoint[endpoint] = futures[endpoint].result()
+            except GraphQLCountMismatchError:
+                raise
             except Exception as exc:
                 self.handle.log(f"Preload failed for {label}: {exc}")
                 records_by_endpoint[endpoint] = []
@@ -1809,6 +1825,7 @@ class DeviceTypes:
                     progress_updates = queue.Queue()
 
                     def update_progress(endpoint_name, advance):
+                        """Put a progress update onto the queue for the main-thread pump to consume."""
                         progress_updates.put((endpoint_name, advance))
 
                     futures = {
@@ -1897,17 +1914,29 @@ class DeviceTypes:
                 progress_callback(endpoint_name, len(records))
             return records
 
-        on_page = (lambda n: progress_callback(endpoint_name, n)) if progress_callback is not None else None
-        records = self.graphql.get_component_templates(endpoint_name, on_page=on_page)
-        if endpoint_name == "front_port_templates":
-            records = [_FrontPortRecordWithMappings(r) for r in records]
+        for attempt in range(_MAX_RETRIES + 1):
+            on_page = (lambda n: progress_callback(endpoint_name, n)) if progress_callback is not None else None
+            records = self.graphql.get_component_templates(endpoint_name, on_page=on_page)
+            if endpoint_name == "front_port_templates":
+                records = [_FrontPortRecordWithMappings(r) for r in records]
 
-        if expected_total and len(records) != expected_total:
-            self.handle.log(
-                f"WARNING: GraphQL returned {len(records)} {endpoint_name} "
-                f"but REST API expected {expected_total}. "
-                "GraphQL response may be incomplete — consider re-running."
-            )
+            if expected_total and len(records) != expected_total:
+                if attempt < _MAX_RETRIES:
+                    backoff = _RETRY_BACKOFF[attempt]
+                    self.handle.log(
+                        f"WARNING: GraphQL returned {len(records)} {endpoint_name} "
+                        f"but REST API expected {expected_total}. "
+                        f"Retrying in {backoff}s (attempt {attempt + 1}/{_MAX_RETRIES})…"
+                    )
+                    time.sleep(backoff)
+                    continue
+                raise GraphQLCountMismatchError(
+                    f"GraphQL returned {len(records)} {endpoint_name} "
+                    f"but REST API expected {expected_total} "
+                    f"after {_MAX_RETRIES} retries. "
+                    "Run aborted to prevent processing an incomplete component cache."
+                )
+            break
 
         return records
 
@@ -2027,6 +2056,7 @@ class DeviceTypes:
                 cache.setdefault(("module", mid), {})
 
         def _fetch_one(endpoint_attr, cache_name):
+            """Fetch all module-type component records for *endpoint_attr* and populate *cache_name*."""
             endpoint = getattr(self.netbox.dcim, endpoint_attr)
             results = []
             for chunk in _chunked(id_list, FILTER_CHUNK_SIZE):
@@ -2522,6 +2552,7 @@ class DeviceTypes:
         """
 
         def link_ports(items, pid):
+            """Resolve power-port name references in *items* and persist the outlet templates for device type *pid*."""
             existing_pp = self._get_cached_or_fetch(
                 "power_port_templates",
                 pid,
@@ -2617,6 +2648,7 @@ class DeviceTypes:
         m2m = self.m2m_front_ports
 
         def link_rear_ports(items, pid):
+            """Resolve rear-port position references in *items* and persist the front port templates for *pid*."""
             existing_rp = self._get_cached_or_fetch(
                 "rear_port_templates",
                 pid,
@@ -2779,6 +2811,7 @@ class DeviceTypes:
         """Create power outlet templates for a module type, resolving power-port name references."""
 
         def link_ports(items, pid):
+            """Resolve power-port name references in *items* and persist the outlet templates for module type *pid*."""
             existing_pp = self._get_cached_or_fetch(
                 "power_port_templates",
                 pid,

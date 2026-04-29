@@ -360,10 +360,13 @@ def test_fetch_global_endpoint_records_progress_skipped_when_empty(
     assert updates == []
 
 
-def test_fetch_global_endpoint_records_warns_on_count_mismatch(
+def test_fetch_global_endpoint_records_retries_and_aborts_on_count_mismatch(
     mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
 ):
-    """A warning is logged when GraphQL returns fewer records than the REST count."""
+    """After _MAX_RETRIES mismatches a GraphQLCountMismatchError is raised; each attempt logs a warning."""
+    from unittest.mock import patch as _patch
+    from core.graphql_client import GraphQLCountMismatchError
+
     mock_nb_api = mock_pynetbox.api.return_value
     mock_graphql_requests.side_effect = _make_graphql_dispatch(
         {
@@ -393,15 +396,52 @@ def test_fetch_global_endpoint_records_warns_on_count_mismatch(
     logged = []
     dt.handle.log = lambda msg: logged.append(msg)
 
-    # GraphQL returns 1 record but REST says 113259 — mismatch should warn
-    records = dt._fetch_global_endpoint_records(
-        "interface_templates",
-        progress_callback=None,
-        expected_total=113259,
-    )
+    with _patch("core.netbox_api.time.sleep") as mock_sleep:
+        with pytest.raises(GraphQLCountMismatchError, match="interface_templates"):
+            dt._fetch_global_endpoint_records(
+                "interface_templates",
+                progress_callback=None,
+                expected_total=113259,
+            )
 
-    assert len(records) == 1
-    assert any("WARNING" in m and "interface_templates" in m and "113259" in m for m in logged)
+    # One sleep per retry attempt (3 retries)
+    assert mock_sleep.call_count == 3
+    # A WARNING is logged for each retry
+    warnings = [m for m in logged if "WARNING" in m and "interface_templates" in m]
+    assert len(warnings) == 3
+
+
+def test_fetch_global_endpoint_records_succeeds_on_retry(
+    mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
+):
+    """When the first fetch is truncated but a retry returns the full count, the records are returned."""
+    from unittest.mock import patch as _patch
+    from core.graphql_client import DotDict
+
+    mock_nb_api = mock_pynetbox.api.return_value
+    dt = make_device_types(nb_api=mock_nb_api)
+
+    iface1 = DotDict({"id": "1", "name": "xe-0/0/0", "device_type": {"id": "5"}, "module_type": None})
+    iface2 = DotDict({"id": "2", "name": "xe-0/0/1", "device_type": {"id": "5"}, "module_type": None})
+
+    call_count = {"n": 0}
+
+    def fake_get(endpoint_name, on_page=None):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return [iface1]  # truncated
+        return [iface1, iface2]  # full on retry
+
+    with _patch("core.netbox_api.time.sleep"):
+        with _patch.object(dt.graphql, "get_component_templates", side_effect=fake_get):
+            records = dt._fetch_global_endpoint_records(
+                "interface_templates",
+                progress_callback=None,
+                expected_total=2,
+            )
+
+    assert len(records) == 2
+    assert call_count["n"] == 2  # initial attempt + 1 retry
 
 
 def test_fetch_global_endpoint_records_no_warning_on_count_match(

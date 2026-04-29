@@ -15,6 +15,15 @@ class GraphQLError(Exception):
     """Raised when a GraphQL query fails (HTTP error or GraphQL-level errors)."""
 
 
+class GraphQLCountMismatchError(GraphQLError):
+    """Raised when the number of records returned by GraphQL does not match the REST count.
+
+    This indicates a silent truncation in the GraphQL response — e.g. the server
+    returned far fewer records than it reports via the REST API.  The run is aborted
+    to prevent processing an incomplete cache.
+    """
+
+
 class DotDict(dict):
     """Dict subclass that supports attribute access, matching pynetbox Record patterns.
 
@@ -191,9 +200,11 @@ class NetBoxGraphQLClient:
         self._session.close()
 
     def __enter__(self):
+        """Return *self* to support use as a context manager."""
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        """Close the session on context-manager exit."""
         self.close()
 
     # ── Low-level ──────────────────────────────────────────────────────────

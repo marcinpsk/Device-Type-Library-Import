@@ -1,3 +1,5 @@
+"""Git repository helpers for cloning, updating, and parsing the device-type library."""
+
 import os
 from glob import glob
 from re import sub as re_sub

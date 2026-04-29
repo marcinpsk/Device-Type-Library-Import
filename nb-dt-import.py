@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+"""Entry-point script for importing NetBox device and module types from the community library."""
+
 from datetime import datetime
 import concurrent.futures
 import os
@@ -126,6 +128,7 @@ def get_progress_wrapper(progress, iterable, desc=None, total=None, on_step=None
     task_id = progress.add_task(description, total=total)
 
     def iterator():
+        """Yield items from *iterable* while advancing the progress task."""
         count = 0
         try:
             for item in iterable:
@@ -332,6 +335,7 @@ def _image_progress_scope(progress, device_types, total=0):
         _img_task = progress.add_task("Uploading Images", total=total)
 
         def _adv_img(count=1):
+            """Advance the image-upload progress task by *count* steps."""
             progress.update(_img_task, advance=count)
 
         device_types._image_progress = _adv_img
@@ -796,6 +800,7 @@ def main():
             parse_fn = None
 
             def on_parse_step():
+                """Invoke *parse_fn* (if set) after each parsed file, used to pump preload progress."""
                 if parse_fn is not None:
                     parse_fn()
 
@@ -808,6 +813,7 @@ def main():
                 if progress is not None:
 
                     def pump_preload():
+                        """Drain pending preload-progress updates from the background preload job."""
                         netbox.device_types.pump_preload_progress(cache_preload_job, progress)
 
                     parse_fn = pump_preload

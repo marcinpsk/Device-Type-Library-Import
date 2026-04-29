@@ -1,3 +1,5 @@
+"""Environment-variable settings for the Device Type Library Import tool."""
+
 import os
 from dotenv import load_dotenv
 
