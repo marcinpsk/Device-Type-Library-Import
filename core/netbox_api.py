@@ -1402,19 +1402,58 @@ class DeviceTypes:
             ("module_bay_templates", "Module Bays"),
         ]
 
-    def _get_endpoint_totals(self, components):
-        """Return placeholder totals for component endpoints.
+    def _get_rest_component_count(self, endpoint_name):
+        """Return the REST API count for *endpoint_name*, or ``None`` on failure.
 
-        With GraphQL, counts are not fetched upfront — progress bars will
-        adjust when results arrive.
+        Issues a single lightweight ``?limit=1`` REST call that returns just the
+        total record count — no item data is transferred.  Used to validate that
+        subsequent GraphQL fetches returned the expected number of records.
+
+        Args:
+            endpoint_name (str): Component template endpoint name (e.g. ``"interface_templates"``).
+
+        Returns:
+            int | None: Total record count, or ``None`` if the request fails.
+        """
+        try:
+            return getattr(self.netbox.dcim, endpoint_name).count()
+        except Exception:
+            return None
+
+    def _get_endpoint_totals(self, components):
+        """Fetch REST record counts for each component endpoint in parallel.
+
+        Issues one lightweight ``?limit=1`` REST call per endpoint to obtain the
+        expected total before the GraphQL fetch begins.  These totals are later
+        used to detect silent truncation in :meth:`_fetch_global_endpoint_records`.
+
+        REST-only endpoints (see :attr:`REST_ONLY_ENDPOINTS`) are excluded because
+        their counts will be determined by the REST fetch itself.
 
         Args:
             components: Iterable of ``(endpoint_name, label)`` tuples.
 
         Returns:
-            dict: ``{endpoint_name: 0}`` for all endpoints.
+            dict: ``{endpoint_name: count}`` for graphql endpoints, ``0`` for REST-only.
         """
-        return {endpoint_name: 0 for endpoint_name, _label in components}
+        graphql_endpoints = [
+            ep for ep, _label in components if ep not in self.REST_ONLY_ENDPOINTS
+        ]
+        totals = {ep: 0 for ep, _label in components}
+
+        max_workers = max(1, min(len(graphql_endpoints), self.max_threads))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_ep = {
+                executor.submit(self._get_rest_component_count, ep): ep
+                for ep in graphql_endpoints
+            }
+            for future in concurrent.futures.as_completed(future_to_ep):
+                ep = future_to_ep[future]
+                result = future.result()
+                if result is not None:
+                    totals[ep] = result
+
+        return totals
 
     def start_component_preload(self, progress=None):
         """Start concurrent component prefetch and return a preload job handle."""
@@ -1847,7 +1886,8 @@ class DeviceTypes:
         Args:
             endpoint_name (str): Component template endpoint name (e.g. ``"interface_templates"``).
             progress_callback (callable | None): Called with ``(endpoint_name, advance)`` once when done.
-            expected_total (int | None): Expected record count; reserved for callers, unused here.
+            expected_total (int | None): Expected record count obtained from the REST API before the
+                GraphQL fetch.  If provided and the fetched count differs, a warning is logged.
 
         Returns:
             list: All component template records.
@@ -1865,6 +1905,14 @@ class DeviceTypes:
         records = self.graphql.get_component_templates(endpoint_name, on_page=on_page)
         if endpoint_name == "front_port_templates":
             records = [_FrontPortRecordWithMappings(r) for r in records]
+
+        if expected_total and len(records) != expected_total:
+            self.handle.log(
+                f"WARNING: GraphQL returned {len(records)} {endpoint_name} "
+                f"but REST API expected {expected_total}. "
+                "GraphQL response may be incomplete — consider re-running."
+            )
+
         return records
 
     @staticmethod

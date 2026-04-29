@@ -360,6 +360,147 @@ def test_fetch_global_endpoint_records_progress_skipped_when_empty(
     assert updates == []
 
 
+def test_fetch_global_endpoint_records_warns_on_count_mismatch(
+    mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
+):
+    """A warning is logged when GraphQL returns fewer records than the REST count."""
+    mock_nb_api = mock_pynetbox.api.return_value
+    mock_graphql_requests.side_effect = _make_graphql_dispatch(
+        {
+            "device_type_list": {"data": {"device_type_list": []}},
+            "interface_template_list": {
+                "data": {
+                    "interface_template_list": [
+                        {
+                            "id": "1",
+                            "name": "xe-0/0/0",
+                            "type": "10gbase-x-sfpp",
+                            "label": "",
+                            "mgmt_only": False,
+                            "enabled": True,
+                            "poe_mode": None,
+                            "poe_type": None,
+                            "device_type": {"id": "5"},
+                            "module_type": None,
+                        }
+                    ]
+                }
+            },
+        }
+    )
+
+    dt = make_device_types(nb_api=mock_nb_api)
+    logged = []
+    dt.handle.log = lambda msg: logged.append(msg)
+
+    # GraphQL returns 1 record but REST says 113259 — mismatch should warn
+    records = dt._fetch_global_endpoint_records(
+        "interface_templates",
+        progress_callback=None,
+        expected_total=113259,
+    )
+
+    assert len(records) == 1
+    assert any("WARNING" in m and "interface_templates" in m and "113259" in m for m in logged)
+
+
+def test_fetch_global_endpoint_records_no_warning_on_count_match(
+    mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
+):
+    """No warning is logged when GraphQL returns the expected number of records."""
+    mock_nb_api = mock_pynetbox.api.return_value
+    mock_graphql_requests.side_effect = _make_graphql_dispatch(
+        {
+            "device_type_list": {"data": {"device_type_list": []}},
+            "interface_template_list": {
+                "data": {
+                    "interface_template_list": [
+                        {
+                            "id": "1",
+                            "name": "xe-0/0/0",
+                            "type": "10gbase-x-sfpp",
+                            "label": "",
+                            "mgmt_only": False,
+                            "enabled": True,
+                            "poe_mode": None,
+                            "poe_type": None,
+                            "device_type": {"id": "5"},
+                            "module_type": None,
+                        }
+                    ]
+                }
+            },
+        }
+    )
+
+    dt = make_device_types(nb_api=mock_nb_api)
+    logged = []
+    dt.handle.log = lambda msg: logged.append(msg)
+
+    records = dt._fetch_global_endpoint_records(
+        "interface_templates",
+        progress_callback=None,
+        expected_total=1,
+    )
+
+    assert len(records) == 1
+    assert not any("WARNING" in m for m in logged)
+
+
+def test_get_rest_component_count_returns_count(
+    mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
+):
+    """_get_rest_component_count returns the integer count from pynetbox."""
+    mock_nb_api = mock_pynetbox.api.return_value
+    mock_nb_api.dcim.interface_templates.count.return_value = 42
+
+    dt = make_device_types(nb_api=mock_nb_api)
+    assert dt._get_rest_component_count("interface_templates") == 42
+
+
+def test_get_rest_component_count_returns_none_on_error(
+    mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
+):
+    """_get_rest_component_count returns None if the REST call fails."""
+    mock_nb_api = mock_pynetbox.api.return_value
+    mock_nb_api.dcim.interface_templates.count.side_effect = Exception("connection failed")
+
+    dt = make_device_types(nb_api=mock_nb_api)
+    assert dt._get_rest_component_count("interface_templates") is None
+
+
+def test_get_endpoint_totals_fetches_rest_counts(
+    mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
+):
+    """_get_endpoint_totals fetches actual REST counts for graphql endpoints."""
+    mock_nb_api = mock_pynetbox.api.return_value
+    mock_nb_api.dcim.interface_templates.count.return_value = 100
+    mock_nb_api.dcim.power_port_templates.count.return_value = 50
+
+    dt = make_device_types(nb_api=mock_nb_api)
+    components = [("interface_templates", "Interfaces"), ("power_port_templates", "Power Ports")]
+    totals = dt._get_endpoint_totals(components)
+
+    assert totals["interface_templates"] == 100
+    assert totals["power_port_templates"] == 50
+
+
+def test_get_endpoint_totals_tolerates_count_failure(
+    mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
+):
+    """_get_endpoint_totals falls back to 0 when a REST count fails."""
+    mock_nb_api = mock_pynetbox.api.return_value
+    mock_nb_api.dcim.interface_templates.count.side_effect = Exception("timeout")
+    mock_nb_api.dcim.power_port_templates.count.return_value = 20
+
+    dt = make_device_types(nb_api=mock_nb_api)
+    components = [("interface_templates", "Interfaces"), ("power_port_templates", "Power Ports")]
+    totals = dt._get_endpoint_totals(components)
+
+    assert totals["interface_templates"] == 0
+    assert totals["power_port_templates"] == 20
+
+
 def test_preload_always_global_caches_all_vendors(
     mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
 ):
@@ -3207,7 +3348,8 @@ class TestPreloadGlobalWithProgress:
         progress.add_task.return_value = 1
         # Run only one component to keep the test fast
         components = [("interface_templates", "Interface Templates")]
-        dt._preload_global(components, progress_wrapper=None, progress=progress)
+        with patch.object(dt, "_get_endpoint_totals", return_value={"interface_templates": 0}):
+            dt._preload_global(components, progress_wrapper=None, progress=progress)
         progress.add_task.assert_called()
 
     def test_preload_global_no_progress_future_failure(
@@ -4593,10 +4735,11 @@ class TestStartComponentPreloadProgressCallback:
         progress = MagicMock()
         progress.add_task.return_value = 1
 
-        with patch.object(dt, "_fetch_global_endpoint_records", side_effect=fake_fetch):
-            preload_job = dt.start_component_preload(progress=progress)
-            # Let the futures complete
-            dt.preload_all_components(preload_job=preload_job, progress=progress)
+        with patch.object(dt, "_get_endpoint_totals", return_value={ep: 0 for ep, _ in dt._component_preload_targets()}):
+            with patch.object(dt, "_fetch_global_endpoint_records", side_effect=fake_fetch):
+                preload_job = dt.start_component_preload(progress=progress)
+                # Let the futures complete
+                dt.preload_all_components(preload_job=preload_job, progress=progress)
 
         # update_progress was called, which put items in progress_updates queue
         # pump_preload_progress or preload_all_components drained them
@@ -4624,8 +4767,9 @@ class TestPreloadGlobalOwnExecutorProgressCallback:
         progress.add_task.return_value = 1
 
         components = [("interface_templates", "Interface Templates")]
-        with patch.object(dt, "_fetch_global_endpoint_records", side_effect=fake_fetch):
-            dt._preload_global(components, progress_wrapper=None, progress=progress)
+        with patch.object(dt, "_get_endpoint_totals", return_value={"interface_templates": 0}):
+            with patch.object(dt, "_fetch_global_endpoint_records", side_effect=fake_fetch):
+                dt._preload_global(components, progress_wrapper=None, progress=progress)
 
         progress.add_task.assert_called()
         progress.stop_task.assert_called()
