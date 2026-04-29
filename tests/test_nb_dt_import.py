@@ -1014,3 +1014,176 @@ class TestEntryPoint:
                     runpy.run_path(_NB_DT_IMPORT_PATH, run_name="__main__")
 
         assert exc_info.value.code == 130
+
+
+# ---------------------------------------------------------------------------
+# _process_module_types hints and counters (lines 554-559, 572, 574-575)
+# ---------------------------------------------------------------------------
+
+
+class TestProcessModuleTypesHints:
+    """Tests for pending-removal counters and hint log lines in _process_module_types."""
+
+    def _make_args(self, only_new=False, update=False, remove_components=False):
+        return SimpleNamespace(
+            only_new=only_new,
+            update=update,
+            remove_components=remove_components,
+            vendors=None,
+            slugs=None,
+        )
+
+    def test_pending_removal_counters_and_hints(self, nb_dt_import):
+        """changed_property_log with COMPONENT_REMOVED entries increments pending counters
+        and emits both --update and --remove-components hints when flags are absent."""
+        from core.change_detector import ChangeType
+
+        comp_change = MagicMock()
+        comp_change.change_type = ChangeType.COMPONENT_REMOVED
+        changed_property_log = [("cisco", "CM1", [], [comp_change, comp_change])]
+
+        handle = MagicMock()
+        mock_nb = MagicMock()
+        mock_nb.get_existing_module_types.return_value = {}
+        module_to_process = {"manufacturer": {"slug": "cisco"}, "model": "CM1"}
+        mock_nb.filter_actionable_module_types.return_value = (
+            [module_to_process],
+            {},
+            changed_property_log,
+        )
+        mock_nb.count_module_type_images.return_value = 0
+
+        mock_repo = MagicMock()
+        mock_repo.get_devices.return_value = ([], [])
+
+        nb_dt_import._process_module_types(
+            self._make_args(only_new=False, update=False, remove_components=False),
+            mock_nb,
+            mock_repo,
+            handle,
+            None,
+            set(),
+        )
+
+        logged = [call.args[0] for call in handle.log.call_args_list]
+        # --update hint should appear (module_changed_count > 0, update=False)
+        assert any("--update" in msg for msg in logged)
+        # --remove-components hint should appear (pending_removal_modules > 0, remove_components=False)
+        assert any("--remove-components" in msg for msg in logged)
+
+
+# ---------------------------------------------------------------------------
+# _log_run_summary rack_types and duplicate_definitions (lines 687-688, 697-700)
+# ---------------------------------------------------------------------------
+
+
+class TestLogRunSummary:
+    """Tests for _log_run_summary rack_type and duplicate-definitions branches."""
+
+    def test_rack_types_counters_are_logged(self, nb_dt_import):
+        """When netbox.rack_types is True, rack_type_added/updated counters are logged."""
+        from datetime import datetime
+
+        handle = MagicMock()
+        mock_nb = MagicMock()
+        mock_nb.modules = False
+        mock_nb.rack_types = True
+        mock_nb.counter = {
+            "added": 0,
+            "properties_updated": 0,
+            "components_updated": 0,
+            "components_added": 0,
+            "components_removed": 0,
+            "images": 0,
+            "manufacturer": 0,
+            "rack_type_added": 3,
+            "rack_type_updated": 1,
+        }
+
+        nb_dt_import._log_run_summary(handle, mock_nb, datetime.now())
+
+        logged = [call.args[0] for call in handle.log.call_args_list]
+        assert any("rack type" in msg for msg in logged)
+
+    def test_duplicate_definitions_are_logged(self, nb_dt_import):
+        """When dtl_repo has duplicate_definitions, each entry is logged with kept/ignored."""
+        from datetime import datetime
+
+        handle = MagicMock()
+        mock_nb = MagicMock()
+        mock_nb.modules = False
+        mock_nb.rack_types = False
+        mock_nb.counter = {
+            "added": 0,
+            "properties_updated": 0,
+            "components_updated": 0,
+            "components_added": 0,
+            "components_removed": 0,
+            "images": 0,
+            "manufacturer": 0,
+        }
+
+        mock_repo = MagicMock()
+        mock_repo.duplicate_definitions = [
+            {
+                "manufacturer": "cisco",
+                "model": "X",
+                "kept": "a.yaml",
+                "ignored": ["b.yaml"],
+            }
+        ]
+
+        nb_dt_import._log_run_summary(handle, mock_nb, datetime.now(), dtl_repo=mock_repo)
+
+        logged = [call.args[0] for call in handle.log.call_args_list]
+        assert any("cisco" in msg for msg in logged)
+        assert any("a.yaml" in msg for msg in logged)
+        assert any("b.yaml" in msg for msg in logged)
+
+
+# ---------------------------------------------------------------------------
+# __main__ entry point: GraphQLError and NetBoxRequestError handlers (lines 876-890)
+# ---------------------------------------------------------------------------
+
+
+class TestEntryPointErrorHandlers:
+    """Tests for GraphQLError and NetBoxRequestError handlers in the __main__ block."""
+
+    def test_graphql_error_prints_message_and_exits_1(self):
+        """GraphQLError raised from main() becomes SystemExit(1) with stderr output."""
+        from core.graphql_client import GraphQLError
+
+        with (
+            patch("core.repo.DTLRepo") as MockDTLRepo,
+            patch("core.netbox_api.NetBox"),
+        ):
+            MockDTLRepo.side_effect = GraphQLError("graphql failed")
+
+            with patch.object(sys, "argv", ["nb-dt-import.py", "--only-new"]):
+                with pytest.raises(SystemExit) as exc_info:
+                    runpy.run_path(_NB_DT_IMPORT_PATH, run_name="__main__")
+
+        assert exc_info.value.code == 1
+
+    def test_netbox_request_error_prints_message_and_exits_1(self):
+        """NetBoxRequestError raised from main() becomes SystemExit(1) with stderr output."""
+        from unittest.mock import MagicMock
+
+        import pynetbox.core.query
+
+        mock_req = MagicMock()
+        mock_req.status_code = 400
+        mock_req.url = "http://netbox/api/"
+        netbox_err = pynetbox.core.query.RequestError(mock_req)
+
+        with (
+            patch("core.repo.DTLRepo") as MockDTLRepo,
+            patch("core.netbox_api.NetBox"),
+        ):
+            MockDTLRepo.side_effect = netbox_err
+
+            with patch.object(sys, "argv", ["nb-dt-import.py", "--only-new"]):
+                with pytest.raises(SystemExit) as exc_info:
+                    runpy.run_path(_NB_DT_IMPORT_PATH, run_name="__main__")
+
+        assert exc_info.value.code == 1

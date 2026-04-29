@@ -1443,3 +1443,98 @@ class TestCustomPageSize:
         client.query_all("query($pagination: OffsetPaginationInput) { items }", "items")
         sent_vars = mock_post.call_args[1]["json"]["variables"]
         assert sent_vars["pagination"]["limit"] == 100
+
+
+# ---------------------------------------------------------------------------
+# query() error branches: 403, retryable HTTP, RequestException (lines 228, 234-236, 240-245)
+# ---------------------------------------------------------------------------
+
+
+class TestGraphQLQueryErrorPaths:
+    """Tests for error-handling branches in query()."""
+
+    def _make_client(self):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        return NetBoxGraphQLClient("http://netbox.local", "testtoken")
+
+    def test_403_raises_graphql_error_with_hint(self, mock_post):
+        """A 403 HTTPError immediately raises GraphQLError with a permission hint."""
+        from core.graphql_client import GraphQLError
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 403
+        http_err = requests.exceptions.HTTPError("403 Client Error")
+        http_err.response = mock_resp
+        response_mock = MagicMock()
+        response_mock.raise_for_status.side_effect = http_err
+        mock_post.return_value = response_mock
+
+        client = self._make_client()
+        with pytest.raises(GraphQLError, match="403 Forbidden"):
+            client.query("{ test }")
+
+    def test_429_no_retry_raises_graphql_error(self, mock_post):
+        """A 429 with _retries=0 raises GraphQLError immediately (not retried)."""
+        from core.graphql_client import GraphQLError
+
+        mock_429_resp = MagicMock()
+        http_err_429 = requests.exceptions.HTTPError("429 Too Many Requests")
+        http_err_429.response = MagicMock()
+        http_err_429.response.status_code = 429
+        mock_429_resp.raise_for_status.side_effect = http_err_429
+
+        mock_post.return_value = mock_429_resp
+
+        client = self._make_client()
+        with pytest.raises(GraphQLError):
+            client.query("{ test }", _retries=0)
+
+    def test_429_with_retry_allowed_retries_then_succeeds(self, mock_post):
+        """A 429 with retry budget > 0 sleeps and retries; second call succeeds."""
+        from unittest.mock import patch
+
+        mock_429_resp = MagicMock()
+        http_err_429 = requests.exceptions.HTTPError("429")
+        http_err_429.response = MagicMock()
+        http_err_429.response.status_code = 429
+        mock_429_resp.raise_for_status.side_effect = http_err_429
+
+        mock_200_resp = MagicMock()
+        mock_200_resp.raise_for_status = MagicMock()
+        mock_200_resp.json.return_value = {"data": {"answer": 42}}
+
+        mock_post.side_effect = [mock_429_resp, mock_200_resp]
+
+        client = self._make_client()
+        with patch("core.graphql_client.time.sleep"):
+            result = client.query("{ test }", _retries=1)
+
+        assert result == {"answer": 42}
+
+    def test_request_exception_retries_then_raises_graphql_error(self, mock_post):
+        """Persistent RequestException exhausts retry budget and raises GraphQLError."""
+        from unittest.mock import patch
+
+        from core.graphql_client import GraphQLError
+
+        mock_post.side_effect = requests.exceptions.ConnectionError("connection refused")
+
+        client = self._make_client()
+        with patch("core.graphql_client.time.sleep"):
+            with pytest.raises(GraphQLError, match="connection refused"):
+                client.query("{ test }", _retries=1)
+
+    def test_request_exception_retries_before_exhausting(self, mock_post):
+        """A RequestException on the first attempt stores last_exc and retries."""
+        from unittest.mock import patch
+
+        from core.graphql_client import GraphQLError
+
+        # Fail twice (matching _retries=1 giving 2 total attempts)
+        mock_post.side_effect = requests.exceptions.Timeout("timed out")
+
+        client = self._make_client()
+        with patch("core.graphql_client.time.sleep"):
+            with pytest.raises(GraphQLError, match="timed out"):
+                client.query("{ test }", _retries=1)

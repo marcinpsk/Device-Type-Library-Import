@@ -881,3 +881,177 @@ def test_parse_single_file_profile_null(tmp_path):
 
     result = parse_single_file(str(yaml_file))
     assert result["profile"] is None
+
+
+# ---------------------------------------------------------------------------
+# get_racks_path (line 312)
+# ---------------------------------------------------------------------------
+
+
+class TestGetRacksPath:
+    """Tests for DTLRepo.get_racks_path()."""
+
+    def _make_repo(self):
+        mock_args = MagicMock()
+        mock_args.url = "https://github.com/org/repo.git"
+        mock_args.branch = "master"
+        mock_handle = MagicMock()
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("core.repo.Repo") as MockRepo,
+        ):
+            mock_git_repo = MagicMock()
+            mock_git_repo.remotes.origin.url = "https://github.com/org/repo.git"
+            ref = MagicMock()
+            ref.name = "origin/master"
+            mock_git_repo.remotes.origin.refs = [ref]
+            MockRepo.return_value = mock_git_repo
+            repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+        return repo
+
+    def test_get_racks_path_ends_with_rack_types(self):
+        repo = self._make_repo()
+        assert repo.get_racks_path().endswith("rack-types")
+
+
+# ---------------------------------------------------------------------------
+# parse_single_file generic Exception fallback (lines 231-232)
+# ---------------------------------------------------------------------------
+
+
+class TestParseSingleFileGenericException:
+    """Tests for the generic Exception handler in parse_single_file."""
+
+    def test_normalize_error_returns_error_string(self, tmp_path):
+        from core.repo import parse_single_file
+
+        yaml_file = tmp_path / "device.yaml"
+        yaml_file.write_text("manufacturer: Cisco\nmodel: TestSwitch\n")
+
+        with patch("core.repo.normalize_port_mappings", side_effect=RuntimeError("unexpected")):
+            result = parse_single_file(str(yaml_file))
+
+        assert isinstance(result, str)
+        assert result.startswith("Error:")
+        assert "unexpected" in result
+
+
+# ---------------------------------------------------------------------------
+# parse_files KeyboardInterrupt re-raise (lines 444-446)
+# ---------------------------------------------------------------------------
+
+
+class TestParseFilesKeyboardInterrupt:
+    """Tests that KeyboardInterrupt during parse_files is re-raised."""
+
+    def _make_repo(self):
+        mock_args = MagicMock()
+        mock_args.url = "https://github.com/org/repo.git"
+        mock_args.branch = "master"
+        mock_handle = MagicMock()
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("core.repo.Repo") as MockRepo,
+        ):
+            mock_git_repo = MagicMock()
+            mock_git_repo.remotes.origin.url = "https://github.com/org/repo.git"
+            ref = MagicMock()
+            ref.name = "origin/master"
+            mock_git_repo.remotes.origin.refs = [ref]
+            MockRepo.return_value = mock_git_repo
+            repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+        return repo
+
+    def test_keyboard_interrupt_is_reraised(self):
+        import pytest
+
+        repo = self._make_repo()
+
+        with patch("core.repo.parse_single_file", side_effect=KeyboardInterrupt):
+            with pytest.raises(KeyboardInterrupt):
+                repo.parse_files(["fake_file.yaml"])
+
+
+# ---------------------------------------------------------------------------
+# parse_files dedup: KeyError/TypeError path (lines 461-463)
+# ---------------------------------------------------------------------------
+
+
+class TestParseFilesKeyErrorDedup:
+    """Tests for the KeyError/TypeError dedup guard in parse_files."""
+
+    def _make_repo(self):
+        mock_args = MagicMock()
+        mock_args.url = "https://github.com/org/repo.git"
+        mock_args.branch = "master"
+        mock_handle = MagicMock()
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("core.repo.Repo") as MockRepo,
+        ):
+            mock_git_repo = MagicMock()
+            mock_git_repo.remotes.origin.url = "https://github.com/org/repo.git"
+            ref = MagicMock()
+            ref.name = "origin/master"
+            mock_git_repo.remotes.origin.refs = [ref]
+            MockRepo.return_value = mock_git_repo
+            repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+        return repo
+
+    def test_item_without_manufacturer_is_included_without_dedup(self):
+        """Item missing 'manufacturer' key skips dedup and is appended as-is."""
+        repo = self._make_repo()
+        # Return an item with no 'manufacturer' key.
+        item_no_mfr = {"model": "UnknownSwitch", "src": "a.yaml"}
+
+        with patch("core.repo.parse_single_file", return_value=item_no_mfr):
+            result = repo.parse_files(["fake_file.yaml"])
+
+        assert item_no_mfr in result
+
+
+# ---------------------------------------------------------------------------
+# parse_files duplicate logging (lines 471-476)
+# ---------------------------------------------------------------------------
+
+
+class TestParseFilesDuplicateLogging:
+    """Tests for duplicate definition detection and logging in parse_files."""
+
+    def _make_repo(self):
+        mock_args = MagicMock()
+        mock_args.url = "https://github.com/org/repo.git"
+        mock_args.branch = "master"
+        mock_handle = MagicMock()
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("core.repo.Repo") as MockRepo,
+        ):
+            mock_git_repo = MagicMock()
+            mock_git_repo.remotes.origin.url = "https://github.com/org/repo.git"
+            ref = MagicMock()
+            ref.name = "origin/master"
+            mock_git_repo.remotes.origin.refs = [ref]
+            MockRepo.return_value = mock_git_repo
+            repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+        return repo, mock_handle
+
+    def test_duplicate_key_logs_warning_and_records_definition(self):
+        """Two items with the same (manufacturer_slug, model) trigger duplicate logging."""
+        repo, mock_handle = self._make_repo()
+
+        item_a = {"manufacturer": {"slug": "cisco"}, "model": "X", "src": "a.yaml"}
+        item_b = {"manufacturer": {"slug": "cisco"}, "model": "X", "src": "b.yaml"}
+
+        with patch("core.repo.parse_single_file", side_effect=[item_a, item_b]):
+            result = repo.parse_files(["a.yaml", "b.yaml"])
+
+        # Only the first item (sorted by src) should appear in results.
+        assert len(result) == 1
+        # Warning must have been logged.
+        logged = [call.args[0] for call in mock_handle.log.call_args_list]
+        assert any("WARNING" in msg and "cisco" in msg for msg in logged)
+        # Duplicate definitions recorded on repo.
+        assert len(repo.duplicate_definitions) == 1
+        assert repo.duplicate_definitions[0]["manufacturer"] == "cisco"
+        assert repo.duplicate_definitions[0]["model"] == "X"

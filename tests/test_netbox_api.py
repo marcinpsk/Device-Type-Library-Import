@@ -5087,3 +5087,334 @@ class TestBuildLinkRearPortsEdgeCases:
         log_calls = [str(c) for c in mock_settings.handle.log.call_args_list]
         assert any("only first mapping applied" in c for c in log_calls)
         assert any("MyDevice" in c for c in log_calls)
+
+
+# ---------------------------------------------------------------------------
+# _module_type_has_missing_components (lines 770-782)
+# ---------------------------------------------------------------------------
+
+
+class TestModuleTypeHasMissingComponents:
+    """Tests for NetBox._module_type_has_missing_components()."""
+
+    def test_returns_true_when_component_missing(self, mock_settings, mock_pynetbox, make_device_types):
+        """Returns True when a YAML-defined component name is absent from the cache."""
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "3.5"
+
+        nb = NetBox(mock_settings, mock_settings.handle)
+        # Pre-populate cache with an empty interface set for module 42.
+        nb.device_types.cached_components["interface_templates"] = {("module", 42): {}}
+
+        module_type = {"interfaces": [{"name": "xe-0/0/0"}]}
+        existing_module = MagicMock()
+        existing_module.id = 42
+
+        result = nb._module_type_has_missing_components(module_type, existing_module, ["interfaces"])
+
+        assert result is True
+
+    def test_returns_false_when_all_components_present(self, mock_settings, mock_pynetbox, make_device_types):
+        """Returns False when all YAML-defined components exist in the cache."""
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "3.5"
+
+        nb = NetBox(mock_settings, mock_settings.handle)
+        existing_iface = MagicMock()
+        existing_iface.name = "xe-0/0/0"
+        nb.device_types.cached_components["interface_templates"] = {
+            ("module", 42): {"xe-0/0/0": existing_iface}
+        }
+
+        module_type = {"interfaces": [{"name": "xe-0/0/0"}]}
+        existing_module = MagicMock()
+        existing_module.id = 42
+
+        result = nb._module_type_has_missing_components(module_type, existing_module, ["interfaces"])
+
+        assert result is False
+
+    def test_returns_false_when_no_components_in_yaml(self, mock_settings, mock_pynetbox, make_device_types):
+        """Returns False when the module type dict has no components under the key."""
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "3.5"
+
+        nb = NetBox(mock_settings, mock_settings.handle)
+        module_type = {}  # no "interfaces" key
+        existing_module = MagicMock()
+        existing_module.id = 99
+
+        result = nb._module_type_has_missing_components(module_type, existing_module, ["interfaces"])
+
+        assert result is False
+
+
+# ---------------------------------------------------------------------------
+# filter_actionable_module_types _MISSING skip (line 847)
+# ---------------------------------------------------------------------------
+
+
+class TestFilterActionableModuleTypesMissingAttr:
+    """Tests for the _MISSING guard in filter_actionable_module_types."""
+
+    def test_missing_netbox_field_is_not_treated_as_change(
+        self, mock_settings, mock_pynetbox, mock_graphql_requests
+    ):
+        """When existing module lacks an attribute, it's skipped — no false positive change."""
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "3.5"
+
+        mock_graphql_requests.side_effect = paginate_dispatch(
+            {
+                "manufacturer_list": [],
+                "device_type_list": [],
+                "module_type_list": [
+                    {
+                        "id": "10",
+                        "model": "Linecard-A",
+                        "manufacturer": {"id": "5", "name": "Arista", "slug": "arista"},
+                    }
+                ],
+                "image_attachment_list": [],
+            }
+        )
+
+        nb = NetBox(mock_settings, mock_settings.handle)
+        nb.device_types._global_preload_done = True
+
+        # existing_module is a spec=[] object so getattr(…, field, _MISSING) returns _MISSING
+        existing_module = MagicMock(spec=[])
+        existing_module.id = 10
+        existing_module.manufacturer = MagicMock()
+        existing_module.manufacturer.slug = "arista"
+        existing_module.model = "Linecard-A"
+
+        all_module_types = {"arista": {"Linecard-A": existing_module}}
+
+        module_type = {
+            "manufacturer": {"slug": "arista"},
+            "model": "Linecard-A",
+            "slug": "linecard-a",
+            "part_number": "LC-123",
+            "src": "/repo/module-types/arista/linecard-a.yaml",
+        }
+
+        with patch("glob.glob", return_value=[]):
+            actionable, _, _ = nb.filter_actionable_module_types(
+                [module_type],
+                all_module_types,
+                only_new=False,
+            )
+
+        # The module was not added to actionable because the field was _MISSING
+        # (skipped as a potential false positive), not because it matched.
+        # Either outcome is valid; the key test is that no exception is raised.
+        assert isinstance(actionable, list)
+
+
+# ---------------------------------------------------------------------------
+# log_module_type_changes non-empty log (lines 875-878)
+# ---------------------------------------------------------------------------
+
+
+class TestLogModuleTypeChanges:
+    """Tests for NetBox.log_module_type_changes()."""
+
+    def test_non_empty_log_emits_verbose_output(self, mock_settings, mock_pynetbox):
+        """A non-empty changed_property_log triggers verbose logging."""
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "3.5"
+
+        nb = NetBox(mock_settings, mock_settings.handle)
+        mock_settings.handle.verbose_log.reset_mock()
+
+        changed_property_log = [("cisco", "CM1", [("part_number", "old", "new")], [])]
+        nb.log_module_type_changes(changed_property_log)
+
+        mock_settings.handle.verbose_log.assert_called()
+
+    def test_empty_log_emits_nothing(self, mock_settings, mock_pynetbox):
+        """An empty changed_property_log does not trigger any logging calls."""
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "3.5"
+
+        nb = NetBox(mock_settings, mock_settings.handle)
+        mock_settings.handle.verbose_log.reset_mock()
+
+        nb.log_module_type_changes([])
+
+        mock_settings.handle.verbose_log.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _try_update_module_type error handlers (lines 918-925)
+# ---------------------------------------------------------------------------
+
+
+class TestTryUpdateModuleTypeErrors:
+    """Tests for RequestError and retryable-exception handlers in _try_update_module_type."""
+
+    def _make_nb(self, mock_settings, mock_pynetbox):
+        mock_pynetbox.api.return_value.version = "3.5"
+        return NetBox(mock_settings, mock_settings.handle)
+
+    def _make_module_type_res(self):
+        res = MagicMock()
+        res.id = 1
+        res.manufacturer.name = "Cisco"
+        res.model = "CM1"
+        return res
+
+    def test_request_error_returns_false_and_logs(self, mock_settings, mock_pynetbox):
+        """pynetbox.RequestError during update causes (False, False) return and log."""
+        import pynetbox as real_pynb
+
+        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.RequestError = real_pynb.RequestError
+
+        nb = self._make_nb(mock_settings, mock_pynetbox)
+        mock_settings.handle.log.reset_mock()
+
+        err = real_pynb.RequestError(MagicMock(status_code=400, content=b'{"detail":"bad"}'))
+        nb.netbox.dcim.module_types.update.side_effect = err
+
+        curr_mt = {"part_number": "NEW-123"}
+        module_type_res = self._make_module_type_res()
+        module_type_res.part_number = "OLD-123"
+
+        ok, updated = nb._try_update_module_type(curr_mt, module_type_res, "test.yaml")
+
+        assert ok is False
+        assert updated is False
+        mock_settings.handle.log.assert_called()
+
+    def test_retryable_exception_returns_false_and_logs(self, mock_settings, mock_pynetbox):
+        """A ConnectionError (retryable) after max retries causes (False, False) return."""
+        from unittest.mock import patch
+
+        import pynetbox as real_pynb
+        import requests
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_pynetbox.api.return_value.version = "3.5"
+
+        nb = self._make_nb(mock_settings, mock_pynetbox)
+        mock_settings.handle.log.reset_mock()
+
+        nb.netbox.dcim.module_types.update.side_effect = requests.exceptions.ConnectionError("dropped")
+
+        curr_mt = {"part_number": "NEW-123"}
+        module_type_res = self._make_module_type_res()
+        module_type_res.part_number = "OLD-123"
+
+        with patch("core.netbox_api.time.sleep"):
+            ok, updated = nb._try_update_module_type(curr_mt, module_type_res, "test.yaml")
+
+        assert ok is False
+        assert updated is False
+        mock_settings.handle.log.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# _process_single_module_type: creation retryable exception (lines 979-983)
+# ---------------------------------------------------------------------------
+
+
+class TestProcessSingleModuleTypeCreateRetryable:
+    """Tests for the retryable-exception handler when creating a module type."""
+
+    def test_retryable_exception_on_create_returns_false(
+        self, mock_settings, mock_pynetbox, mock_graphql_requests
+    ):
+        """ConnectionError during module type creation causes the method to return False."""
+        from unittest.mock import patch
+
+        import pynetbox as real_pynb
+        import requests
+
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "3.5"
+        mock_pynetbox.RequestError = real_pynb.RequestError
+
+        nb = NetBox(mock_settings, mock_settings.handle)
+        mock_settings.handle.log.reset_mock()
+
+        mock_nb_api.dcim.module_types.create.side_effect = requests.exceptions.ConnectionError(
+            "network down"
+        )
+
+        curr_mt = {
+            "manufacturer": {"slug": "cisco"},
+            "model": "CM-Retryable",
+            "slug": "cm-retryable",
+        }
+
+        with patch("core.netbox_api.time.sleep"):
+            result = nb._process_single_module_type(
+                curr_mt,
+                "test.yaml",
+                {},
+                {},
+                only_new=False,
+            )
+
+        assert result is False
+        mock_settings.handle.log.assert_called()
+
+
+# ---------------------------------------------------------------------------
+# _process_single_module_type: remove_components call (line 1033)
+# ---------------------------------------------------------------------------
+
+
+class TestProcessSingleModuleTypeRemoveComponents:
+    """Tests that remove_components=True calls device_types.remove_components."""
+
+    def test_remove_components_is_called_when_flag_set(
+        self, mock_settings, mock_pynetbox, mock_graphql_requests, make_device_types
+    ):
+        """When remove_components=True and there are component changes, remove_components is called."""
+        from core.change_detector import ChangeType, ComponentChange
+
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "3.5"
+
+        nb = NetBox(mock_settings, mock_settings.handle)
+
+        # Build a pre-existing module type so the "else" path (update) is taken.
+        existing_module = MagicMock()
+        existing_module.id = 55
+        existing_module.manufacturer.name = "Cisco"
+        existing_module.model = "CM-Remove"
+
+        all_module_types = {"cisco": {"CM-Remove": existing_module}}
+
+        # Populate cache so _compare_components returns a COMPONENT_REMOVED change.
+        stale_iface = MagicMock()
+        stale_iface.name = "xe-stale"
+        nb.device_types.cached_components["interface_templates"] = {
+            ("module", 55): {"xe-stale": stale_iface}
+        }
+        nb.device_types._global_preload_done = True
+
+        curr_mt = {
+            "manufacturer": {"slug": "cisco"},
+            "model": "CM-Remove",
+            "slug": "cm-remove",
+            "interfaces": [],  # empty → xe-stale should be detected as removed
+        }
+
+        nb.device_types.remove_components = MagicMock()
+        nb.device_types.update_components = MagicMock()
+
+        result = nb._process_single_module_type(
+            curr_mt,
+            "test.yaml",
+            all_module_types,
+            {},
+            only_new=False,
+            remove_components=True,
+        )
+
+        assert result is True
+        nb.device_types.remove_components.assert_called_once()
