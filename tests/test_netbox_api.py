@@ -2915,6 +2915,102 @@ class TestFilterActionableModuleTypesEdge:
 
         assert actionable == [module_type]
 
+    def test_existing_module_with_missing_image_and_property_change_logs_both(
+        self, mock_settings, mock_pynetbox, mock_graphql_requests, tmp_path
+    ):
+        """Mixed image + property change: image change must NOT short-circuit property/component diff.
+
+        Regression: an early ``continue`` after detecting a missing image meant scalar/component
+        comparison was skipped; the module ended up actionable but absent from
+        ``changed_property_log``, so ``log_module_type_changes`` never showed the property diff
+        and the "Modified module types" count was wrong.
+        """
+        from core.graphql_client import DotDict
+
+        mock_pynetbox.api.return_value.version = "3.5"
+        mock_graphql_requests.side_effect = paginate_dispatch(
+            {
+                "manufacturer_list": [],
+                "device_type_list": [],
+                "module_type_list": [],
+                "image_attachment_list": [],
+            }
+        )
+        nb = NetBox(mock_settings, mock_settings.handle)
+
+        existing_mt = DotDict(
+            {"id": 42, "model": "IOM-s-3.0T", "part_number": "OLD_PN", "manufacturer": {"slug": "nokia"}}
+        )
+        all_mts = {"nokia": {"IOM-s-3.0T": existing_mt}}
+
+        module_type = {
+            "manufacturer": {"slug": "nokia"},
+            "model": "IOM-s-3.0T",
+            "part_number": "3HE16474AA",
+            "src": "/tmp/repo/module-types/Nokia/IOM-s-3.0T.yaml",
+        }
+
+        # NetBox has no image attachments for this module → missing image triggers image_changed.
+        with patch.object(nb, "_discover_module_image_files", return_value=["/tmp/IOM-s-3.0T.front.png"]):
+            with patch.object(nb, "_fetch_module_type_existing_images", return_value={42: set()}):
+                actionable, _, changed_property_log = nb.filter_actionable_module_types(
+                    [module_type],
+                    all_mts,
+                    only_new=False,
+                )
+
+        assert actionable == [module_type]
+        # Property diff MUST still be captured even though images also changed.
+        assert len(changed_property_log) == 1
+        mfr_slug, model, fields_info, _ = changed_property_log[0]
+        assert mfr_slug == "nokia"
+        assert model == "IOM-s-3.0T"
+        assert any(f == "part_number" for f, _, _ in fields_info)
+
+    def test_existing_module_with_only_missing_image_is_actionable_but_not_logged(
+        self, mock_settings, mock_pynetbox, mock_graphql_requests
+    ):
+        """Image-only change: actionable (so the image is uploaded) but NOT in changed_property_log.
+
+        Image-only updates are handled in default mode and must not appear as "Modified
+        module types" or trigger the misleading ``--update`` hint.
+        """
+        from core.graphql_client import DotDict
+
+        mock_pynetbox.api.return_value.version = "3.5"
+        mock_graphql_requests.side_effect = paginate_dispatch(
+            {
+                "manufacturer_list": [],
+                "device_type_list": [],
+                "module_type_list": [],
+                "image_attachment_list": [],
+            }
+        )
+        nb = NetBox(mock_settings, mock_settings.handle)
+
+        existing_mt = DotDict(
+            {"id": 42, "model": "IOM-s-3.0T", "part_number": "3HE16474AA", "manufacturer": {"slug": "nokia"}}
+        )
+        all_mts = {"nokia": {"IOM-s-3.0T": existing_mt}}
+
+        module_type = {
+            "manufacturer": {"slug": "nokia"},
+            "model": "IOM-s-3.0T",
+            "part_number": "3HE16474AA",
+            "src": "/tmp/repo/module-types/Nokia/IOM-s-3.0T.yaml",
+        }
+
+        with patch.object(nb, "_discover_module_image_files", return_value=["/tmp/IOM-s-3.0T.front.png"]):
+            with patch.object(nb, "_fetch_module_type_existing_images", return_value={42: set()}):
+                actionable, _, changed_property_log = nb.filter_actionable_module_types(
+                    [module_type],
+                    all_mts,
+                    only_new=False,
+                )
+
+        assert actionable == [module_type]
+        assert changed_property_log == []
+
     def test_existing_module_with_unchanged_property_is_not_actionable(
         self, mock_settings, mock_pynetbox, mock_graphql_requests
     ):

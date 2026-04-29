@@ -849,9 +849,9 @@ class NetBox:
 
             existing_images = module_type_existing_images.get(existing_module.id, set())
             image_files = self._discover_module_image_files(module_type.get("src", ""))
-            if any(os.path.splitext(os.path.basename(path))[0] not in existing_images for path in image_files):
-                actionable_module_types.append(module_type)
-                continue
+            image_changed = any(
+                os.path.splitext(os.path.basename(path))[0] not in existing_images for path in image_files
+            )
 
             changed_fields_info = []
             for f in _load_module_type_properties():
@@ -875,6 +875,8 @@ class NetBox:
                         component_changes,
                     )
                 )
+
+            if image_changed or changed_fields_info or component_changes:
                 actionable_module_types.append(module_type)
 
         return actionable_module_types, module_type_existing_images, changed_property_log
