@@ -571,8 +571,9 @@ def _process_module_types(
         if module_changed_count and not args.update:
             handle.log("  (Run with --update to apply changes to existing module types)")
         if pending_removal_modules and not args.remove_components:
+            remove_hint = "--remove-components" if args.update else "--update --remove-components"
             handle.log(
-                f"  (Run with --remove-components to remove {pending_removal_components} stale "
+                f"  (Run with {remove_hint} to remove {pending_removal_components} stale "
                 f"component(s) across {pending_removal_modules} module type(s))"
             )
     handle.log("------------------------------------------------------------")
@@ -876,12 +877,14 @@ if __name__ == "__main__":
         print(
             f"[{datetime.now().strftime('%H:%M:%S')}] Error: NetBox GraphQL request failed — {exc}\n"
             f"[{datetime.now().strftime('%H:%M:%S')}] This may be a temporary connectivity issue. "
-            "Check that NetBox is reachable and try again."
+            "Check that NetBox is reachable and try again.",
+            file=sys.stderr,
         )
         raise SystemExit(1)
     except NetBoxRequestError as exc:
         print(
             f"[{datetime.now().strftime('%H:%M:%S')}] Error: NetBox REST API request failed — {exc}\n"
-            f"[{datetime.now().strftime('%H:%M:%S')}] Check that NetBox is reachable and the API token has the required permissions."
+            f"[{datetime.now().strftime('%H:%M:%S')}] Check that NetBox is reachable and the API token has the required permissions.",
+            file=sys.stderr,
         )
         raise SystemExit(1)

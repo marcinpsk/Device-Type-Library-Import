@@ -896,11 +896,15 @@ class NetBox:
             tuple[bool, bool]: ``(success, updated)`` where *success* is False on error and
                 *updated* is True when at least one field was actually patched.
         """
-        updates = {
-            field: curr_mt[field]
-            for field in MODULE_TYPE_PROPERTIES
-            if field in curr_mt and not values_equal(curr_mt[field], getattr(module_type_res, field, None))
-        }
+        updates = {}
+        for field in MODULE_TYPE_PROPERTIES:
+            if field not in curr_mt:
+                continue
+            current_value = getattr(module_type_res, field, _MISSING)
+            if current_value is _MISSING:
+                continue
+            if not values_equal(curr_mt[field], current_value):
+                updates[field] = curr_mt[field]
         if not updates:
             return True, False
         try:

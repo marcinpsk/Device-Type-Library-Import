@@ -76,5 +76,5 @@ def load_properties_for_type(schema_dir, type_name, exclude=None):
     schema_path = os.path.join(schema_dir, f"{type_name}.json")
     try:
         return load_scalar_properties(schema_path, exclude=exclude)
-    except (FileNotFoundError, ValueError):
+    except (OSError, ValueError):
         return []
