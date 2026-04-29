@@ -5190,16 +5190,17 @@ class TestFilterActionableModuleTypesMissingAttr:
         }
 
         with patch("glob.glob", return_value=[]):
-            actionable, _, _ = nb.filter_actionable_module_types(
+            actionable, _, changed_property_log = nb.filter_actionable_module_types(
                 [module_type],
                 all_module_types,
                 only_new=False,
             )
 
-        # The module was not added to actionable because the field was _MISSING
-        # (skipped as a potential false positive), not because it matched.
-        # Either outcome is valid; the key test is that no exception is raised.
-        assert isinstance(actionable, list)
+        # The _MISSING sentinel must prevent the module from being flagged for update.
+        # A MagicMock(spec=[]) has no attributes, so every field access returns _MISSING
+        # and the module should NOT appear in actionable or the change log.
+        assert actionable == []
+        assert changed_property_log == []
 
 
 # ---------------------------------------------------------------------------

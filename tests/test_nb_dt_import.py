@@ -808,11 +808,17 @@ class TestMain:
             patch.object(sys, "argv", ["nb-dt-import.py", "--only-new"]),
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
+            patch("nb_dt_import.LogHandler") as MockLogHandler,
         ):
             MockRepo.return_value = _make_mock_repo()
-            MockNetBox.return_value = _make_mock_netbox(modules=True)
+            mock_nb = _make_mock_netbox(modules=True)
+            MockNetBox.return_value = mock_nb
 
-            nb_dt_import.main()  # should not raise
+            nb_dt_import.main()
+
+        log_calls = [str(c) for c in MockLogHandler.return_value.log.call_args_list]
+        logged = " ".join(log_calls)
+        assert "modules created" in logged or "modules updated" in logged
 
     def test_progress_panel_tty_sets_console_and_pumps_preload(self, nb_dt_import):
         """With a TTY progress, set_console is called and pump_preload wired up."""
@@ -1151,7 +1157,7 @@ class TestLogRunSummary:
 class TestEntryPointErrorHandlers:
     """Tests for GraphQLError and NetBoxRequestError handlers in the __main__ block."""
 
-    def test_graphql_error_prints_message_and_exits_1(self):
+    def test_graphql_error_prints_message_and_exits_1(self, capsys):
         """GraphQLError raised from main() becomes SystemExit(1) with stderr output."""
         from core.graphql_client import GraphQLError
 
@@ -1166,8 +1172,9 @@ class TestEntryPointErrorHandlers:
                     runpy.run_path(_NB_DT_IMPORT_PATH, run_name="__main__")
 
         assert exc_info.value.code == 1
+        assert "graphql failed" in capsys.readouterr().err
 
-    def test_netbox_request_error_prints_message_and_exits_1(self):
+    def test_netbox_request_error_prints_message_and_exits_1(self, capsys):
         """NetBoxRequestError raised from main() becomes SystemExit(1) with stderr output."""
         from unittest.mock import MagicMock
 
@@ -1189,3 +1196,4 @@ class TestEntryPointErrorHandlers:
                     runpy.run_path(_NB_DT_IMPORT_PATH, run_name="__main__")
 
         assert exc_info.value.code == 1
+        assert "NetBox REST API request failed" in capsys.readouterr().err
