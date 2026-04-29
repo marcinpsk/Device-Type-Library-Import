@@ -411,6 +411,55 @@ def test_fetch_global_endpoint_records_retries_and_aborts_on_count_mismatch(
     assert len(warnings) == 3
 
 
+def test_fetch_global_endpoint_records_detects_mismatch_when_rest_returns_zero(
+    mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
+):
+    """A REST count of 0 must NOT silently skip validation when GraphQL returns records.
+
+    Regression: previously ``if expected_total and ...`` treated ``0`` as "skip
+    validation", meaning a real REST count of 0 paired with a GraphQL response that
+    leaked records would go unnoticed.  The check now uses ``is not None`` so 0 is a
+    legitimate expected value and any mismatch (including 0 vs N>0) is flagged.
+    """
+    from unittest.mock import patch as _patch
+    from core.graphql_client import GraphQLCountMismatchError
+
+    mock_nb_api = mock_pynetbox.api.return_value
+    mock_graphql_requests.side_effect = _make_graphql_dispatch(
+        {
+            "device_type_list": {"data": {"device_type_list": []}},
+            "interface_template_list": {
+                "data": {
+                    "interface_template_list": [
+                        {
+                            "id": "1",
+                            "name": "xe-0/0/0",
+                            "type": "10gbase-x-sfpp",
+                            "label": "",
+                            "mgmt_only": False,
+                            "enabled": True,
+                            "poe_mode": None,
+                            "poe_type": None,
+                            "device_type": {"id": "5"},
+                            "module_type": None,
+                        }
+                    ]
+                }
+            },
+        }
+    )
+
+    dt = make_device_types(nb_api=mock_nb_api)
+
+    with _patch("core.netbox_api.time.sleep"):
+        with pytest.raises(GraphQLCountMismatchError, match="interface_templates"):
+            dt._fetch_global_endpoint_records(
+                "interface_templates",
+                progress_callback=None,
+                expected_total=0,
+            )
+
+
 def test_fetch_global_endpoint_records_succeeds_on_retry(
     mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
 ):
@@ -528,7 +577,7 @@ def test_get_endpoint_totals_fetches_rest_counts(
 def test_get_endpoint_totals_tolerates_count_failure(
     mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
 ):
-    """_get_endpoint_totals falls back to 0 when a REST count fails."""
+    """_get_endpoint_totals preserves None sentinel when a REST count fails."""
     mock_nb_api = mock_pynetbox.api.return_value
     mock_nb_api.dcim.interface_templates.count.side_effect = Exception("timeout")
     mock_nb_api.dcim.power_port_templates.count.return_value = 20
@@ -537,7 +586,7 @@ def test_get_endpoint_totals_tolerates_count_failure(
     components = [("interface_templates", "Interfaces"), ("power_port_templates", "Power Ports")]
     totals = dt._get_endpoint_totals(components)
 
-    assert totals["interface_templates"] == 0
+    assert totals["interface_templates"] is None
     assert totals["power_port_templates"] == 20
 
 

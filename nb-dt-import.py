@@ -567,11 +567,17 @@ def _process_module_types(
     if args.only_new:
         handle.log(f"New module types: {new_module_count}")
     else:
-        module_changed_count = len(module_types_to_process) - new_module_count
+        module_changed_count = len(changed_property_log)
         module_unchanged_count = len(module_types) - len(module_types_to_process)
+        # Modules with only missing image attachments — handled in default mode, so
+        # they are NOT included in the "modified" count and do NOT trigger the
+        # `--update` hint.
+        image_only_count = max(0, len(module_types_to_process) - new_module_count - module_changed_count)
         handle.log(f"New module types:       {new_module_count}")
         handle.log(f"Unchanged module types: {module_unchanged_count}")
         handle.log(f"Modified module types:  {module_changed_count}")
+        if image_only_count:
+            handle.log(f"Image-only updates:     {image_only_count}")
         if module_changed_count and not args.update:
             handle.log("  (Run with --update to apply changes to existing module types)")
         if pending_removal_modules and not args.remove_components:

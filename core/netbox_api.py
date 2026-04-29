@@ -1444,10 +1444,13 @@ class DeviceTypes:
             components: Iterable of ``(endpoint_name, label)`` tuples.
 
         Returns:
-            dict: ``{endpoint_name: count}`` for graphql endpoints, ``0`` for REST-only.
+            dict: ``{endpoint_name: count_or_None}`` for graphql endpoints (``None``
+                preserves the "count unavailable" sentinel from
+                :meth:`_get_rest_component_count`), and ``0`` for REST-only endpoints
+                (whose authoritative count is established by the REST fetch itself).
         """
         graphql_endpoints = [ep for ep, _label in components if ep not in self.REST_ONLY_ENDPOINTS]
-        totals = {ep: 0 for ep, _label in components}
+        totals = {ep: (0 if ep in self.REST_ONLY_ENDPOINTS else None) for ep, _label in components}
 
         max_workers = max(1, min(len(graphql_endpoints), self.max_threads))
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -1920,7 +1923,7 @@ class DeviceTypes:
             if endpoint_name == "front_port_templates":
                 records = [_FrontPortRecordWithMappings(r) for r in records]
 
-            if expected_total and len(records) != expected_total:
+            if expected_total is not None and len(records) != expected_total:
                 if attempt < _MAX_RETRIES:
                     backoff = _RETRY_BACKOFF[attempt]
                     self.handle.log(
