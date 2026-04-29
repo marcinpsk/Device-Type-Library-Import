@@ -493,6 +493,59 @@ def test_fetch_global_endpoint_records_succeeds_on_retry(
     assert call_count["n"] == 2  # initial attempt + 1 retry
 
 
+def test_fetch_global_endpoint_records_progress_not_double_counted_on_retry(
+    mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
+):
+    """A mismatched-then-retried fetch must not double-advance the progress bar.
+
+    If page advances were published during the failing attempt and again during
+    the successful retry, the progress callback would receive more advances than
+    the final expected total.  Only the successful attempt should publish.
+    """
+    from unittest.mock import patch as _patch
+    from core.graphql_client import DotDict
+
+    mock_nb_api = mock_pynetbox.api.return_value
+    dt = make_device_types(nb_api=mock_nb_api)
+
+    iface1 = DotDict({"id": "1", "name": "xe-0/0/0", "device_type": {"id": "5"}, "module_type": None})
+    iface2 = DotDict({"id": "2", "name": "xe-0/0/1", "device_type": {"id": "5"}, "module_type": None})
+
+    call_count = {"n": 0}
+
+    def fake_get(endpoint_name, on_page=None):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # First attempt: emit one page advance, but return truncated list -> mismatch
+            if on_page is not None:
+                on_page(1)
+            return [iface1]
+        # Retry attempt: emit two page advances, return full list -> success
+        if on_page is not None:
+            on_page(1)
+            on_page(1)
+        return [iface1, iface2]
+
+    advances = []
+
+    def progress_cb(endpoint, advance):
+        advances.append((endpoint, advance))
+
+    with _patch("core.netbox_api.time.sleep"):
+        with _patch.object(dt.graphql, "get_component_templates", side_effect=fake_get):
+            records = dt._fetch_global_endpoint_records(
+                "interface_templates",
+                progress_callback=progress_cb,
+                expected_total=2,
+            )
+
+    assert len(records) == 2
+    assert call_count["n"] == 2
+    # Total advances must equal expected_total (2), not 1 + 2 == 3.
+    total_advance = sum(n for _, n in advances)
+    assert total_advance == 2, f"progress callback double-counted retry advances: got {total_advance}, expected 2"
+
+
 def test_fetch_global_endpoint_records_no_warning_on_count_match(
     mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
 ):

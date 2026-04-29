@@ -775,9 +775,7 @@ class NetBox:
                         "            ",
                     )
             if removed:
-                self.handle.verbose_log(
-                    f"      - {len(removed)} removed component(s) (not deleted without --remove-components)"
-                )
+                self.handle.verbose_log(f"      - {len(removed)} component(s) present in NetBox but absent from YAML")
                 for comp in removed:
                     self.handle.verbose_log(f"        - {comp.component_type}: {comp.component_name}")
 
@@ -1920,7 +1918,16 @@ class DeviceTypes:
             return records
 
         for attempt in range(_MAX_RETRIES + 1):
-            on_page = (lambda n: progress_callback(endpoint_name, n)) if progress_callback is not None else None
+            # Buffer per-attempt page advances so a mismatched-and-retried fetch
+            # does NOT double-advance the progress bar.  Only flush after the
+            # attempt passes validation.
+            fetched_this_attempt = 0
+
+            def _buffer_advance(n):
+                nonlocal fetched_this_attempt
+                fetched_this_attempt += n
+
+            on_page = _buffer_advance if progress_callback is not None else None
             records = self.graphql.get_component_templates(endpoint_name, on_page=on_page)
             if endpoint_name == "front_port_templates":
                 records = [_FrontPortRecordWithMappings(r) for r in records]
@@ -1941,6 +1948,8 @@ class DeviceTypes:
                     f"after {_MAX_RETRIES} retries. "
                     "Run aborted to prevent processing an incomplete component cache."
                 )
+            if progress_callback is not None and fetched_this_attempt:
+                progress_callback(endpoint_name, fetched_this_attempt)
             break
 
         return records
