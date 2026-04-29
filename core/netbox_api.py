@@ -201,6 +201,14 @@ class NetBox:
             )
         except GraphQLError as e:
             system_exit(f"GraphQL error fetching device types: {e}")
+        self._change_detector: ChangeDetector | None = None
+
+    @property
+    def change_detector(self) -> "ChangeDetector":
+        """Lazily initialised, reused :class:`ChangeDetector` instance."""
+        if self._change_detector is None:
+            self._change_detector = ChangeDetector(self.device_types, self.handle)
+        return self._change_detector
 
     def connect_api(self):
         """Connect to the NetBox API using the stored URL and token credentials."""
@@ -825,7 +833,7 @@ class NetBox:
             existing_module = self._find_existing_module_type(module_type, all_module_types)
             existing_module_map[id(module_type)] = existing_module
 
-        detector = ChangeDetector(self.device_types, self.handle)
+        detector = self.change_detector
 
         for module_type in module_types:
             existing_module = existing_module_map[id(module_type)]
@@ -956,8 +964,7 @@ class NetBox:
                 avoid double-counting the module as updated).
             remove_components (bool): When True, removed components are deleted from NetBox.
         """
-        detector = ChangeDetector(self.device_types, self.handle)
-        component_changes = detector._compare_components(curr_mt, module_type_res.id, parent_type="module")
+        component_changes = self.change_detector._compare_components(curr_mt, module_type_res.id, parent_type="module")
         if component_changes:
             before_updated = self.counter["components_updated"]
             before_added = self.counter["components_added"]
