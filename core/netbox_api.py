@@ -1480,7 +1480,7 @@ class DeviceTypes:
                 task_ids = {
                     endpoint_name: progress.add_task(
                         f"Caching {label}",
-                        total=None,
+                        total=endpoint_totals.get(endpoint_name),
                     )
                     for endpoint_name, label in components
                 }
@@ -1858,7 +1858,7 @@ class DeviceTypes:
                     task_ids = {
                         endpoint: progress.add_task(
                             f"Caching {label}",
-                            total=None,
+                            total=endpoint_totals.get(endpoint),
                         )
                         for endpoint, label in components
                     }
