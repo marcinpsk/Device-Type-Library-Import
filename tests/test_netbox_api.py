@@ -682,6 +682,49 @@ def test_start_component_preload_global_job_can_be_consumed(
     assert preload_job["executor"] is None
 
 
+def test_preload_tolerates_none_endpoint_totals(mock_settings, mock_pynetbox, graphql_client, make_device_types):
+    """``_preload_track_progress`` must not raise TypeError when a total is ``None``.
+
+    Regression: ``_get_endpoint_totals`` now returns ``None`` for endpoints whose
+    REST count failed (preserving the "count unavailable" sentinel).  Internal
+    ``max(endpoint_totals.get(name, 0), ...)`` calls would raise ``TypeError`` on
+    ``None`` because ``dict.get`` returns the stored ``None`` instead of the default.
+    The fix uses ``endpoint_totals.get(name) or 0`` to coerce ``None`` to ``0`` for
+    the ``max()`` comparison while still letting ``None`` flow through as
+    ``expected_total`` to ``_fetch_global_endpoint_records``.
+    """
+    from concurrent.futures import Future
+
+    dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
+
+    components = [("interface_templates", "Interfaces")]
+    fut = Future()
+    fut.set_result([])
+    futures = {"interface_templates": fut}
+
+    progress = MagicMock()
+    task_ids = {"interface_templates": "task-1"}
+    endpoint_totals = {"interface_templates": None}
+
+    import queue
+
+    progress_updates = queue.Queue()
+    preload_job = {"finished_endpoints": set()}
+
+    # Must not raise TypeError on max(None, ...).
+    result = dt._preload_track_progress(
+        components,
+        futures,
+        progress,
+        task_ids,
+        preload_job,
+        progress_updates,
+        endpoint_totals,
+    )
+
+    assert result == {"interface_templates": []}
+
+
 def test_upload_images_success_logs_verbose_only(
     mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path
 ):

@@ -1492,7 +1492,7 @@ class DeviceTypes:
                     self._fetch_global_endpoint_records,
                     endpoint_name,
                     update_progress,
-                    endpoint_totals.get(endpoint_name, 0),
+                    endpoint_totals.get(endpoint_name),
                 )
                 for endpoint_name, _label in components
             }
@@ -1687,7 +1687,7 @@ class DeviceTypes:
                 if endpoint_name in task_ids:
                     try:
                         final_total = max(
-                            endpoint_totals.get(endpoint_name, 0),
+                            endpoint_totals.get(endpoint_name) or 0,
                             len(records_by_endpoint[endpoint_name]),
                             1,
                         )
@@ -1754,7 +1754,7 @@ class DeviceTypes:
                     self.handle.log(f"Preload failed for {endpoint_name}: {exc}")
                     records_by_endpoint[endpoint_name] = []
                 final_total = max(
-                    endpoint_totals.get(endpoint_name, 0),
+                    endpoint_totals.get(endpoint_name) or 0,
                     len(records_by_endpoint[endpoint_name]),
                     1,
                 )
@@ -1836,7 +1836,7 @@ class DeviceTypes:
                             self._fetch_global_endpoint_records,
                             endpoint,
                             update_progress,
-                            endpoint_totals.get(endpoint, 0),
+                            endpoint_totals.get(endpoint),
                         )
                         for endpoint, _label in components
                     }
@@ -1846,7 +1846,7 @@ class DeviceTypes:
                             self._fetch_global_endpoint_records,
                             endpoint,
                             None,
-                            endpoint_totals.get(endpoint, 0),
+                            endpoint_totals.get(endpoint),
                         )
                         for endpoint, _label in components
                     }
