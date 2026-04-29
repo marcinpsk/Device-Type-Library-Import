@@ -9,7 +9,7 @@ from core import settings
 from core.netbox_api import NetBox
 from core.log_handler import LogHandler
 from core.repo import DTLRepo
-from core.change_detector import ChangeDetector, IMAGE_PROPERTIES
+from core.change_detector import ChangeDetector, ChangeType, IMAGE_PROPERTIES
 from core.graphql_client import GraphQLError
 from pynetbox.core.query import RequestError as NetBoxRequestError
 
@@ -544,6 +544,19 @@ def _process_module_types(
     )
 
     new_module_count = len(NetBox.filter_new_module_types(module_types, existing_module_types))
+    # Count modules whose only diff is REMOVED components — they will require
+    # --remove-components to converge.  We count groups that have at least one removed
+    # component change; the advisory is informational so over-counting modules that also
+    # have other changes is fine.
+    pending_removal_modules = 0
+    pending_removal_components = 0
+    for _slug, _model, fields_info, comp_changes in changed_property_log:
+        removed_in_group = [
+            c for c in (comp_changes or []) if getattr(c, "change_type", None) == ChangeType.COMPONENT_REMOVED
+        ]
+        if removed_in_group:
+            pending_removal_modules += 1
+            pending_removal_components += len(removed_in_group)
     handle.log("============================================================")
     handle.log("MODULE TYPE CHANGE DETECTION")
     handle.log("============================================================")
@@ -557,6 +570,11 @@ def _process_module_types(
         handle.log(f"Modified module types:  {module_changed_count}")
         if module_changed_count and not args.update:
             handle.log("  (Run with --update to apply changes to existing module types)")
+        if pending_removal_modules and not args.remove_components:
+            handle.log(
+                f"  (Run with --remove-components to remove {pending_removal_components} stale "
+                f"component(s) across {pending_removal_modules} module type(s))"
+            )
     handle.log("------------------------------------------------------------")
     netbox.log_module_type_changes(changed_property_log)
 
@@ -572,6 +590,7 @@ def _process_module_types(
                 only_new=module_only_new,
                 all_module_types=existing_module_types,
                 module_type_existing_images=module_type_existing_images,
+                remove_components=args.remove_components,
             )
     else:
         handle.verbose_log("No module type changes to process.")
@@ -693,7 +712,7 @@ def main():
     """
     startTime = datetime.now()
 
-    parser = ArgumentParser(description="Import Netbox Device Types")
+    parser = ArgumentParser(description="Import Netbox Device Types", allow_abbrev=False)
     parser.add_argument(
         "--vendors",
         nargs="+",

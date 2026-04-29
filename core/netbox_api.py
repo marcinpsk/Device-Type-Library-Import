@@ -921,7 +921,9 @@ class NetBox:
             return False, False
         return True, True
 
-    def _process_single_module_type(self, curr_mt, src_file, all_module_types, module_type_existing_images, only_new):
+    def _process_single_module_type(
+        self, curr_mt, src_file, all_module_types, module_type_existing_images, only_new, remove_components=False
+    ):
         """Find or create a single module type and create or update its component templates.
 
         For new module types all component templates are created directly.  For existing
@@ -1019,12 +1021,18 @@ class NetBox:
             if component_changes:
                 before_updated = self.counter["components_updated"]
                 before_added = self.counter["components_added"]
+                before_removed = self.counter["components_removed"]
                 self.device_types.update_components(
                     curr_mt, module_type_res.id, component_changes, parent_type="module"
                 )
+                if remove_components:
+                    self.device_types.remove_components(
+                        module_type_res.id, component_changes, parent_type="module"
+                    )
                 actually_changed = (
                     self.counter["components_updated"] > before_updated
                     or self.counter["components_added"] > before_added
+                    or self.counter["components_removed"] > before_removed
                 )
                 if actually_changed and not properties_updated:
                     self.counter["module_updated"] += 1
@@ -1037,6 +1045,7 @@ class NetBox:
         only_new=False,
         all_module_types=None,
         module_type_existing_images=None,
+        remove_components=False,
     ):
         """Create or update module types and their component templates in NetBox.
 
@@ -1071,6 +1080,7 @@ class NetBox:
                 all_module_types,
                 module_type_existing_images,
                 only_new,
+                remove_components=remove_components,
             ):
                 continue
 
