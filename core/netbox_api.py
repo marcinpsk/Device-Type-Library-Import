@@ -762,8 +762,7 @@ class NetBox:
                     )
             if removed:
                 self.handle.verbose_log(
-                    f"      - {len(removed)} removed component(s) "
-                    "(not deleted without --remove-components)"
+                    f"      - {len(removed)} removed component(s) (not deleted without --remove-components)"
                 )
                 for comp in removed:
                     self.handle.verbose_log(f"        - {comp.component_type}: {comp.component_name}")
@@ -851,9 +850,7 @@ class NetBox:
                 if not values_equal(module_type[f], nb_val):
                     changed_fields_info.append((f, nb_val, module_type[f]))
 
-            component_changes = detector._compare_components(
-                module_type, existing_module.id, parent_type="module"
-            )
+            component_changes = detector._compare_components(module_type, existing_module.id, parent_type="module")
 
             if changed_fields_info or component_changes:
                 changed_property_log.append(
@@ -928,6 +925,54 @@ class NetBox:
             return False, False
         return True, True
 
+    def _create_module_type_components(self, curr_mt, module_type_id, src_file):
+        """Create all component templates for a newly created module type.
+
+        Args:
+            curr_mt (dict): Parsed YAML module-type dict.
+            module_type_id (int): ID of the newly created module type in NetBox.
+            src_file (str): Source file path for error context.
+        """
+        component_map = {
+            "interfaces": self.device_types.create_module_interfaces,
+            "power-ports": self.device_types.create_module_power_ports,
+            "console-ports": self.device_types.create_module_console_ports,
+            "power-outlets": self.device_types.create_module_power_outlets,
+            "console-server-ports": self.device_types.create_module_console_server_ports,
+            "rear-ports": self.device_types.create_module_rear_ports,
+            "front-ports": self.device_types.create_module_front_ports,
+        }
+        for key, create_fn in component_map.items():
+            if key in curr_mt:
+                create_fn(curr_mt[key], module_type_id, context=src_file)
+
+    def _apply_module_type_component_updates(self, curr_mt, module_type_res, properties_updated, remove_components):
+        """Detect and apply component changes for an existing module type in update mode.
+
+        Args:
+            curr_mt (dict): Parsed YAML module-type dict.
+            module_type_res: NetBox module type record.
+            properties_updated (bool): Whether scalar properties were already patched (used to
+                avoid double-counting the module as updated).
+            remove_components (bool): When True, removed components are deleted from NetBox.
+        """
+        detector = ChangeDetector(self.device_types, self.handle)
+        component_changes = detector._compare_components(curr_mt, module_type_res.id, parent_type="module")
+        if component_changes:
+            before_updated = self.counter["components_updated"]
+            before_added = self.counter["components_added"]
+            before_removed = self.counter["components_removed"]
+            self.device_types.update_components(curr_mt, module_type_res.id, component_changes, parent_type="module")
+            if remove_components:
+                self.device_types.remove_components(module_type_res.id, component_changes, parent_type="module")
+            actually_changed = (
+                self.counter["components_updated"] > before_updated
+                or self.counter["components_added"] > before_added
+                or self.counter["components_removed"] > before_removed
+            )
+            if actually_changed and not properties_updated:
+                self.counter["module_updated"] += 1
+
     def _process_single_module_type(
         self, curr_mt, src_file, all_module_types, module_type_existing_images, only_new, remove_components=False
     ):
@@ -944,6 +989,7 @@ class NetBox:
             all_module_types (dict): Existing module types cache; updated in-place on creation.
             module_type_existing_images (dict): Existing image map by module type ID.
             only_new (bool): When True, skip all updates for existing module types.
+            remove_components (bool): When True, components absent from the YAML are deleted.
 
         Returns:
             bool: False if an error occurred and the caller should skip to the next iteration;
@@ -991,58 +1037,12 @@ class NetBox:
         if is_new:
             # New module type: upload images and create all component templates directly.
             self._upload_module_type_images(module_type_res, src_file, module_type_existing_images)
-            if "interfaces" in curr_mt:
-                self.device_types.create_module_interfaces(
-                    curr_mt["interfaces"], module_type_res.id, context=src_file
-                )
-            if "power-ports" in curr_mt:
-                self.device_types.create_module_power_ports(
-                    curr_mt["power-ports"], module_type_res.id, context=src_file
-                )
-            if "console-ports" in curr_mt:
-                self.device_types.create_module_console_ports(
-                    curr_mt["console-ports"], module_type_res.id, context=src_file
-                )
-            if "power-outlets" in curr_mt:
-                self.device_types.create_module_power_outlets(
-                    curr_mt["power-outlets"], module_type_res.id, context=src_file
-                )
-            if "console-server-ports" in curr_mt:
-                self.device_types.create_module_console_server_ports(
-                    curr_mt["console-server-ports"], module_type_res.id, context=src_file
-                )
-            if "rear-ports" in curr_mt:
-                self.device_types.create_module_rear_ports(
-                    curr_mt["rear-ports"], module_type_res.id, context=src_file
-                )
-            if "front-ports" in curr_mt:
-                self.device_types.create_module_front_ports(
-                    curr_mt["front-ports"], module_type_res.id, context=src_file
-                )
+            self._create_module_type_components(curr_mt, module_type_res.id, src_file)
         else:
             # Existing module type in update mode: detect and apply component changes.
             # The global GraphQL cache is already populated, so _compare_components is a
             # pure dict-lookup with no API calls.
-            detector = ChangeDetector(self.device_types, self.handle)
-            component_changes = detector._compare_components(curr_mt, module_type_res.id, parent_type="module")
-            if component_changes:
-                before_updated = self.counter["components_updated"]
-                before_added = self.counter["components_added"]
-                before_removed = self.counter["components_removed"]
-                self.device_types.update_components(
-                    curr_mt, module_type_res.id, component_changes, parent_type="module"
-                )
-                if remove_components:
-                    self.device_types.remove_components(
-                        module_type_res.id, component_changes, parent_type="module"
-                    )
-                actually_changed = (
-                    self.counter["components_updated"] > before_updated
-                    or self.counter["components_added"] > before_added
-                    or self.counter["components_removed"] > before_removed
-                )
-                if actually_changed and not properties_updated:
-                    self.counter["module_updated"] += 1
+            self._apply_module_type_component_updates(curr_mt, module_type_res, properties_updated, remove_components)
         return True
 
     def create_module_types(
@@ -1066,6 +1066,7 @@ class NetBox:
             only_new (bool): If True, skip component updates for existing module types.
             all_module_types (dict | None): Existing module types cache; fetched if None.
             module_type_existing_images (dict | None): Existing image map; fetched if None.
+            remove_components (bool): When True, components absent from the YAML are deleted.
         """
         if not module_types:
             return

@@ -520,9 +520,7 @@ def test_filter_actionable_module_types_skips_unchanged_existing_module(
     nb = NetBox(mock_settings, mock_settings.handle)
     # Simulate the global GraphQL preload having already populated the cache for module 42.
     nb.device_types._global_preload_done = True
-    nb.device_types.cached_components["interface_templates"] = {
-        ("module", 42): {"xe-0/0/0": existing_interface}
-    }
+    nb.device_types.cached_components["interface_templates"] = {("module", 42): {"xe-0/0/0": existing_interface}}
 
     module_types = [
         {
@@ -2892,9 +2890,7 @@ class TestCreateModuleTypesEdge:
 
         # Cache shows interface with no description; YAML has a description → COMPONENT_CHANGED
         nb.device_types.cached_components = {
-            "interface_templates": {
-                ("module", 5): {"xe-0": DotDict({"id": "10", "name": "xe-0", "description": ""})}
-            },
+            "interface_templates": {("module", 5): {"xe-0": DotDict({"id": "10", "name": "xe-0", "description": ""})}},
         }
 
         module_type = {
@@ -2939,9 +2935,7 @@ class TestCreateModuleTypesEdge:
         all_module_types = {"nokia": {"IOM-s-3.0T": existing_mt}}
 
         nb.device_types.cached_components = {
-            "interface_templates": {
-                ("module", 5): {"xe-0": DotDict({"id": "10", "name": "xe-0", "description": ""})}
-            },
+            "interface_templates": {("module", 5): {"xe-0": DotDict({"id": "10", "name": "xe-0", "description": ""})}},
         }
 
         module_type = {
@@ -3007,6 +3001,7 @@ class TestCreateModuleTypesEdge:
         nb.device_types.update_components.assert_called_once()
         # removal-only: update_components did nothing (no counter bumps) → module_updated stays 0
         assert nb.counter["module_updated"] == 0
+
     """Tests for count_module_type_images with existing module types."""
 
     def test_existing_module_new_image_counted(self, tmp_path):
@@ -5121,9 +5116,7 @@ class TestModuleTypeHasMissingComponents:
         nb = NetBox(mock_settings, mock_settings.handle)
         existing_iface = MagicMock()
         existing_iface.name = "xe-0/0/0"
-        nb.device_types.cached_components["interface_templates"] = {
-            ("module", 42): {"xe-0/0/0": existing_iface}
-        }
+        nb.device_types.cached_components["interface_templates"] = {("module", 42): {"xe-0/0/0": existing_iface}}
 
         module_type = {"interfaces": [{"name": "xe-0/0/0"}]}
         existing_module = MagicMock()
@@ -5156,9 +5149,7 @@ class TestModuleTypeHasMissingComponents:
 class TestFilterActionableModuleTypesMissingAttr:
     """Tests for the _MISSING guard in filter_actionable_module_types."""
 
-    def test_missing_netbox_field_is_not_treated_as_change(
-        self, mock_settings, mock_pynetbox, mock_graphql_requests
-    ):
+    def test_missing_netbox_field_is_not_treated_as_change(self, mock_settings, mock_pynetbox, mock_graphql_requests):
         """When existing module lacks an attribute, it's skipped — no false positive change."""
         mock_nb_api = mock_pynetbox.api.return_value
         mock_nb_api.version = "3.5"
@@ -5322,9 +5313,7 @@ class TestTryUpdateModuleTypeErrors:
 class TestProcessSingleModuleTypeCreateRetryable:
     """Tests for the retryable-exception handler when creating a module type."""
 
-    def test_retryable_exception_on_create_returns_false(
-        self, mock_settings, mock_pynetbox, mock_graphql_requests
-    ):
+    def test_retryable_exception_on_create_returns_false(self, mock_settings, mock_pynetbox, mock_graphql_requests):
         """ConnectionError during module type creation causes the method to return False."""
         from unittest.mock import patch
 
@@ -5338,9 +5327,7 @@ class TestProcessSingleModuleTypeCreateRetryable:
         nb = NetBox(mock_settings, mock_settings.handle)
         mock_settings.handle.log.reset_mock()
 
-        mock_nb_api.dcim.module_types.create.side_effect = requests.exceptions.ConnectionError(
-            "network down"
-        )
+        mock_nb_api.dcim.module_types.create.side_effect = requests.exceptions.ConnectionError("network down")
 
         curr_mt = {
             "manufacturer": {"slug": "cisco"},
@@ -5373,7 +5360,6 @@ class TestProcessSingleModuleTypeRemoveComponents:
         self, mock_settings, mock_pynetbox, mock_graphql_requests, make_device_types
     ):
         """When remove_components=True and there are component changes, remove_components is called."""
-
         mock_nb_api = mock_pynetbox.api.return_value
         mock_nb_api.version = "3.5"
 
@@ -5390,9 +5376,7 @@ class TestProcessSingleModuleTypeRemoveComponents:
         # Populate cache so _compare_components returns a COMPONENT_REMOVED change.
         stale_iface = MagicMock()
         stale_iface.name = "xe-stale"
-        nb.device_types.cached_components["interface_templates"] = {
-            ("module", 55): {"xe-stale": stale_iface}
-        }
+        nb.device_types.cached_components["interface_templates"] = {("module", 55): {"xe-stale": stale_iface}}
         nb.device_types._global_preload_done = True
 
         curr_mt = {

@@ -698,10 +698,7 @@ def _log_run_summary(handle, netbox, start_time, dtl_repo=None):
             handle.log(f"    kept:    {dup['kept']}")
             for ignored in dup["ignored"]:
                 handle.log(f"    ignored: {ignored}")
-        handle.log(
-            "These duplicates would otherwise oscillate on every run. "
-            "Please report/fix them upstream."
-        )
+        handle.log("These duplicates would otherwise oscillate on every run. Please report/fix them upstream.")
 
 
 def main():
