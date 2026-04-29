@@ -5281,8 +5281,6 @@ class TestTryUpdateModuleTypeErrors:
 
     def test_retryable_exception_returns_false_and_logs(self, mock_settings, mock_pynetbox):
         """A ConnectionError (retryable) after max retries causes (False, False) return."""
-        from unittest.mock import patch
-
         import pynetbox as real_pynb
         import requests
 

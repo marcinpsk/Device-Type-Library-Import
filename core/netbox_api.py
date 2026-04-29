@@ -1,5 +1,6 @@
 from collections import Counter
 import concurrent.futures
+from functools import lru_cache
 import itertools
 import queue
 import re
@@ -69,8 +70,13 @@ _MODULE_TYPE_PROPERTIES_FALLBACK = [
 _MODULE_TYPE_SCHEMA_EXCLUDE = {"manufacturer", "model", "attribute_data", "profile"}
 
 
+@lru_cache(maxsize=1)
 def _load_module_type_properties():
-    """Load module type scalar properties from the schema, falling back to hardcoded list."""
+    """Load module type scalar properties from the schema, falling back to hardcoded list.
+
+    The result is cached after the first call, which happens after the repo checkout
+    so the schema files are available.
+    """
     try:
         from core import settings as _settings
 
@@ -82,9 +88,6 @@ def _load_module_type_properties():
         return props if props else list(_MODULE_TYPE_PROPERTIES_FALLBACK)
     except Exception:
         return list(_MODULE_TYPE_PROPERTIES_FALLBACK)
-
-
-MODULE_TYPE_PROPERTIES = _load_module_type_properties()
 
 # Sentinel used to distinguish "attribute missing from record" from a genuine
 # None/null value returned by NetBox.  When a property is in the schema-derived
@@ -848,7 +851,7 @@ class NetBox:
                 continue
 
             changed_fields_info = []
-            for f in MODULE_TYPE_PROPERTIES:
+            for f in _load_module_type_properties():
                 if f not in module_type:
                     continue
                 nb_val = getattr(existing_module, f, _MISSING)
@@ -905,7 +908,7 @@ class NetBox:
                 *updated* is True when at least one field was actually patched.
         """
         updates = {}
-        for field in MODULE_TYPE_PROPERTIES:
+        for field in _load_module_type_properties():
             if field not in curr_mt:
                 continue
             current_value = getattr(module_type_res, field, _MISSING)
