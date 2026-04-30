@@ -767,7 +767,11 @@ def test_preload_tolerates_none_endpoint_totals(mock_settings, mock_pynetbox, gr
     import queue
 
     progress_updates = queue.Queue()
-    preload_job = {"finished_endpoints": set()}
+    # Exercise BOTH branches: the already-finished branch (where the
+    # endpoint_totals.get(name) or 0 fallback runs) and the pending-future
+    # branch (covered by another test).  Marking interface_templates finished
+    # routes through the already_done code path with a None total.
+    preload_job = {"finished_endpoints": {"interface_templates"}}
 
     # Must not raise TypeError on max(None, ...).
     result = dt._preload_track_progress(
@@ -781,6 +785,11 @@ def test_preload_tolerates_none_endpoint_totals(mock_settings, mock_pynetbox, gr
     )
 
     assert result == {"interface_templates": []}
+    # The already_done branch must have updated the task with completed==total
+    # (both 0 here, since the future returned an empty list and the REST count
+    # was unavailable).
+    update_calls = progress.update.call_args_list
+    assert update_calls, "progress.update was never called for the finished endpoint"
 
 
 def test_upload_images_success_logs_verbose_only(
@@ -3370,6 +3379,10 @@ class TestCreateModuleTypesEdge:
             module_type_existing_images={},
         )
         nb.device_types.update_components.assert_called_once()
+        # Scalar PATCH must NOT fire here — part_number already matches NetBox.
+        # A regression that always issues the PATCH would slip past the existing
+        # counter assertion below.
+        mock_pynetbox.api.return_value.dcim.module_types.update.assert_not_called()
         # Inspect the diff payload: must contain a COMPONENT_CHANGED for "xe-0"
         # carrying a PropertyChange for "description".
         from core.change_detector import ChangeType
@@ -3436,8 +3449,15 @@ class TestCreateModuleTypesEdge:
             module_type_existing_images={},
         )
         nb.device_types.update_components.assert_called_once()
+        # Verify the scalar PATCH (module-type property) was actually attempted
+        # for the right module — guards against a regression where the property
+        # diff is missed but the component diff still fires.
+        scalar_update = mock_pynetbox.api.return_value.dcim.module_types.update
+        scalar_update.assert_called_once()
+        scalar_payload = scalar_update.call_args.args[0][0]
+        assert scalar_payload["id"] == 5
+        assert scalar_payload["part_number"] == "3HE16474AA"
         # Inspect the diff payload: must contain a COMPONENT_CHANGED for "xe-0"
-        # with a description PropertyChange (the part_number diff is a scalar
         # property and is applied via the module-type PATCH path, not via the
         # component diff).
         from core.change_detector import ChangeType
@@ -5984,6 +6004,10 @@ class TestProcessSingleModuleTypeRemoveComponents:
         )
 
         # The failed PATCH should NOT prevent component reconciliation.
+        # Verify the failing PATCH was actually attempted (regression: scalar
+        # diff detection silently skipping update() would still pass without
+        # this assertion).
+        mock_nb_api.dcim.module_types.update.assert_called_once()
         assert result is True
         nb.device_types.update_components.assert_called_once()
         nb.device_types.remove_components.assert_called_once()
