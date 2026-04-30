@@ -404,10 +404,13 @@ def test_fetch_global_endpoint_records_retries_and_aborts_on_count_mismatch(
                 expected_total=113259,
             )
 
-    from core.netbox_api import _MAX_RETRIES
+    from core.netbox_api import _MAX_RETRIES, _RETRY_BACKOFF
 
     # One sleep per retry attempt
     assert mock_sleep.call_count == _MAX_RETRIES
+    # Backoff durations must match the configured sequence — guards against a
+    # regression that silently changes the wait pattern.
+    assert [call.args[0] for call in mock_sleep.call_args_list] == list(_RETRY_BACKOFF[:_MAX_RETRIES])
     # A WARNING is logged for each retry
     warnings = [m for m in logged if "WARNING" in m and "interface_templates" in m]
     assert len(warnings) == _MAX_RETRIES
@@ -3327,7 +3330,18 @@ class TestCreateModuleTypesEdge:
 
         # Cache shows interface with no description; YAML has a description → COMPONENT_CHANGED
         nb.device_types.cached_components = {
-            "interface_templates": {("module", 5): {"xe-0": DotDict({"id": "10", "name": "xe-0", "description": ""})}},
+            "interface_templates": {
+                ("module", 5): {
+                    "xe-0": DotDict(
+                        {
+                            "id": "10",
+                            "name": "xe-0",
+                            "description": "",
+                            "type": {"value": "10gbase-x-sfpp"},
+                        }
+                    )
+                }
+            },
         }
 
         module_type = {
@@ -3352,7 +3366,7 @@ class TestCreateModuleTypesEdge:
         assert len(changed) == 1
         assert changed[0].component_name == "xe-0"
         prop_names = {pc.property_name for pc in changed[0].property_changes}
-        assert "description" in prop_names
+        assert prop_names == {"description"}
         assert nb.counter["module_updated"] == 1
 
     def test_existing_module_type_property_and_component_update_increments_once(
@@ -3382,7 +3396,18 @@ class TestCreateModuleTypesEdge:
         all_module_types = {"nokia": {"IOM-s-3.0T": existing_mt}}
 
         nb.device_types.cached_components = {
-            "interface_templates": {("module", 5): {"xe-0": DotDict({"id": "10", "name": "xe-0", "description": ""})}},
+            "interface_templates": {
+                ("module", 5): {
+                    "xe-0": DotDict(
+                        {
+                            "id": "10",
+                            "name": "xe-0",
+                            "description": "",
+                            "type": {"value": "10gbase-x-sfpp"},
+                        }
+                    )
+                }
+            },
         }
 
         module_type = {
@@ -3408,7 +3433,7 @@ class TestCreateModuleTypesEdge:
         changed = [c for c in component_changes if c.change_type == ChangeType.COMPONENT_CHANGED]
         assert len(changed) == 1
         assert changed[0].component_name == "xe-0"
-        assert "description" in {pc.property_name for pc in changed[0].property_changes}
+        assert {pc.property_name for pc in changed[0].property_changes} == {"description"}
         # property update already incremented; component path should NOT double-count
         assert nb.counter["module_updated"] == 1
 
