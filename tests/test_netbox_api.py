@@ -2962,13 +2962,19 @@ class TestFilterActionableModuleTypesEdge:
 
         with patch("glob.glob", return_value=[]):
             with patch.object(nb, "_fetch_module_type_existing_images", return_value={}):
-                actionable, _, _ = nb.filter_actionable_module_types(
+                actionable, _, changed_property_log = nb.filter_actionable_module_types(
                     [module_type],
                     all_mts,
                     only_new=False,
                 )
 
         assert actionable == [module_type]
+        # Verify the scalar diff is captured for the modified-summary log path.
+        assert len(changed_property_log) == 1
+        mfr_slug, model, fields_info, _ = changed_property_log[0]
+        assert mfr_slug == "nokia"
+        assert model == "IOM-s-3.0T"
+        assert any(name == "part_number" and old == "OLD_PN" and new == "3HE16474AA" for name, old, new in fields_info)
 
     def test_existing_module_with_missing_image_and_property_change_logs_both(
         self, mock_settings, mock_pynetbox, mock_graphql_requests, tmp_path
@@ -5861,4 +5867,68 @@ class TestProcessSingleModuleTypeRemoveComponents:
         )
 
         assert result is True
+        nb.device_types.remove_components.assert_called_once()
+
+    def test_component_reconciliation_continues_when_scalar_patch_fails(
+        self, mock_settings, mock_pynetbox, mock_graphql_requests, make_device_types
+    ):
+        """A failed scalar PATCH must NOT skip subsequent component reconciliation.
+
+        Regression: previously the early ``return False`` on a failed
+        ``module_types.update`` left existing modules with property + component
+        diffs in a partial-sync state because component reconciliation was
+        skipped entirely.
+        """
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "3.5"
+
+        nb = NetBox(mock_settings, mock_settings.handle)
+
+        existing_module = MagicMock()
+        existing_module.id = 77
+        existing_module.manufacturer.name = "Cisco"
+        existing_module.model = "CM-Fail-Patch"
+        # Make the scalar diff non-empty so update() will be invoked and fail.
+        existing_module.part_number = "OLD_PN"
+
+        all_module_types = {"cisco": {"CM-Fail-Patch": existing_module}}
+
+        # Cache a stale interface so _compare_components yields a COMPONENT_REMOVED.
+        stale_iface = MagicMock()
+        stale_iface.name = "xe-stale"
+        nb.device_types.cached_components["interface_templates"] = {("module", 77): {"xe-stale": stale_iface}}
+        nb.device_types._global_preload_done = True
+
+        curr_mt = {
+            "manufacturer": {"slug": "cisco"},
+            "model": "CM-Fail-Patch",
+            "slug": "cm-fail-patch",
+            "part_number": "NEW_PN",  # forces a scalar diff
+            "interfaces": [],  # empty → xe-stale should be detected as removed
+        }
+
+        # Force the scalar PATCH to fail with a pynetbox RequestError.
+        # pynetbox is mocked at module level, so we restore the real exception
+        # class first (otherwise `except pynetbox.RequestError` raises TypeError).
+        import pynetbox as _real_pynb
+
+        mock_pynetbox.RequestError = _real_pynb.RequestError
+        request_error = _real_pynb.RequestError(MagicMock(status_code=400, content=b'{"detail":"boom"}'))
+        mock_nb_api.dcim.module_types.update = MagicMock(side_effect=request_error)
+
+        nb.device_types.update_components = MagicMock()
+        nb.device_types.remove_components = MagicMock()
+
+        result = nb._process_single_module_type(
+            curr_mt,
+            "test.yaml",
+            all_module_types,
+            {},
+            only_new=False,
+            remove_components=True,
+        )
+
+        # The failed PATCH should NOT prevent component reconciliation.
+        assert result is True
+        nb.device_types.update_components.assert_called_once()
         nb.device_types.remove_components.assert_called_once()

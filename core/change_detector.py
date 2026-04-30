@@ -472,7 +472,12 @@ class ChangeDetector:
                 continue
 
             yaml_value = yaml_comp.get(prop)
-            netbox_value = getattr(netbox_comp, prop, None)
+            netbox_value = getattr(netbox_comp, prop, _MISSING)
+            if netbox_value is _MISSING:
+                # NetBox version / GraphQL selection didn't return this field;
+                # treat it as unmanaged to avoid a false COMPONENT_CHANGED that
+                # would PATCH an unsupported attribute.
+                continue
 
             yaml_value, netbox_value = normalize_values(yaml_value, netbox_value)
 

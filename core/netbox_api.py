@@ -263,7 +263,7 @@ class NetBox:
             endpoint = getattr(e, "base", self.url)
             status = getattr(e.req, "status_code", "?") if hasattr(e, "req") else "?"
             reason = getattr(e.req, "reason", "") if hasattr(e, "req") else ""
-            body = (getattr(e, "error", "") or "").strip()[:500]
+            body = str(getattr(e, "error", "") or "").strip()[:500]
             details = f"HTTP {status} {reason}".strip()
             msg = f"NetBox returned an error connecting to {endpoint} ({details})."
             if body:
