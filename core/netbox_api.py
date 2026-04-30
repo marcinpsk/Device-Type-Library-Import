@@ -171,6 +171,7 @@ class NetBox:
             properties_updated=0,
             components_updated=0,
             components_removed=0,
+            device_types_failed=0,
         )
         self.url = settings.NETBOX_URL
         self.token = settings.NETBOX_TOKEN
@@ -374,6 +375,46 @@ class NetBox:
                 del device_type[i]
         return saved_images
 
+    def _log_device_type_change_outcome(
+        self, dt, dt_change, *, property_attempted, property_succeeded, component_attempted
+    ):
+        """Emit the right post-update log for an existing device type.
+
+        Distinguishes "actually updated", "partial update" (property PATCH
+        failed but components ran), and "completely failed" (PATCH was the only
+        action and it failed) so the operator-visible log no longer reports
+        "Device Type Updated" when nothing was applied.
+        """
+        something_applied = property_succeeded or component_attempted
+        if something_applied:
+            if property_attempted and not property_succeeded:
+                self.handle.verbose_log(
+                    f"Device Type Partially Updated: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
+                    f"Property PATCH failed; applied {len(dt_change.component_changes or [])} "
+                    "component change(s); skipping component creation."
+                )
+            else:
+                self.handle.verbose_log(
+                    f"Device Type Updated: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
+                    f"Applied {len(dt_change.property_changes or [])} property and "
+                    f"{len(dt_change.component_changes or [])} component change(s); "
+                    "skipping component creation."
+                )
+        elif property_attempted:
+            self.counter.update({"device_types_failed": 1})
+            self.handle.log(
+                f"Device Type Update Failed: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
+                f"Attempted {len(dt_change.property_changes or [])} property change(s); "
+                "no changes were applied (see error above)."
+            )
+        else:
+            self.handle.verbose_log(
+                f"Device Type Updated: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
+                f"Applied {len(dt_change.property_changes or [])} property and "
+                f"{len(dt_change.component_changes or [])} component change(s); "
+                "skipping component creation."
+            )
+
     def _handle_existing_device_type(
         self,
         dt,
@@ -420,6 +461,10 @@ class NetBox:
             return
 
         if dt_change is not None:
+            property_attempted = False
+            property_succeeded = False
+            component_attempted = bool(dt_change.component_changes)
+
             # Apply property changes (exclude image properties — uploads are handled separately)
             if dt_change.property_changes:
                 updates = {
@@ -428,10 +473,12 @@ class NetBox:
                     if pc.property_name not in ("front_image", "rear_image")
                 }
                 if updates:
+                    property_attempted = True
                     try:
                         _retry_on_connection_error(self.netbox.dcim.device_types.update, [{"id": dt.id, **updates}])
                         dt.update(updates)  # keep local cache in sync
                         self.counter.update({"properties_updated": 1})
+                        property_succeeded = True
                         self.handle.verbose_log(f"Updated device type {dt.model} properties: {list(updates.keys())}")
                     except pynetbox.RequestError as e:
                         self.handle.log(f"Error updating device type {dt.model}: {e.error}")
@@ -451,12 +498,13 @@ class NetBox:
                 if remove_components:
                     self.device_types.remove_components(dt.id, dt_change.component_changes, parent_type="device")
 
-        if dt_change is not None:
-            self.handle.verbose_log(
-                f"Device Type Updated: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
-                f"Applied {len(dt_change.property_changes or [])} property and "
-                f"{len(dt_change.component_changes or [])} component change(s); "
-                "skipping component creation."
+            # Distinguish "actually updated" from "attempted but everything failed".
+            self._log_device_type_change_outcome(
+                dt,
+                dt_change,
+                property_attempted=property_attempted,
+                property_succeeded=property_succeeded,
+                component_attempted=component_attempted,
             )
         else:
             self.handle.verbose_log(

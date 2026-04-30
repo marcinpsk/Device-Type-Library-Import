@@ -2561,7 +2561,12 @@ class TestCreateDeviceTypesUpdatePath:
     def test_update_property_change_request_error_logged(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types
     ):
-        """RequestError during property update is caught and logged."""
+        """RequestError during property update is caught and logged.
+
+        Regression: when the property PATCH fails AND there are no component
+        changes, ``device_types_failed`` must be incremented and the misleading
+        "Device Type Updated" log MUST NOT be emitted.
+        """
         import pynetbox as real_pynb2
         from core.change_detector import ChangeReport, DeviceTypeChange, PropertyChange
 
@@ -2597,8 +2602,23 @@ class TestCreateDeviceTypesUpdatePath:
             "src": "/tmp/device-types/cisco/testswitch.yaml",
         }
         mock_settings.handle.log.reset_mock()
+        mock_settings.handle.verbose_log.reset_mock()
         nb.create_device_types([device_type], update=True, change_report=report)
+        # Error path was logged.
         mock_settings.handle.log.assert_called()
+        # Failure surfaced via dedicated counter so summary can show it.
+        assert nb.counter["device_types_failed"] == 1
+        # Counters that imply a successful PATCH must NOT be bumped.
+        assert nb.counter["properties_updated"] == 0
+        # "Device Type Updated" is misleading when nothing was applied — must
+        # NOT appear on either the verbose or non-verbose log.
+        all_calls = [c.args[0] for c in mock_settings.handle.log.call_args_list]
+        all_calls += [c.args[0] for c in mock_settings.handle.verbose_log.call_args_list]
+        assert not any("Device Type Updated" in msg for msg in all_calls), (
+            f"Misleading 'Device Type Updated' log emitted after failure: {all_calls}"
+        )
+        # The failure log must surface the model so operators can find it.
+        assert any("Device Type Update Failed" in msg and "TestSwitch" in msg for msg in all_calls)
 
     def test_update_applies_component_changes(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
         """update=True with component_changes calls update_components (and optionally remove_components)."""
