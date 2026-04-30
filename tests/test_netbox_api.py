@@ -3237,6 +3237,11 @@ class TestCreateModuleTypesEdge:
             module_type_existing_images={},
         )
         mock_pynetbox.api.return_value.dcim.module_types.update.assert_called_once()
+        # Verify the PATCH payload targets the right resource and field — guards
+        # against a regression that updates the wrong module or omits part_number.
+        update_payload = mock_pynetbox.api.return_value.dcim.module_types.update.call_args.args[0][0]
+        assert update_payload["id"] == 5
+        assert update_payload["part_number"] == "3HE16474AA"
         assert nb.counter["module_updated"] == 1
 
     def test_existing_module_type_property_unchanged_no_api_call(self, mock_settings, mock_pynetbox):
