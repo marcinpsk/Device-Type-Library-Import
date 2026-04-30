@@ -590,7 +590,7 @@ class NetBox:
         if dt_change is not None:
             property_attempted = False
             property_succeeded = False
-            component_attempted = bool(dt_change.component_changes)
+            component_attempted = False
             failure_resolution = None
 
             # Apply property changes (exclude image properties — uploads are handled separately)
@@ -626,6 +626,11 @@ class NetBox:
 
             # Apply component changes
             if dt_change.component_changes:
+                before_components = (
+                    self.counter["components_updated"],
+                    self.counter["components_added"],
+                    self.counter["components_removed"],
+                )
                 self.device_types.update_components(
                     device_type,
                     dt.id,
@@ -634,6 +639,15 @@ class NetBox:
                 )
                 if remove_components:
                     self.device_types.remove_components(dt.id, dt_change.component_changes, parent_type="device")
+                after_components = (
+                    self.counter["components_updated"],
+                    self.counter["components_added"],
+                    self.counter["components_removed"],
+                )
+                # Only flag as "attempted/applied" if the API calls actually moved counters.
+                # A removal-only diff with --remove-components off, or update calls that all
+                # failed internally, must NOT be reported as a partial/applied change.
+                component_attempted = after_components != before_components
 
             # Distinguish "actually updated" from "attempted but everything failed".
             self._log_device_type_change_outcome(

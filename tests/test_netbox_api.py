@@ -2856,6 +2856,10 @@ class TestCreateDeviceTypesUpdatePath:
         assert mock_nb_api.dcim.device_types.update.call_count == 2
         assert nb.counter["properties_updated"] == 0
         assert nb.counter["device_types_failed"] == 1
+        # The failed retry must surface in the structured failure report exactly once.
+        failures = nb.outcomes.failures()
+        assert len(failures) == 1
+        assert "SuperServer" in failures[0].identity
 
     def test_constraint_failure_blocked_when_devices_in_use(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types
@@ -6120,12 +6124,17 @@ class TestTryUpdateModuleTypeErrors:
         module_type_res = self._make_module_type_res()
         module_type_res.part_number = "OLD-123"
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.netbox_api.time.sleep") as mock_sleep:
             ok, updated = nb._try_update_module_type(curr_mt, module_type_res, "test.yaml")
 
         assert ok is False
         assert updated is False
         mock_settings.handle.log.assert_called()
+        # Prove the retry loop actually ran the full budget instead of failing fast.
+        from core.netbox_api import _MAX_RETRIES
+
+        assert nb.netbox.dcim.module_types.update.call_count == _MAX_RETRIES + 1
+        assert mock_sleep.call_count == _MAX_RETRIES
 
 
 # ---------------------------------------------------------------------------
@@ -6158,7 +6167,7 @@ class TestProcessSingleModuleTypeCreateRetryable:
             "slug": "cm-retryable",
         }
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.netbox_api.time.sleep") as mock_sleep:
             result = nb._process_single_module_type(
                 curr_mt,
                 "test.yaml",
@@ -6169,6 +6178,11 @@ class TestProcessSingleModuleTypeCreateRetryable:
 
         assert result is False
         mock_settings.handle.log.assert_called()
+        # Prove the retry loop actually ran the full budget instead of failing fast.
+        from core.netbox_api import _MAX_RETRIES
+
+        assert mock_nb_api.dcim.module_types.create.call_count == _MAX_RETRIES + 1
+        assert mock_sleep.call_count == _MAX_RETRIES
 
 
 # ---------------------------------------------------------------------------
