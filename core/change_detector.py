@@ -110,6 +110,24 @@ def _load_device_type_properties():
         return list(_DEVICE_TYPE_PROPERTIES_FALLBACK)
 
 
+_CACHED_DEVICE_TYPE_PROPERTIES = None
+
+
+def get_device_type_properties():
+    """Lazily resolve and cache the device-type schema properties.
+
+    Resolved at first call rather than at import time so the schema lookup
+    sees a populated repo even when ``change_detector`` is imported before
+    the repo is cloned (e.g., test bootstrap, fresh CI environments).
+    """
+    global _CACHED_DEVICE_TYPE_PROPERTIES
+    if _CACHED_DEVICE_TYPE_PROPERTIES is None:
+        _CACHED_DEVICE_TYPE_PROPERTIES = _load_device_type_properties()
+    return _CACHED_DEVICE_TYPE_PROPERTIES
+
+
+# Backwards-compatible eager constant.  Prefer ``get_device_type_properties()``
+# in code paths that may run before the repo schema is available.
 DEVICE_TYPE_PROPERTIES = _load_device_type_properties()
 
 # Sentinel used to distinguish "attribute missing from record" from a genuine
@@ -232,7 +250,7 @@ class ChangeDetector:
         """
         changes = []
 
-        for prop in DEVICE_TYPE_PROPERTIES:
+        for prop in get_device_type_properties():
             # Only compare properties explicitly present in YAML;
             # an omitted property means the YAML doesn't manage it,
             # matching the component semantics (absent key != removal).

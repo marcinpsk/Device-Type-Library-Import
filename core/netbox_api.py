@@ -1023,7 +1023,14 @@ class NetBox:
             if not only_new:
                 ok, properties_updated = self._try_update_module_type(curr_mt, module_type_res, src_file)
                 if not ok:
-                    return False
+                    # Scalar PATCH failed but the module already exists in NetBox;
+                    # continue with component reconciliation so a transient property
+                    # update failure does not block component sync.
+                    self.handle.verbose_log(
+                        f"Scalar PATCH failed for module type "
+                        f"{module_type_res.manufacturer.name} - {module_type_res.model}; "
+                        "continuing with component reconciliation."
+                    )
         else:
             try:
                 module_type_res = _retry_on_connection_error(self.netbox.dcim.module_types.create, curr_mt)

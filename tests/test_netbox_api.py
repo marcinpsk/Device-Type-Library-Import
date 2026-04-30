@@ -404,11 +404,13 @@ def test_fetch_global_endpoint_records_retries_and_aborts_on_count_mismatch(
                 expected_total=113259,
             )
 
-    # One sleep per retry attempt (3 retries)
-    assert mock_sleep.call_count == 3
+    from core.netbox_api import _MAX_RETRIES
+
+    # One sleep per retry attempt
+    assert mock_sleep.call_count == _MAX_RETRIES
     # A WARNING is logged for each retry
     warnings = [m for m in logged if "WARNING" in m and "interface_templates" in m]
-    assert len(warnings) == 3
+    assert len(warnings) == _MAX_RETRIES
 
 
 def test_fetch_global_endpoint_records_detects_mismatch_when_rest_returns_zero(
@@ -3328,6 +3330,16 @@ class TestCreateModuleTypesEdge:
             module_type_existing_images={},
         )
         nb.device_types.update_components.assert_called_once()
+        # Inspect the diff payload: must contain a COMPONENT_CHANGED for "xe-0"
+        # carrying a PropertyChange for "description".
+        from core.change_detector import ChangeType
+
+        component_changes = nb.device_types.update_components.call_args.args[2]
+        changed = [c for c in component_changes if c.change_type == ChangeType.COMPONENT_CHANGED]
+        assert len(changed) == 1
+        assert changed[0].component_name == "xe-0"
+        prop_names = {pc.property_name for pc in changed[0].property_changes}
+        assert "description" in prop_names
         assert nb.counter["module_updated"] == 1
 
     def test_existing_module_type_property_and_component_update_increments_once(
@@ -3373,6 +3385,17 @@ class TestCreateModuleTypesEdge:
             module_type_existing_images={},
         )
         nb.device_types.update_components.assert_called_once()
+        # Inspect the diff payload: must contain a COMPONENT_CHANGED for "xe-0"
+        # with a description PropertyChange (the part_number diff is a scalar
+        # property and is applied via the module-type PATCH path, not via the
+        # component diff).
+        from core.change_detector import ChangeType
+
+        component_changes = nb.device_types.update_components.call_args.args[2]
+        changed = [c for c in component_changes if c.change_type == ChangeType.COMPONENT_CHANGED]
+        assert len(changed) == 1
+        assert changed[0].component_name == "xe-0"
+        assert "description" in {pc.property_name for pc in changed[0].property_changes}
         # property update already incremented; component path should NOT double-count
         assert nb.counter["module_updated"] == 1
 
@@ -3402,7 +3425,9 @@ class TestCreateModuleTypesEdge:
         nb.device_types.cached_components = {
             "interface_templates": {
                 ("module", 5): {
-                    "xe-0": DotDict({"id": "10", "name": "xe-0", "description": ""}),
+                    "xe-0": DotDict(
+                        {"id": "10", "name": "xe-0", "description": "", "type": {"value": "10gbase-x-sfpp"}}
+                    ),
                     "xe-extra": DotDict({"id": "11", "name": "xe-extra", "description": ""}),
                 }
             },
@@ -3421,6 +3446,17 @@ class TestCreateModuleTypesEdge:
             module_type_existing_images={},
         )
         nb.device_types.update_components.assert_called_once()
+        # Inspect the diff payload: must contain only a COMPONENT_REMOVED for
+        # "xe-extra" — no PropertyChanges, no other change types.
+        from core.change_detector import ChangeType
+
+        component_changes = nb.device_types.update_components.call_args.args[2]
+        removed = [c for c in component_changes if c.change_type == ChangeType.COMPONENT_REMOVED]
+        non_removed = [c for c in component_changes if c.change_type != ChangeType.COMPONENT_REMOVED]
+        assert len(removed) == 1
+        assert removed[0].component_name == "xe-extra"
+        assert removed[0].property_changes == []
+        assert non_removed == []
         # removal-only: update_components did nothing (no counter bumps) → module_updated stays 0
         assert nb.counter["module_updated"] == 0
 
