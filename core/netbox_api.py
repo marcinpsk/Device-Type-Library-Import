@@ -1434,7 +1434,10 @@ class DeviceTypes:
         """
         try:
             return getattr(self.netbox.dcim, endpoint_name).count()
-        except Exception:
+        except Exception as exc:
+            self.handle.verbose_log(
+                f"REST count unavailable for {endpoint_name}; skipping GraphQL count verification: {exc}"
+            )
             return None
 
     def _get_endpoint_totals(self, components):

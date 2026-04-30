@@ -3014,13 +3014,17 @@ class TestFilterActionableModuleTypesEdge:
         # NetBox has no image attachments for this module → missing image triggers image_changed.
         with patch.object(nb, "_discover_module_image_files", return_value=["/tmp/IOM-s-3.0T.front.png"]):
             with patch.object(nb, "_fetch_module_type_existing_images", return_value={42: set()}):
-                actionable, _, changed_property_log = nb.filter_actionable_module_types(
+                actionable, existing_images_map, changed_property_log = nb.filter_actionable_module_types(
                     [module_type],
                     all_mts,
                     only_new=False,
                 )
 
         assert actionable == [module_type]
+        # Existing-images map drives the upload diff in create_module_types — assert it
+        # records the empty set for module 42 so a regression that drops the second
+        # return value is caught.
+        assert existing_images_map == {42: set()}
         # Property diff MUST still be captured even though images also changed.
         assert len(changed_property_log) == 1
         mfr_slug, model, fields_info, _ = changed_property_log[0]
@@ -3063,13 +3067,16 @@ class TestFilterActionableModuleTypesEdge:
 
         with patch.object(nb, "_discover_module_image_files", return_value=["/tmp/IOM-s-3.0T.front.png"]):
             with patch.object(nb, "_fetch_module_type_existing_images", return_value={42: set()}):
-                actionable, _, changed_property_log = nb.filter_actionable_module_types(
+                actionable, existing_images_map, changed_property_log = nb.filter_actionable_module_types(
                     [module_type],
                     all_mts,
                     only_new=False,
                 )
 
         assert actionable == [module_type]
+        # Image-only change must surface the existing-images map (drives upload diff)
+        # without polluting the property log.
+        assert existing_images_map == {42: set()}
         assert changed_property_log == []
 
     def test_existing_module_with_unchanged_property_is_not_actionable(
@@ -5069,6 +5076,11 @@ class TestStartComponentPreloadProgressCallback:
         # update_progress was called, which put items in progress_updates queue
         # pump_preload_progress or preload_all_components drained them
         progress.add_task.assert_called()
+        # Assert the advance reached progress.update — guards against a regression
+        # where the callback path silently stops publishing advances.
+        update_calls = [c for c in progress.update.call_args_list if c.kwargs.get("advance")]
+        total_advance = sum(c.kwargs["advance"] for c in update_calls)
+        assert total_advance >= 1, "progress.update was never called with advance>=1"
 
 
 class TestPreloadGlobalOwnExecutorProgressCallback:
@@ -5098,6 +5110,11 @@ class TestPreloadGlobalOwnExecutorProgressCallback:
 
         progress.add_task.assert_called()
         progress.stop_task.assert_called()
+        # Assert the advance reached progress.update — guards against a regression
+        # where the own-executor callback stops publishing advances.
+        update_calls = [c for c in progress.update.call_args_list if c.kwargs.get("advance")]
+        total_advance = sum(c.kwargs["advance"] for c in update_calls)
+        assert total_advance >= 1, "progress.update was never called with advance>=1"
 
 
 class TestUploadImagesRequestException:
