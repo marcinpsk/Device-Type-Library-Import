@@ -2950,6 +2950,8 @@ class TestFilterActionableModuleTypesEdge:
             }
         )
         nb = NetBox(mock_settings, mock_settings.handle)
+        # Skip the GraphQL preload — these tests isolate scalar/image diffs.
+        nb.device_types._global_preload_done = True
 
         existing_mt = DotDict(
             {"id": 42, "model": "IOM-s-3.0T", "part_number": "OLD_PN", "manufacturer": {"slug": "nokia"}}
@@ -3001,6 +3003,8 @@ class TestFilterActionableModuleTypesEdge:
             }
         )
         nb = NetBox(mock_settings, mock_settings.handle)
+        # Skip the GraphQL preload — these tests isolate scalar/image diffs.
+        nb.device_types._global_preload_done = True
 
         existing_mt = DotDict(
             {"id": 42, "model": "IOM-s-3.0T", "part_number": "OLD_PN", "manufacturer": {"slug": "nokia"}}
@@ -3055,6 +3059,8 @@ class TestFilterActionableModuleTypesEdge:
             }
         )
         nb = NetBox(mock_settings, mock_settings.handle)
+        # Skip the GraphQL preload — these tests isolate scalar/image diffs.
+        nb.device_types._global_preload_done = True
 
         existing_mt = DotDict(
             {"id": 42, "model": "IOM-s-3.0T", "part_number": "3HE16474AA", "manufacturer": {"slug": "nokia"}}
@@ -3098,6 +3104,8 @@ class TestFilterActionableModuleTypesEdge:
             }
         )
         nb = NetBox(mock_settings, mock_settings.handle)
+        # Skip the GraphQL preload — these tests isolate scalar/image diffs.
+        nb.device_types._global_preload_done = True
 
         existing_mt = DotDict(
             {"id": 42, "model": "IOM-s-3.0T", "part_number": "3HE16474AA", "manufacturer": {"slug": "nokia"}}
