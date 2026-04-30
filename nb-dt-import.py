@@ -309,6 +309,11 @@ def log_run_mode(handle, args):
                 "Mode: will not remove components from existing models; use --remove-components with "
                 "--update to change this."
             )
+        if getattr(args, "force_resolve_conflicts", False):
+            handle.log(
+                "Mode: --force-resolve-conflicts enabled; constraint failures will trigger destructive "
+                "remediation when no live device references the affected type."
+            )
     else:
         handle.log("Mode: --update not set; changed properties/components will not be applied (use --update).")
 
@@ -700,6 +705,12 @@ def _log_run_summary(handle, netbox, start_time, dtl_repo=None):
         handle.log(f"{netbox.counter['rack_type_added']} rack types created")
         handle.log(f"{netbox.counter['rack_type_updated']} rack types updated")
 
+    # Structured failure / partial-update report (replaces the "see error log
+    # above" hand-wave with itemised per-entity context).
+    failure_lines = netbox.outcomes.render_failure_report()
+    for line in failure_lines:
+        handle.log(line)
+
     if dtl_repo is not None and dtl_repo.duplicate_definitions:
         handle.log("---")
         handle.log(
@@ -772,11 +783,23 @@ def main():
         help="Remove components from NetBox that no longer exist in YAML (use with --update). "
         "WARNING: May affect existing device instances.",
     )
+    parser.add_argument(
+        "--force-resolve-conflicts",
+        action="store_true",
+        default=False,
+        help=(
+            "Allow destructive remediation when a NetBox business-logic constraint blocks an update "
+            "(e.g. delete blocking device-bay templates before a subdevice_role parent->child flip). "
+            "Only applied when no live device references the type. WARNING: Destructive."
+        ),
+    )
 
     args = parser.parse_args()
 
     if args.remove_components and not args.update:
         parser.error("--remove-components requires --update")
+    if args.force_resolve_conflicts and not args.update:
+        parser.error("--force-resolve-conflicts requires --update")
 
     # Normalize arguments
     args.vendors = [v.casefold() for vendor in args.vendors for v in vendor.split(",") if v.strip()]
@@ -792,6 +815,7 @@ def main():
     # We pass settings for constants, but ideally we should pass individual config items
     # For now, we will update NetBox to verify compatibility with this new setup
     netbox = NetBox(settings, handle)  # handle passed explicitly
+    netbox.force_resolve_conflicts = args.force_resolve_conflicts
 
     # Confirm effective run behavior right after compatibility checks.
     log_run_mode(handle, args)

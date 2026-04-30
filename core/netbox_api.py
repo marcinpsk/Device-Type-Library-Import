@@ -18,7 +18,12 @@ from core.change_detector import COMPONENT_ALIASES, ChangeDetector, ChangeType
 from core.formatting import log_property_diffs
 from core.graphql_client import GraphQLCountMismatchError, GraphQLError, NetBoxGraphQLClient
 from core.normalization import values_equal
+from core.outcomes import EntityKind, Outcome, OutcomeRegistry
 from core.schema_reader import load_properties_for_type
+from core.update_failure_resolver import (
+    FailureKind,
+    classify_device_type_update_failure,
+)
 
 
 def _build_auth_header(token):
@@ -173,6 +178,7 @@ class NetBox:
             components_removed=0,
             device_types_failed=0,
         )
+        self.outcomes = OutcomeRegistry()
         self.url = settings.NETBOX_URL
         self.token = settings.NETBOX_TOKEN
         self.handle = handle
@@ -182,6 +188,7 @@ class NetBox:
         self.new_filters = False
         self.m2m_front_ports = False  # True for NetBox >= 4.5 (M2M port mappings)
         self.rack_types = False
+        self.force_resolve_conflicts = False
         self.connect_api()
         self.verify_compatibility()
         self.graphql = NetBoxGraphQLClient(
@@ -375,8 +382,96 @@ class NetBox:
                 del device_type[i]
         return saved_images
 
+    def _try_resolve_and_retry_device_type_update(self, dt, device_type, updates, error):
+        """Classify a failed device-type PATCH and, if safe, remediate then retry.
+
+        Inspects *error* via :func:`classify_device_type_update_failure`.  When
+        the failure is a recognised constraint, blocking templates exist, AND
+        no live devices reference this type, AND the operator has opted in via
+        ``--force-resolve-conflicts``, the remediation steps are executed and
+        the original PATCH is retried once.  Otherwise an actionable hint is
+        logged and ``False`` is returned (the caller will count this as a
+        failure via :meth:`_log_device_type_change_outcome`).
+
+        Args:
+            dt: pynetbox device-type record being updated.
+            device_type (dict): Parsed YAML device-type dict.
+            updates (dict): PATCH payload that previously failed.
+            error: ``pynetbox.RequestError`` instance from the failed PATCH.
+
+        Returns:
+            tuple[bool, FailureResolution | None]: ``(retry_succeeded, resolution)``
+            where ``resolution`` is the classifier's output (or ``None`` if the
+            classifier itself raised), useful for downstream reporting.
+        """
+        try:
+            resolution = classify_device_type_update_failure(
+                error.error,
+                netbox=self.netbox,
+                device_type_id=dt.id,
+                device_type_yaml=device_type,
+            )
+        except Exception as exc:  # defensive: classifier must never break the run
+            self.handle.verbose_log(f"Failure classifier raised {type(exc).__name__}: {exc}")
+            return False, None
+
+        if resolution.kind == FailureKind.UNHANDLED:
+            return False, resolution
+
+        # Build a structured operator-facing log so the constraint and its
+        # remediation path are crystal clear.
+        if resolution.blocking_objects:
+            blockers = ", ".join(resolution.blocking_objects[:10])
+            if len(resolution.blocking_objects) > 10:
+                blockers += f", … (+{len(resolution.blocking_objects) - 10} more)"
+            self.handle.log(f"Constraint analysis for {dt.model}: blocked by {blockers}")
+        if resolution.description:
+            self.handle.log(f"  {resolution.description}")
+        if resolution.hint:
+            self.handle.log(f"  Hint: {resolution.hint}")
+
+        if resolution.kind == FailureKind.MANUAL_REQUIRED or not resolution.is_actionable:
+            return False, resolution
+
+        if not self.force_resolve_conflicts:
+            return False, resolution
+
+        # Opt-in destructive remediation.
+        self.handle.log(
+            f"Auto-resolving constraint for {dt.model} "
+            f"(--force-resolve-conflicts; {len(resolution.remediation_steps)} step(s))"
+        )
+        try:
+            for step in resolution.remediation_steps:
+                step()
+        except Exception as exc:
+            self.handle.log(f"Auto-resolve failed for {dt.model}: {exc}")
+            return False, resolution
+
+        # Retry the original PATCH exactly once.
+        try:
+            _retry_on_connection_error(
+                self.netbox.dcim.device_types.update,
+                [{"id": dt.id, **updates}],
+            )
+            dt.update(updates)
+            return True, resolution
+        except pynetbox.RequestError as e:
+            self.handle.log(f"Retry after auto-resolve still failed for {dt.model}: {e.error}")
+            return False, resolution
+        except _RETRYABLE_EXCEPTIONS as e:
+            self.handle.log(f"Connection error during retry after auto-resolve for {dt.model}: {e}")
+            return False, resolution
+
     def _log_device_type_change_outcome(
-        self, dt, dt_change, *, property_attempted, property_succeeded, component_attempted
+        self,
+        dt,
+        dt_change,
+        *,
+        property_attempted,
+        property_succeeded,
+        component_attempted,
+        failure_resolution=None,
     ):
         """Emit the right post-update log for an existing device type.
 
@@ -384,7 +479,23 @@ class NetBox:
         failed but components ran), and "completely failed" (PATCH was the only
         action and it failed) so the operator-visible log no longer reports
         "Device Type Updated" when nothing was applied.
+
+        When the operation failed or was partial, also records a structured
+        outcome into :attr:`outcomes` so the end-of-run summary can render an
+        itemised report.
+
+        Args:
+            dt: pynetbox device-type record.
+            dt_change: ChangeEntry for this device-type.
+            property_attempted (bool): True if a property PATCH was issued.
+            property_succeeded (bool): True if the property PATCH (or its retry)
+                applied cleanly.
+            component_attempted (bool): True if component changes were applied.
+            failure_resolution: Optional :class:`FailureResolution` whose
+                ``description``, ``blocking_objects`` and ``hint`` will be
+                attached to the registry record when the update failed.
         """
+        identity = f"{dt.manufacturer.name}/{dt.model}"
         something_applied = property_succeeded or component_attempted
         if something_applied:
             if property_attempted and not property_succeeded:
@@ -392,6 +503,14 @@ class NetBox:
                     f"Device Type Partially Updated: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
                     f"Property PATCH failed; applied {len(dt_change.component_changes or [])} "
                     "component change(s); skipping component creation."
+                )
+                self.outcomes.record(
+                    EntityKind.DEVICE_TYPE,
+                    identity,
+                    Outcome.PARTIAL,
+                    reason="Property PATCH failed; component changes applied.",
+                    blocking_objects=(failure_resolution.blocking_objects if failure_resolution else None),
+                    hint=(failure_resolution.hint if failure_resolution else None),
                 )
             else:
                 self.handle.verbose_log(
@@ -406,6 +525,14 @@ class NetBox:
                 f"Device Type Update Failed: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
                 f"Attempted {len(dt_change.property_changes or [])} property change(s); "
                 "no changes were applied (see error above)."
+            )
+            self.outcomes.record(
+                EntityKind.DEVICE_TYPE,
+                identity,
+                Outcome.FAILED,
+                reason=(failure_resolution.description if failure_resolution else "Property PATCH failed."),
+                blocking_objects=(failure_resolution.blocking_objects if failure_resolution else None),
+                hint=(failure_resolution.hint if failure_resolution else None),
             )
         else:
             self.handle.verbose_log(
@@ -464,6 +591,7 @@ class NetBox:
             property_attempted = False
             property_succeeded = False
             component_attempted = bool(dt_change.component_changes)
+            failure_resolution = None
 
             # Apply property changes (exclude image properties — uploads are handled separately)
             if dt_change.property_changes:
@@ -482,6 +610,15 @@ class NetBox:
                         self.handle.verbose_log(f"Updated device type {dt.model} properties: {list(updates.keys())}")
                     except pynetbox.RequestError as e:
                         self.handle.log(f"Error updating device type {dt.model}: {e.error}")
+                        retried_ok, failure_resolution = self._try_resolve_and_retry_device_type_update(
+                            dt, device_type, updates, e
+                        )
+                        if retried_ok:
+                            self.counter.update({"properties_updated": 1})
+                            property_succeeded = True
+                            self.handle.verbose_log(
+                                f"Updated device type {dt.model} properties after auto-resolve: {list(updates.keys())}"
+                            )
                     except _RETRYABLE_EXCEPTIONS as e:
                         self.handle.log(
                             f"Connection error updating device type {dt.model} after {_MAX_RETRIES} retries: {e}"
@@ -505,6 +642,7 @@ class NetBox:
                 property_attempted=property_attempted,
                 property_succeeded=property_succeeded,
                 component_attempted=component_attempted,
+                failure_resolution=failure_resolution,
             )
         else:
             self.handle.verbose_log(
@@ -1618,9 +1756,18 @@ class DeviceTypes:
                 break
 
         for endpoint_name, advance in updates.items():
+            if advance == 0:
+                continue
             task_id = task_ids.get(endpoint_name)
             if task_id is not None:
-                progress.update(task_id, advance=advance)
+                if advance < 0:
+                    # Rewind on retry: clamp completed at 0 to avoid negative bars.
+                    task = next((t for t in progress.tasks if t.id == task_id), None)
+                    if task is not None:
+                        new_completed = max(0, task.completed + advance)
+                        progress.update(task_id, completed=new_completed)
+                else:
+                    progress.update(task_id, advance=advance)
                 advanced = True
 
         return advanced
@@ -1828,8 +1975,17 @@ class DeviceTypes:
                             # Drop: endpoint already finalised; no task to advance.
                             continue
                         task_id = task_ids.get(endpoint_name)
-                        if task_id is not None:
-                            progress.update(task_id, advance=advance)
+                        if task_id is not None and advance != 0:
+                            if advance < 0:
+                                task = next(
+                                    (t for t in progress.tasks if t.id == task_id),
+                                    None,
+                                )
+                                if task is not None:
+                                    new_completed = max(0, task.completed + advance)
+                                    progress.update(task_id, completed=new_completed)
+                            else:
+                                progress.update(task_id, advance=advance)
                     except queue.Empty:
                         pass
                 else:
@@ -1976,16 +2132,19 @@ class DeviceTypes:
             return records
 
         for attempt in range(_MAX_RETRIES + 1):
-            # Buffer per-attempt page advances so a mismatched-and-retried fetch
-            # does NOT double-advance the progress bar.  Only flush after the
-            # attempt passes validation.
+            # Forward per-page advances LIVE so the progress bar moves while a
+            # large endpoint (e.g. interfaces, 100k+ records) is fetching.  Track
+            # fetched_this_attempt so that on a count-mismatch retry we can
+            # rewind by the same amount, keeping the bar consistent.
             fetched_this_attempt = 0
 
-            def _buffer_advance(n):
+            def _live_advance(n):
                 nonlocal fetched_this_attempt
                 fetched_this_attempt += n
+                if progress_callback is not None and n:
+                    progress_callback(endpoint_name, n)
 
-            on_page = _buffer_advance if progress_callback is not None else None
+            on_page = _live_advance if progress_callback is not None else None
             records = self.graphql.get_component_templates(endpoint_name, on_page=on_page)
             if endpoint_name == "front_port_templates":
                 records = [_FrontPortRecordWithMappings(r) for r in records]
@@ -1998,6 +2157,10 @@ class DeviceTypes:
                         f"but REST API expected {expected_total}. "
                         f"Retrying in {backoff}s (attempt {attempt + 1}/{_MAX_RETRIES})…"
                     )
+                    if progress_callback is not None and fetched_this_attempt:
+                        # Rewind the bar so the next attempt's live advances do
+                        # not double-count.
+                        progress_callback(endpoint_name, -fetched_this_attempt)
                     time.sleep(backoff)
                     continue
                 raise GraphQLCountMismatchError(
@@ -2006,8 +2169,6 @@ class DeviceTypes:
                     f"after {_MAX_RETRIES} retries. "
                     "Run aborted to prevent processing an incomplete component cache."
                 )
-            if progress_callback is not None and fetched_this_attempt:
-                progress_callback(endpoint_name, fetched_this_attempt)
             break
 
         return records

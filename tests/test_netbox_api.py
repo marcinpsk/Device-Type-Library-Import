@@ -335,6 +335,108 @@ def test_fetch_global_endpoint_records_uses_graphql(
     assert updates == [("interface_templates", 3)]
 
 
+def test_fetch_global_endpoint_records_progress_emits_live_per_page(
+    mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
+):
+    """Progress callback must fire per page during the fetch, not in one batch at the end.
+
+    Regression: an earlier implementation buffered per-attempt advances and only
+    flushed them after the fetch completed.  For large endpoints (e.g. 100k+
+    interfaces) the bar appeared frozen at 0 for the whole fetch, then jumped
+    to 100% at the end.
+    """
+    from unittest.mock import patch as _patch
+    from core.graphql_client import DotDict
+
+    mock_nb_api = mock_pynetbox.api.return_value
+    dt = make_device_types(nb_api=mock_nb_api)
+
+    pages = [
+        [DotDict({"id": "1", "name": "a", "device_type": {"id": "5"}, "module_type": None})],
+        [DotDict({"id": "2", "name": "b", "device_type": {"id": "5"}, "module_type": None})],
+        [DotDict({"id": "3", "name": "c", "device_type": {"id": "5"}, "module_type": None})],
+    ]
+
+    advances_during_fetch = []
+
+    def fake_get(endpoint_name, on_page=None):
+        # Stream pages and verify that the consumer-facing callback was invoked
+        # before the next page is yielded.
+        all_records = []
+        for page in pages:
+            all_records.extend(page)
+            if on_page is not None:
+                on_page(len(page))
+        return all_records
+
+    def progress_cb(endpoint, advance):
+        advances_during_fetch.append((endpoint, advance))
+
+    with _patch.object(dt.graphql, "get_component_templates", side_effect=fake_get):
+        records = dt._fetch_global_endpoint_records(
+            "interface_templates",
+            progress_callback=progress_cb,
+            expected_total=3,
+        )
+
+    assert len(records) == 3
+    # Live emission: one callback per page, not a single batched flush.
+    assert advances_during_fetch == [
+        ("interface_templates", 1),
+        ("interface_templates", 1),
+        ("interface_templates", 1),
+    ]
+
+
+def test_fetch_global_endpoint_records_emits_rewind_on_retry(
+    mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
+):
+    """When a count-mismatch triggers a retry, a negative-advance "rewind" must be emitted.
+
+    Without the rewind, the next attempt's live advances would double-count on
+    top of the failed attempt's leftover ones.
+    """
+    from unittest.mock import patch as _patch
+    from core.graphql_client import DotDict
+
+    mock_nb_api = mock_pynetbox.api.return_value
+    dt = make_device_types(nb_api=mock_nb_api)
+
+    iface1 = DotDict({"id": "1", "name": "a", "device_type": {"id": "5"}, "module_type": None})
+    iface2 = DotDict({"id": "2", "name": "b", "device_type": {"id": "5"}, "module_type": None})
+
+    call_count = {"n": 0}
+
+    def fake_get(endpoint_name, on_page=None):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            if on_page is not None:
+                on_page(1)
+            return [iface1]
+        if on_page is not None:
+            on_page(1)
+            on_page(1)
+        return [iface1, iface2]
+
+    advances = []
+
+    def progress_cb(endpoint, advance):
+        advances.append(advance)
+
+    with _patch("core.netbox_api.time.sleep"):
+        with _patch.object(dt.graphql, "get_component_templates", side_effect=fake_get):
+            records = dt._fetch_global_endpoint_records(
+                "interface_templates",
+                progress_callback=progress_cb,
+                expected_total=2,
+            )
+
+    assert len(records) == 2
+    # Live: +1 (failed attempt page), -1 (rewind), +1 + +1 (successful retry pages).
+    assert advances == [1, -1, 1, 1]
+    assert sum(advances) == 2
+
+
 def test_fetch_global_endpoint_records_progress_skipped_when_empty(
     mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
 ):
@@ -2619,6 +2721,164 @@ class TestCreateDeviceTypesUpdatePath:
         )
         # The failure log must surface the model so operators can find it.
         assert any("Device Type Update Failed" in msg and "TestSwitch" in msg for msg in all_calls)
+
+    def _build_subdevice_role_flip_setup(self, mock_settings, mock_pynetbox, make_device_types, *, force=False):
+        """Shared scaffolding for force-resolve-conflicts integration tests.
+
+        Returns ``(nb, dt, mock_nb_api, change, device_type, blocking_template, error)``
+        where the device-type update is wired to fail with the parent->child
+        device-bay constraint and the resolver query path is pre-stubbed to
+        report zero dependent devices and one blocking device-bay template.
+        """
+        import pynetbox as real_pynb2
+        from core.change_detector import ChangeReport, DeviceTypeChange, PropertyChange
+
+        mock_pynetbox.RequestError = real_pynb2.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        dt = make_device_types(nb_api=mock_nb_api)
+
+        existing_dt = MagicMock()
+        existing_dt.id = 99
+        existing_dt.model = "SuperServer"
+        existing_dt.manufacturer.name = "Supermicro"
+        dt.existing_device_types = {("supermicro", "SuperServer"): existing_dt}
+        dt.existing_device_types_by_slug = {}
+
+        nb = NetBox(mock_settings, mock_settings.handle)
+        nb.device_types = dt
+        nb.force_resolve_conflicts = force
+
+        # Pre-stub resolver-side queries: zero dependent devices, one blocking template.
+        mock_nb_api.dcim.devices.filter.return_value = []
+        mock_nb_api.dcim.devices.count.return_value = 0
+        blocking_template = MagicMock()
+        blocking_template.name = "module-bay-1"
+        mock_nb_api.dcim.device_bay_templates.filter.return_value = [blocking_template]
+
+        # Build a real RequestError carrying the constraint message.
+        constraint_body = (
+            b'{"subdevice_role": ["Must delete all device bay templates associated with '
+            b'this device before declassifying it as a parent device."]}'
+        )
+        err = real_pynb2.RequestError(MagicMock(status_code=400, content=constraint_body))
+        # Force the .error property to return the parsed dict (pynetbox usually does this).
+        err.error = {
+            "subdevice_role": [
+                "Must delete all device bay templates associated with this device "
+                "before declassifying it as a parent device."
+            ]
+        }
+
+        change = DeviceTypeChange(
+            manufacturer_slug="supermicro",
+            model="SuperServer",
+            slug="superserver",
+            property_changes=[PropertyChange("subdevice_role", "parent", "child")],
+        )
+        report = ChangeReport(modified_device_types=[change])
+
+        device_type = {
+            "manufacturer": {"slug": "supermicro"},
+            "model": "SuperServer",
+            "slug": "superserver",
+            "src": "/tmp/device-types/supermicro/superserver.yaml",
+        }
+        return nb, dt, mock_nb_api, report, device_type, blocking_template, err
+
+    def test_constraint_failure_logs_hint_when_flag_off(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
+    ):
+        """Without --force-resolve-conflicts, classifier hint is logged but no auto-resolve runs."""
+        nb, dt, mock_nb_api, report, device_type, blocking_template, err = self._build_subdevice_role_flip_setup(
+            mock_settings, mock_pynetbox, make_device_types, force=False
+        )
+        mock_nb_api.dcim.device_types.update.side_effect = err
+
+        mock_settings.handle.log.reset_mock()
+        nb.create_device_types([device_type], update=True, change_report=report)
+
+        # Auto-resolve must NOT have run (no template delete attempted).
+        blocking_template.delete.assert_not_called()
+        # PATCH must have been attempted exactly once (no retry).
+        mock_nb_api.dcim.device_types.update.assert_called_once()
+        # Failure counter bumped, success counter not.
+        assert nb.counter["device_types_failed"] == 1
+        assert nb.counter["properties_updated"] == 0
+        # Hint mentions the flag and the blocking template.
+        all_logs = [c.args[0] for c in mock_settings.handle.log.call_args_list]
+        assert any("--force-resolve-conflicts" in m for m in all_logs), all_logs
+        assert any("module-bay-1" in m for m in all_logs), all_logs
+        # Failure recorded into the OutcomeRegistry with structured context.
+        from core.outcomes import EntityKind, Outcome
+
+        failures = nb.outcomes.failures()
+        assert len(failures) == 1
+        assert failures[0].kind == EntityKind.DEVICE_TYPE
+        assert failures[0].outcome == Outcome.FAILED
+        assert "SuperServer" in failures[0].identity
+        assert "module-bay-1" in failures[0].blocking_objects
+        assert failures[0].hint and "--force-resolve-conflicts" in failures[0].hint
+
+    def test_constraint_failure_auto_resolves_when_flag_on_and_safe(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
+    ):
+        """With flag on + zero dependents, blocking templates are deleted and PATCH retried."""
+        nb, dt, mock_nb_api, report, device_type, blocking_template, err = self._build_subdevice_role_flip_setup(
+            mock_settings, mock_pynetbox, make_device_types, force=True
+        )
+        # First update call fails; second (after auto-resolve) succeeds.
+        mock_nb_api.dcim.device_types.update.side_effect = [err, MagicMock()]
+
+        nb.create_device_types([device_type], update=True, change_report=report)
+
+        blocking_template.delete.assert_called_once()
+        assert mock_nb_api.dcim.device_types.update.call_count == 2
+        assert nb.counter["properties_updated"] == 1
+        assert nb.counter["device_types_failed"] == 0
+        # Successful retry path must NOT record a failure into the registry.
+        assert nb.outcomes.failures() == []
+
+    def test_constraint_failure_auto_resolve_retry_still_fails(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
+    ):
+        """If the retried PATCH after auto-resolve still fails, count it as a failure exactly once."""
+        import pynetbox as real_pynb2
+
+        nb, dt, mock_nb_api, report, device_type, blocking_template, err = self._build_subdevice_role_flip_setup(
+            mock_settings, mock_pynetbox, make_device_types, force=True
+        )
+        err2 = real_pynb2.RequestError(MagicMock(status_code=500, content=b'{"detail":"still bad"}'))
+        mock_nb_api.dcim.device_types.update.side_effect = [err, err2]
+
+        nb.create_device_types([device_type], update=True, change_report=report)
+
+        blocking_template.delete.assert_called_once()
+        assert mock_nb_api.dcim.device_types.update.call_count == 2
+        assert nb.counter["properties_updated"] == 0
+        assert nb.counter["device_types_failed"] == 1
+
+    def test_constraint_failure_blocked_when_devices_in_use(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
+    ):
+        """With flag on but live devices reference the type, no remediation runs (safety gate)."""
+        nb, dt, mock_nb_api, report, device_type, blocking_template, err = self._build_subdevice_role_flip_setup(
+            mock_settings, mock_pynetbox, make_device_types, force=True
+        )
+        live_device = MagicMock()
+        live_device.name = "router-1"
+        mock_nb_api.dcim.devices.filter.return_value = [live_device]
+        mock_nb_api.dcim.devices.count.return_value = 1
+        mock_nb_api.dcim.device_types.update.side_effect = err
+
+        mock_settings.handle.log.reset_mock()
+        nb.create_device_types([device_type], update=True, change_report=report)
+
+        # Safety gate honoured: no delete, no retry.
+        blocking_template.delete.assert_not_called()
+        mock_nb_api.dcim.device_types.update.assert_called_once()
+        assert nb.counter["device_types_failed"] == 1
+        all_logs = [c.args[0] for c in mock_settings.handle.log.call_args_list]
+        assert any("router-1" in m for m in all_logs), all_logs
 
     def test_update_applies_component_changes(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
         """update=True with component_changes calls update_components (and optionally remove_components)."""
