@@ -80,7 +80,9 @@ def test_classifier_recognises_subdevice_role_error_dict_safe_path():
 
 def test_classifier_accepts_json_string_payload():
     """Pynetbox sometimes returns the body as a JSON string; classifier must handle it."""
-    nb = _make_netbox(templates=[MagicMock(name="t")], devices=[], device_count=0)
+    t = MagicMock()
+    t.name = "t"
+    nb = _make_netbox(templates=[t], devices=[], device_count=0)
     res = classify_device_type_update_failure(
         SUBDEVICE_ROLE_ERROR_JSON,
         netbox=nb,

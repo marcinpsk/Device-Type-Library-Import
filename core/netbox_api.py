@@ -1164,7 +1164,9 @@ class NetBox:
             if key in curr_mt:
                 create_fn(curr_mt[key], module_type_id, context=src_file)
 
-    def _apply_module_type_component_updates(self, curr_mt, module_type_res, properties_updated, remove_components):
+    def _apply_module_type_component_updates(
+        self, curr_mt, module_type_res, properties_updated, remove_components, patch_ok=True
+    ):
         """Detect and apply component changes for an existing module type in update mode.
 
         Args:
@@ -1173,6 +1175,9 @@ class NetBox:
             properties_updated (bool): Whether scalar properties were already patched (used to
                 avoid double-counting the module as updated).
             remove_components (bool): When True, removed components are deleted from NetBox.
+            patch_ok (bool): Whether the preceding scalar PATCH call succeeded (or was a no-op).
+                When False the property drift is still present; a component-only reconciliation
+                must not be recorded as a full ``module_updated`` success.
         """
         component_changes = self.change_detector._compare_components(curr_mt, module_type_res.id, parent_type="module")
         if component_changes:
@@ -1187,7 +1192,7 @@ class NetBox:
                 or self.counter["components_added"] > before_added
                 or self.counter["components_removed"] > before_removed
             )
-            if actually_changed and not properties_updated:
+            if actually_changed and not properties_updated and patch_ok:
                 self.counter["module_updated"] += 1
 
     def _process_single_module_type(
@@ -1214,6 +1219,7 @@ class NetBox:
         """
         is_new = False
         properties_updated = False
+        patch_ok = True
         module_type_res = self._find_existing_module_type(curr_mt, all_module_types)
         if module_type_res is not None:
             self.handle.verbose_log(
@@ -1226,6 +1232,7 @@ class NetBox:
             self._upload_module_type_images(module_type_res, src_file, module_type_existing_images)
             if not only_new:
                 ok, properties_updated = self._try_update_module_type(curr_mt, module_type_res, src_file)
+                patch_ok = ok
                 if not ok:
                     # Scalar PATCH failed but the module already exists in NetBox;
                     # continue with component reconciliation so a transient property
@@ -1266,7 +1273,9 @@ class NetBox:
             # Existing module type in update mode: detect and apply component changes.
             # The global GraphQL cache is already populated, so _compare_components is a
             # pure dict-lookup with no API calls.
-            self._apply_module_type_component_updates(curr_mt, module_type_res, properties_updated, remove_components)
+            self._apply_module_type_component_updates(
+                curr_mt, module_type_res, properties_updated, remove_components, patch_ok=patch_ok
+            )
         return True
 
     def create_module_types(
