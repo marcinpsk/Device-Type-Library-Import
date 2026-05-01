@@ -499,6 +499,7 @@ class NetBox:
         something_applied = property_succeeded or component_attempted
         if something_applied:
             if property_attempted and not property_succeeded:
+                self.counter.update({"device_types_component_updates": 1})
                 self.handle.verbose_log(
                     f"Device Type Partially Updated: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
                     f"Property PATCH failed; applied {len(dt_change.component_changes or [])} "
@@ -513,6 +514,9 @@ class NetBox:
                     hint=(failure_resolution.hint if failure_resolution else None),
                 )
             else:
+                if component_attempted and not property_succeeded:
+                    # Component-only update: no property change was attempted or needed.
+                    self.counter.update({"device_types_component_updates": 1})
                 self.handle.verbose_log(
                     f"Device Type Updated: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
                     f"Applied {len(dt_change.property_changes or [])} property and "

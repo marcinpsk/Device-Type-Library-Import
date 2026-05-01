@@ -2894,7 +2894,6 @@ class TestCreateDeviceTypesUpdatePath:
 
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.update_components = MagicMock()
         dt.remove_components = MagicMock()
 
         existing_dt = MagicMock()
@@ -2906,6 +2905,11 @@ class TestCreateDeviceTypesUpdatePath:
 
         nb = NetBox(mock_settings, mock_settings.handle)
         nb.device_types = dt
+
+        def fake_update_components(*args, **kwargs):
+            nb.counter.update({"components_added": 1})
+
+        dt.update_components = MagicMock(side_effect=fake_update_components)
 
         change = DeviceTypeChange(
             manufacturer_slug="cisco",
@@ -2924,6 +2928,55 @@ class TestCreateDeviceTypesUpdatePath:
         nb.create_device_types([device_type], update=True, change_report=report, remove_components=True)
         dt.update_components.assert_called()
         dt.remove_components.assert_called()
+        assert nb.counter["device_types_component_updates"] == 1
+        assert nb.counter.get("properties_updated", 0) == 0
+
+    def test_component_only_update_does_not_count_as_property_update(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
+    ):
+        """Component-only change must NOT increment properties_updated."""
+        from core.change_detector import (
+            ChangeReport,
+            ChangeType,
+            ComponentChange,
+            DeviceTypeChange,
+        )
+
+        mock_nb_api = mock_pynetbox.api.return_value
+        dt = make_device_types(nb_api=mock_nb_api)
+        dt.remove_components = MagicMock()
+
+        existing_dt = MagicMock()
+        existing_dt.id = 42
+        existing_dt.model = "MySwitch"
+        existing_dt.manufacturer.name = "Acme"
+        dt.existing_device_types = {("acme", "MySwitch"): existing_dt}
+        dt.existing_device_types_by_slug = {}
+
+        nb = NetBox(mock_settings, mock_settings.handle)
+        nb.device_types = dt
+
+        def fake_update_components(*args, **kwargs):
+            nb.counter.update({"components_added": 1})
+
+        dt.update_components = MagicMock(side_effect=fake_update_components)
+
+        change = DeviceTypeChange(
+            manufacturer_slug="acme",
+            model="MySwitch",
+            slug="myswitch",
+            component_changes=[ComponentChange("interfaces", "eth0", ChangeType.COMPONENT_ADDED)],
+        )
+        report = ChangeReport(modified_device_types=[change])
+        device_type = {
+            "manufacturer": {"slug": "acme"},
+            "model": "MySwitch",
+            "slug": "myswitch",
+            "src": "/tmp/device-types/acme/myswitch.yaml",
+        }
+        nb.create_device_types([device_type], update=True, change_report=report)
+        assert nb.counter.get("properties_updated", 0) == 0
+        assert nb.counter["device_types_component_updates"] == 1
 
     def test_update_verbose_log_when_change_applied(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types

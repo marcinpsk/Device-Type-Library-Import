@@ -690,6 +690,9 @@ def _log_run_summary(handle, netbox, start_time, dtl_repo=None):
     handle.verbose_log(f"Script took {(datetime.now() - start_time)} to run")
     handle.log(f"{netbox.counter['added']} device types created")
     handle.log(f"{netbox.counter['properties_updated']} device types updated")
+    component_updates = netbox.counter.get("device_types_component_updates", 0)
+    if component_updates:
+        handle.log(f"{component_updates} device types had component-only updates")
     failed = netbox.counter.get("device_types_failed", 0)
     if failed:
         handle.log(f"{failed} device types FAILED to update (see error log above)")
