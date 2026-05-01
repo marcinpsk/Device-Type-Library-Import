@@ -492,14 +492,11 @@ class ChangeDetector:
 
         return changes
 
-    def _log_modified_summary(self, report: ChangeReport) -> int:
+    def _log_modified_summary(self, report: ChangeReport) -> None:
         """Compute category counts and log the summary section for modified device types.
 
         Args:
             report: The ChangeReport containing modified_device_types to summarise.
-
-        Returns:
-            The count of device types that have removed components.
         """
         ct_props = 0
         ct_images = 0
@@ -533,8 +530,6 @@ class ChangeDetector:
         if parts:
             self.handle.log(f"  Breakdown: {', '.join(parts)}")
 
-        return ct_removed
-
     def _log_property_diffs(self, prop_changes: List[PropertyChange], indent: str) -> None:
         """Emit diff-u style lines for *prop_changes* at the given *indent*."""
         log_property_diffs(
@@ -553,13 +548,23 @@ class ChangeDetector:
         changed = [c for c in dt.component_changes if c.change_type == ChangeType.COMPONENT_CHANGED]
         removed = [c for c in dt.component_changes if c.change_type == ChangeType.COMPONENT_REMOVED]
 
-        if removed:
-            self.handle.log(f"  ~ {dt.manufacturer_slug}/{dt.model}")
-        else:
-            self.handle.verbose_log(f"  ~ {dt.manufacturer_slug}/{dt.model}")
-
         prop_changes = [pc for pc in dt.property_changes if pc.property_name not in IMAGE_PROPERTIES]
         image_changes = [pc for pc in dt.property_changes if pc.property_name in IMAGE_PROPERTIES]
+
+        # Build a short inline summary so the name line is informative even without --verbose.
+        parts = []
+        if prop_changes:
+            parts.append(f"{len(prop_changes)} prop")
+        if image_changes:
+            parts.append(f"{len(image_changes)} image")
+        if added:
+            parts.append(f"+{len(added)} component")
+        if changed:
+            parts.append(f"~{len(changed)} component")
+        if removed:
+            parts.append(f"-{len(removed)} component")
+        suffix = f"  [{', '.join(parts)}]" if parts else ""
+        self.handle.log(f"  ~ {dt.manufacturer_slug}/{dt.model}{suffix}")
 
         if prop_changes or image_changes:
             self.handle.verbose_log("    Properties:")
@@ -569,16 +574,14 @@ class ChangeDetector:
                 self.handle.verbose_log(f"      ~ {label}: missing in NetBox (YAML defines image)")
 
         if added:
-            self.handle.verbose_log(f"      + {len(added)} new component(s)")
             for comp in added:
                 self.handle.verbose_log(f"        + {comp.component_type}: {comp.component_name}")
         if changed:
-            self.handle.verbose_log(f"      ~ {len(changed)} changed component(s)")
             for comp in changed:
                 self.handle.verbose_log(f"        ~ {comp.component_type}: {comp.component_name}")
                 self._log_property_diffs(comp.property_changes, "            ")
         if removed:
-            self.handle.log(f"      - {len(removed)} removed component(s) (not deleted without --remove-components)")
+            self.handle.log(f"      - {len(removed)} component(s) not in YAML (deleted with --remove-components)")
             for comp in removed:
                 self.handle.verbose_log(f"        - {comp.component_type}: {comp.component_name}")
 
@@ -592,16 +595,14 @@ class ChangeDetector:
         self.handle.log(f"Unchanged device types: {report.unchanged_count}")
 
         if report.modified_device_types:
-            ct_removed = self._log_modified_summary(report)
+            self._log_modified_summary(report)
 
             self.handle.log("-" * 60)
             self.handle.log("MODIFIED DEVICE TYPES:")
             for dt in report.modified_device_types:
                 self._log_modified_device_details(dt)
-
-            verbose_only = len(report.modified_device_types) - ct_removed
-            if verbose_only > 0 and not self.handle.args.verbose:
-                self.handle.log(f"  ({verbose_only} more without removals — use --verbose to list)")
+            if not self.handle.args.verbose:
+                self.handle.log("  (use --verbose for property diffs and component names)")
         else:
             self.handle.log("Modified device types: 0")
 
