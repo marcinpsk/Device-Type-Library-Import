@@ -284,3 +284,33 @@ def test_classifier_count_fallback_when_count_query_fails():
     )
     assert res.kind == FailureKind.MANUAL_REQUIRED
     assert res.dependent_devices_count == 5
+
+
+def test_new_filters_uses_device_type_id_key():
+    """new_filters=True must call filter(device_type_id=...) not devicetype_id=...
+
+    This matters because NetBox >= 4.1 changed the query param name.
+    Passing the wrong key causes pynetbox to silently return ALL templates.
+    """
+    nb = _make_netbox()
+    classify_device_type_update_failure(
+        SUBDEVICE_ROLE_ERROR_DICT,
+        netbox=nb,
+        device_type_id=99,
+        device_type_yaml={},
+        new_filters=True,
+    )
+    nb.dcim.device_bay_templates.filter.assert_called_once_with(device_type_id=99)
+
+
+def test_old_filters_uses_devicetype_id_key():
+    """new_filters=False (default) must call filter(devicetype_id=...) for NetBox < 4.1."""
+    nb = _make_netbox()
+    classify_device_type_update_failure(
+        SUBDEVICE_ROLE_ERROR_DICT,
+        netbox=nb,
+        device_type_id=99,
+        device_type_yaml={},
+        new_filters=False,
+    )
+    nb.dcim.device_bay_templates.filter.assert_called_once_with(devicetype_id=99)

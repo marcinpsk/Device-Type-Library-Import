@@ -410,6 +410,7 @@ class NetBox:
                 netbox=self.netbox,
                 device_type_id=dt.id,
                 device_type_yaml=device_type,
+                new_filters=self.new_filters,
             )
         except Exception as exc:  # defensive: classifier must never break the run
             self.handle.verbose_log(f"Failure classifier raised {type(exc).__name__}: {exc}")

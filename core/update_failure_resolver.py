@@ -143,10 +143,18 @@ def _count_dependent_devices(netbox: Any, device_type_id: int) -> tuple[int, Lis
     return total, sample
 
 
-def _list_device_bay_templates(netbox: Any, device_type_id: int) -> List[Any]:
-    """Return all ``DeviceBayTemplate`` records attached to *device_type_id*."""
+def _list_device_bay_templates(netbox: Any, device_type_id: int, *, new_filters: bool = False) -> List[Any]:
+    """Return all ``DeviceBayTemplate`` records attached to *device_type_id*.
+
+    Args:
+        netbox: pynetbox API client.
+        device_type_id: ID of the device type to query.
+        new_filters: When True, use ``device_type_id`` filter name (NetBox ≥ 4.1);
+            otherwise use the legacy ``devicetype_id`` name.
+    """
+    filter_key = "device_type_id" if new_filters else "devicetype_id"
     try:
-        return list(netbox.dcim.device_bay_templates.filter(devicetype_id=device_type_id))
+        return list(netbox.dcim.device_bay_templates.filter(**{filter_key: device_type_id}))
     except Exception:
         return []
 
@@ -157,6 +165,7 @@ def classify_device_type_update_failure(
     netbox: Any,
     device_type_id: int,
     device_type_yaml: dict,
+    new_filters: bool = False,
 ) -> FailureResolution:
     """Classify a ``pynetbox.RequestError`` raised while updating a device type.
 
@@ -168,6 +177,7 @@ def classify_device_type_update_failure(
         device_type_yaml: Parsed YAML dict for this device-type (used to detect
             whether the YAML *also* lists device bays — in which case we cannot
             blindly delete them).
+        new_filters: When True, use updated filter parameter names (NetBox ≥ 4.1).
 
     Returns:
         A :class:`FailureResolution` describing the constraint and (when safe)
@@ -182,7 +192,7 @@ def classify_device_type_update_failure(
         )
 
     # SUBDEVICE_ROLE_FLIP path -------------------------------------------------
-    blocking_templates = _list_device_bay_templates(netbox, device_type_id)
+    blocking_templates = _list_device_bay_templates(netbox, device_type_id, new_filters=new_filters)
     blocking_names = [getattr(t, "name", str(getattr(t, "id", "?"))) for t in blocking_templates]
 
     dep_count, dep_sample = _count_dependent_devices(netbox, device_type_id)
