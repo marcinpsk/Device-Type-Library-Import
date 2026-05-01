@@ -887,11 +887,10 @@ def test_preload_tolerates_none_endpoint_totals(mock_settings, mock_pynetbox, gr
     )
 
     assert result == {"interface_templates": []}
-    # The already_done branch must have updated the task with completed==total
-    # (both 0 here, since the future returned an empty list and the REST count
-    # was unavailable).
-    update_calls = progress.update.call_args_list
-    assert update_calls, "progress.update was never called for the finished endpoint"
+    # The already_done branch must update the task to completed==total.
+    # With an empty result list and a None REST count, final_total = max(0, 0, 1) = 1
+    # (the max(..., 1) floor prevents a 0/0 bar in the Rich progress UI).
+    progress.update.assert_called_once_with("task-1", total=1, completed=1)
 
 
 def test_upload_images_success_logs_verbose_only(
@@ -3197,6 +3196,7 @@ class TestFilterActionableModuleTypesEdge:
             }
         )
         nb = NetBox(mock_settings, mock_settings.handle)
+        nb.device_types._global_preload_done = True  # isolate from preload side-effects
 
         existing_mt = MagicMock()
         existing_mt.id = 42
@@ -3224,8 +3224,12 @@ class TestFilterActionableModuleTypesEdge:
                 "core.netbox_api.NetBox._discover_module_image_files",
                 return_value=[str(img)],
             ):
-                result, _, _ = nb.filter_actionable_module_types([module_type], all_mts, only_new=False)
+                result, existing_images_map, _ = nb.filter_actionable_module_types(
+                    [module_type], all_mts, only_new=False
+                )
         assert result == [module_type]
+        # Verify the upload worklist is propagated so create_module_types can upload the image.
+        assert existing_images_map == {42: set()}
 
     def test_existing_module_with_changed_property_is_actionable(
         self, mock_settings, mock_pynetbox, mock_graphql_requests
