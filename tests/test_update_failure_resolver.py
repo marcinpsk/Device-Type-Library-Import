@@ -195,13 +195,19 @@ def test_classifier_handles_bytes_payload():
 
 
 @pytest.mark.parametrize(
-    "payload",
+    ("payload", "expected_kind"),
     [
-        {"subdevice_role": "Must delete all device bay templates declassifying it as a parent device"},
-        {"subdevice_role": ["completely unrelated message"]},
+        (
+            {"subdevice_role": "Must delete all device bay templates declassifying it as a parent device"},
+            FailureKind.SUBDEVICE_ROLE_FLIP,
+        ),
+        (
+            {"subdevice_role": ["completely unrelated message"]},
+            FailureKind.UNHANDLED,
+        ),
     ],
 )
-def test_classifier_marker_matching_is_strict(payload):
+def test_classifier_marker_matching_is_strict(payload, expected_kind):
     """Classifier matches only when both required markers are present in the message."""
     nb = _make_netbox(templates=[MagicMock()], devices=[], device_count=0)
     res = classify_device_type_update_failure(
@@ -210,10 +216,7 @@ def test_classifier_marker_matching_is_strict(payload):
         device_type_id=1,
         device_type_yaml={},
     )
-    if "device bay templates" in str(payload) and "declassifying it as a parent device" in str(payload):
-        assert res.kind == FailureKind.SUBDEVICE_ROLE_FLIP
-    else:
-        assert res.kind == FailureKind.UNHANDLED
+    assert res.kind == expected_kind
 
 
 def test_classifier_recognises_subdevice_role_error_string_marker():

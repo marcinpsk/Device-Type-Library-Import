@@ -94,7 +94,7 @@ def _load_module_type_properties():
             exclude=_MODULE_TYPE_SCHEMA_EXCLUDE,
         )
         return props if props else list(_MODULE_TYPE_PROPERTIES_FALLBACK)
-    except Exception:
+    except (ImportError, AttributeError):
         return list(_MODULE_TYPE_PROPERTIES_FALLBACK)
 
 
