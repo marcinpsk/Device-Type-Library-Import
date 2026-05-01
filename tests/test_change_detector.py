@@ -545,7 +545,7 @@ class TestCompareComponentPropertiesMappings:
 class TestLoadDeviceTypePropertiesFallback:
     """Tests for the exception fallback in _load_device_type_properties."""
 
-    def test_exception_during_load_returns_fallback_list(self):
+    def test_import_error_during_load_returns_fallback_list(self):
         from unittest.mock import patch
 
         from core.change_detector import (
@@ -555,11 +555,41 @@ class TestLoadDeviceTypePropertiesFallback:
 
         with patch(
             "core.change_detector.load_properties_for_type",
-            side_effect=RuntimeError("schema unavailable"),
+            side_effect=ImportError("settings module unavailable"),
         ):
             result = _load_device_type_properties()
 
         assert result == list(_DEVICE_TYPE_PROPERTIES_FALLBACK)
+
+    def test_attribute_error_during_load_returns_fallback_list(self):
+        from unittest.mock import patch
+
+        from core.change_detector import (
+            _DEVICE_TYPE_PROPERTIES_FALLBACK,
+            _load_device_type_properties,
+        )
+
+        with patch(
+            "core.change_detector.load_properties_for_type",
+            side_effect=AttributeError("REPO_PATH not set"),
+        ):
+            result = _load_device_type_properties()
+
+        assert result == list(_DEVICE_TYPE_PROPERTIES_FALLBACK)
+
+    def test_unexpected_exception_propagates(self):
+        """Non-import/attribute errors must not be silenced."""
+        import pytest
+        from unittest.mock import patch
+
+        from core.change_detector import _load_device_type_properties
+
+        with patch(
+            "core.change_detector.load_properties_for_type",
+            side_effect=RuntimeError("schema unavailable"),
+        ):
+            with pytest.raises(RuntimeError, match="schema unavailable"):
+                _load_device_type_properties()
 
 
 # ---------------------------------------------------------------------------

@@ -363,10 +363,11 @@ def test_fetch_global_endpoint_records_progress_emits_live_per_page(
         # Stream pages and verify that the consumer-facing callback was invoked
         # before the next page is yielded.
         all_records = []
-        for page in pages:
+        for idx, page in enumerate(pages, start=1):
             all_records.extend(page)
             if on_page is not None:
                 on_page(len(page))
+                assert len(advances_during_fetch) == idx
         return all_records
 
     def progress_cb(endpoint, advance):

@@ -255,9 +255,10 @@ def test_classifier_handles_non_string_msg_in_subdevice_role_list():
 def test_classifier_handles_template_query_failure():
     """If listing device-bay templates raises, classifier still produces a resolution.
 
-    Templates list is empty -> remediation_steps empty -> not actionable; stays
-    SUBDEVICE_ROLE_FLIP only when there ARE templates.  We test the bytes path
-    here since list() failing yields [] which makes is_actionable False.
+    When the template-listing call fails, the blocking templates list is empty.
+    With no blocking templates, ``remediation_steps`` is empty and
+    ``is_actionable`` is False, even though the kind is recognised as
+    SUBDEVICE_ROLE_FLIP.
     """
     nb = MagicMock()
     nb.dcim.device_bay_templates.filter.side_effect = RuntimeError("API down")
@@ -277,7 +278,7 @@ def test_classifier_handles_template_query_failure():
 
 def test_classifier_count_query_used_when_filter_returns_full_page():
     """When filter returns 5 records (page cap), classifier must call .count() for the real total."""
-    devs = [MagicMock(name=f"d{i}") for i in range(5)]
+    devs = [MagicMock() for i in range(5)]
     for i, d in enumerate(devs):
         d.name = f"router-{i}"
     nb = _make_netbox(devices=devs, device_count=137, templates=[MagicMock()])

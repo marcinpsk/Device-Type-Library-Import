@@ -1180,6 +1180,8 @@ class NetBox:
                 When False the property drift is still present; a component-only reconciliation
                 must not be recorded as a full ``module_updated`` success.
         """
+        if not self.device_types._global_preload_done:
+            self.device_types.preload_all_components()
         component_changes = self.change_detector._compare_components(curr_mt, module_type_res.id, parent_type="module")
         if component_changes:
             before_updated = self.counter["components_updated"]

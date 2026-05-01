@@ -106,7 +106,7 @@ def _load_device_type_properties():
             exclude=_DEVICE_TYPE_SCHEMA_EXCLUDE,
         )
         return props if props else list(_DEVICE_TYPE_PROPERTIES_FALLBACK)
-    except Exception:
+    except (ImportError, AttributeError):
         return list(_DEVICE_TYPE_PROPERTIES_FALLBACK)
 
 
