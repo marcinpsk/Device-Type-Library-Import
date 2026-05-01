@@ -245,6 +245,25 @@ def classify_device_type_update_failure(
         )
 
     # Safe path: build remediation steps (delete each blocking template).
+    if not blocking_templates:
+        # The PATCH failed with the subdevice_role constraint but there are no
+        # blocking templates (race condition, prior run cleaned them, or the
+        # filter returned nothing).  Advertising --force-resolve-conflicts would
+        # be a no-op, so give a manual-inspection hint instead.
+        return FailureResolution(
+            kind=FailureKind.SUBDEVICE_ROLE_FLIP,
+            description=(
+                "subdevice_role parent→child blocked but no device-bay templates found "
+                "(may be a transient state or templates were already removed)."
+            ),
+            blocking_objects=[],
+            dependent_devices_count=0,
+            hint=(
+                "Inspect the NetBox database for residual device-bay templates "
+                "and remove them manually if present, then re-run."
+            ),
+        )
+
     def _make_deleter(template):
         def _delete():
             template.delete()

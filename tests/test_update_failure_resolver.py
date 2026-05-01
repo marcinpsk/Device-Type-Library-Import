@@ -113,6 +113,26 @@ def test_classifier_blocks_auto_resolve_when_dependent_devices_exist():
     assert "router-1" in res.hint
 
 
+def test_classifier_returns_inspection_hint_when_no_blocking_templates():
+    """If device-bay templates list is empty, the force-resolve hint must NOT be shown.
+
+    The PATCH error fired but there are no templates to delete (race condition
+    or prior run already cleaned them up).  Advertising --force-resolve-conflicts
+    in that case would be a guaranteed no-op that confuses the operator.
+    """
+    nb = _make_netbox(templates=[], devices=[], device_count=0)
+    res = classify_device_type_update_failure(
+        SUBDEVICE_ROLE_ERROR_DICT,
+        netbox=nb,
+        device_type_id=1,
+        device_type_yaml={},
+    )
+    assert res.kind == FailureKind.SUBDEVICE_ROLE_FLIP
+    assert res.is_actionable is False
+    assert res.remediation_steps == []
+    assert "--force-resolve-conflicts" not in res.hint
+
+
 def test_classifier_blocks_auto_resolve_when_yaml_still_lists_device_bays():
     """YAML still declares device-bays -> auto-deleting them would loop; MANUAL_REQUIRED."""
     nb = _make_netbox(templates=[MagicMock()], devices=[], device_count=0)

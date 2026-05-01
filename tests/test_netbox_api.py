@@ -6187,11 +6187,12 @@ class TestTryUpdateModuleTypeErrors:
         assert ok is False
         assert updated is False
         mock_settings.handle.log.assert_called()
-        # Prove the retry loop actually ran the full budget instead of failing fast.
-        from core.netbox_api import _MAX_RETRIES
+        # Prove the retry loop actually ran the full budget with the correct backoff.
+        from core.netbox_api import _MAX_RETRIES, _RETRY_BACKOFF
 
         assert nb.netbox.dcim.module_types.update.call_count == _MAX_RETRIES + 1
         assert mock_sleep.call_count == _MAX_RETRIES
+        assert [call.args[0] for call in mock_sleep.call_args_list] == list(_RETRY_BACKOFF[:_MAX_RETRIES])
 
 
 # ---------------------------------------------------------------------------
@@ -6235,11 +6236,12 @@ class TestProcessSingleModuleTypeCreateRetryable:
 
         assert result is False
         mock_settings.handle.log.assert_called()
-        # Prove the retry loop actually ran the full budget instead of failing fast.
-        from core.netbox_api import _MAX_RETRIES
+        # Prove the retry loop actually ran the full budget with the correct backoff.
+        from core.netbox_api import _MAX_RETRIES, _RETRY_BACKOFF
 
         assert mock_nb_api.dcim.module_types.create.call_count == _MAX_RETRIES + 1
         assert mock_sleep.call_count == _MAX_RETRIES
+        assert [call.args[0] for call in mock_sleep.call_args_list] == list(_RETRY_BACKOFF[:_MAX_RETRIES])
 
 
 # ---------------------------------------------------------------------------
@@ -6294,6 +6296,13 @@ class TestProcessSingleModuleTypeRemoveComponents:
 
         assert result is True
         nb.device_types.remove_components.assert_called_once()
+        # Verify the payload: exactly one COMPONENT_REMOVED change for "xe-stale".
+        from core.change_detector import ChangeType
+
+        removal_changes = nb.device_types.remove_components.call_args.args[1]
+        assert len(removal_changes) == 1
+        assert removal_changes[0].change_type == ChangeType.COMPONENT_REMOVED
+        assert removal_changes[0].component_name == "xe-stale"
 
     def test_component_reconciliation_continues_when_scalar_patch_fails(
         self, mock_settings, mock_pynetbox, mock_graphql_requests, make_device_types

@@ -542,10 +542,8 @@ class NetBox:
             )
         else:
             self.handle.verbose_log(
-                f"Device Type Updated: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
-                f"Applied {len(dt_change.property_changes or [])} property and "
-                f"{len(dt_change.component_changes or [])} component change(s); "
-                "skipping component creation."
+                f"Device Type Cached: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
+                "No property or component changes applied."
             )
 
     def _handle_existing_device_type(
