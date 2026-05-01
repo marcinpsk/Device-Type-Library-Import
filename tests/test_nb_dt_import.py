@@ -303,6 +303,8 @@ def _make_mock_repo(device_types=None):
 
 def _make_mock_netbox(modules=False, rack_types=False):
     """Return a pre-configured NetBox mock."""
+    from collections import Counter
+
     mock_nb = MagicMock()
     mock_nb.modules = modules
     mock_nb.rack_types = rack_types
@@ -313,6 +315,21 @@ def _make_mock_netbox(modules=False, rack_types=False):
     mock_nb.filter_actionable_module_types.return_value = ([], {}, [])
     mock_nb.get_existing_module_types.return_value = {}
     mock_nb.get_existing_rack_types.return_value = {}
+    mock_nb.counter = Counter(
+        added=0,
+        components_added=0,
+        manufacturer=0,
+        module_added=3,
+        module_updated=2,
+        module_update_failed=0,
+        rack_type_added=0,
+        rack_type_updated=0,
+        images=0,
+        properties_updated=0,
+        components_updated=0,
+        components_removed=0,
+        device_types_failed=0,
+    )
     return mock_nb
 
 
@@ -818,7 +835,8 @@ class TestMain:
 
         log_calls = [str(c) for c in MockLogHandler.return_value.log.call_args_list]
         logged = " ".join(log_calls)
-        assert "modules created" in logged or "modules updated" in logged
+        assert "3 modules created" in logged
+        assert "2 modules updated" in logged
 
     def test_progress_panel_tty_sets_console_and_pumps_preload(self, nb_dt_import):
         """With a TTY progress, set_console is called and pump_preload wired up."""

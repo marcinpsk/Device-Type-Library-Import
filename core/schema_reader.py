@@ -41,6 +41,8 @@ def load_scalar_properties(schema_path, exclude=None):
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid JSON in {schema_path}: {exc}") from exc
 
+    if not isinstance(schema, dict):
+        raise ValueError(f"Schema {schema_path} root is not a JSON object")
     if "properties" not in schema:
         raise ValueError(f"Schema {schema_path} has no 'properties' key")
     if not isinstance(schema["properties"], dict):
@@ -50,7 +52,10 @@ def load_scalar_properties(schema_path, exclude=None):
     for name, defn in schema["properties"].items():
         if name in exclude:
             continue
-        prop_type = defn.get("type") if isinstance(defn, dict) else None
+        if not isinstance(defn, dict):
+            # Malformed property entry; skip silently rather than raising.
+            continue
+        prop_type = defn.get("type")
         if prop_type in ("array", "object"):
             continue
         result.append(name)

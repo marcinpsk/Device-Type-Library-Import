@@ -1413,11 +1413,11 @@ class TestFrontPortRecordWithMappings:
             {"rear_port_name": None, "front_port_position": 1, "rear_port_position": 3}
         ]
 
-    def test_legacy_path_no_rear_port_position_gives_empty_canonical(self):
-        """NetBox < 4.5 with no rear_port_position → empty canonical."""
+    def test_legacy_path_no_rear_port_position_gives_none_canonical(self):
+        """NetBox < 4.5 with no rear_port_position → None sentinel (fields unavailable, skip comparison)."""
         record = MagicMock(spec=[])
         wrapped = _FrontPortRecordWithMappings(record)
-        assert wrapped._mappings_canonical == []
+        assert wrapped._mappings_canonical is None
 
     def test_delegates_unknown_attr_to_record(self):
         """Attribute access falls through to the underlying record."""
@@ -6371,3 +6371,5 @@ class TestProcessSingleModuleTypeRemoveComponents:
         assert result is True
         nb.device_types.update_components.assert_called_once()
         nb.device_types.remove_components.assert_called_once()
+        assert nb.counter["module_updated"] == 0
+        assert nb.counter["module_update_failed"] == 1

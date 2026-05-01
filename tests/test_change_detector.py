@@ -572,17 +572,14 @@ class TestCompareDeviceTypePropertiesMissingAttribute:
 
     def test_attribute_absent_from_netbox_object_is_skipped(self):
         """When netbox_dt doesn't have the attribute, the property is skipped (no change reported)."""
-        from core.change_detector import DEVICE_TYPE_PROPERTIES
+        from unittest.mock import patch
 
-        detector = ChangeDetector(MagicMock(), MagicMock())
-        # A plain object() has no extra attributes, so getattr returns _MISSING.
-        netbox_dt = object()
+        _FIXED_PROPS = ["u_height", "is_full_depth"]
+        with patch("core.change_detector.get_device_type_properties", return_value=_FIXED_PROPS):
+            detector = ChangeDetector(MagicMock(), MagicMock())
+            # A plain object() has no extra attributes, so getattr returns _MISSING.
+            netbox_dt = object()
 
-        # Pick the first property in DEVICE_TYPE_PROPERTIES and put it in yaml_data.
-        if not DEVICE_TYPE_PROPERTIES:
-            return  # nothing to test if fallback list is empty
-
-        prop = DEVICE_TYPE_PROPERTIES[0]
-        changes = detector._compare_device_type_properties({prop: "any_value"}, netbox_dt)
+            changes = detector._compare_device_type_properties({"u_height": 2}, netbox_dt)
 
         assert changes == []

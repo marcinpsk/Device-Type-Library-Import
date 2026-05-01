@@ -339,3 +339,29 @@ def test_old_filters_uses_devicetype_id_key():
         new_filters=False,
     )
     nb.dcim.device_bay_templates.filter.assert_called_once_with(devicetype_id=99)
+
+
+def test_count_dependent_devices_uses_new_filter_key():
+    """When new_filters=True, dcim.devices must be queried with device_type_id= not devicetype_id=."""
+    nb = _make_netbox(devices=[], device_count=0)
+    classify_device_type_update_failure(
+        SUBDEVICE_ROLE_ERROR_DICT,
+        netbox=nb,
+        device_type_id=77,
+        device_type_yaml={},
+        new_filters=True,
+    )
+    nb.dcim.devices.filter.assert_called_once_with(device_type_id=77, limit=5)
+
+
+def test_count_dependent_devices_uses_legacy_filter_key():
+    """When new_filters=False (default), dcim.devices must be queried with devicetype_id=."""
+    nb = _make_netbox(devices=[], device_count=0)
+    classify_device_type_update_failure(
+        SUBDEVICE_ROLE_ERROR_DICT,
+        netbox=nb,
+        device_type_id=77,
+        device_type_yaml={},
+        new_filters=False,
+    )
+    nb.dcim.devices.filter.assert_called_once_with(devicetype_id=77, limit=5)

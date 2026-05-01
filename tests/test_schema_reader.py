@@ -24,6 +24,32 @@ class TestLoadScalarProperties:
         with pytest.raises(ValueError, match="no 'properties'"):
             load_scalar_properties(str(schema_file))
 
+    def test_non_object_schema_root_raises_value_error(self, tmp_path):
+        """A JSON array or scalar at the schema root must raise ValueError."""
+        schema_file = tmp_path / "array_root.json"
+        schema_file.write_text('[{"type": "string"}]')
+
+        with pytest.raises(ValueError, match="root is not a JSON object"):
+            load_scalar_properties(str(schema_file))
+
+    def test_non_dict_property_entry_is_skipped(self, tmp_path):
+        """Malformed property entries (non-dict) must be silently skipped."""
+        schema = {
+            "properties": {
+                "valid_prop": {"type": "string"},
+                "broken_prop": None,
+                "also_broken": "shorthand",
+            }
+        }
+        schema_file = tmp_path / "schema.json"
+        schema_file.write_text(json.dumps(schema))
+
+        result = load_scalar_properties(str(schema_file))
+
+        assert "valid_prop" in result
+        assert "broken_prop" not in result
+        assert "also_broken" not in result
+
     def test_excludes_named_properties(self, tmp_path):
         schema = {
             "properties": {

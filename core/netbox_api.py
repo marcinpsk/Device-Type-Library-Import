@@ -171,6 +171,7 @@ class NetBox:
             manufacturer=0,
             module_added=0,
             module_updated=0,
+            module_update_failed=0,
             rack_type_added=0,
             rack_type_updated=0,
             images=0,
@@ -1234,6 +1235,7 @@ class NetBox:
                 ok, properties_updated = self._try_update_module_type(curr_mt, module_type_res, src_file)
                 patch_ok = ok
                 if not ok:
+                    self.counter["module_update_failed"] += 1
                     # Scalar PATCH failed but the module already exists in NetBox;
                     # continue with component reconciliation so a transient property
                     # update failure does not block component sync.
@@ -1552,7 +1554,7 @@ class _FrontPortRecordWithMappings:
                     }
                 ]
                 if rp_pos is not None
-                else []
+                else None  # Both mappings and rear_port_position absent; skip comparison.
             )
         object.__setattr__(self, "_mappings_canonical", canonical)
 

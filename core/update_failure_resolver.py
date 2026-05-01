@@ -122,16 +122,23 @@ def _matches_subdevice_role_constraint(payload: Any) -> bool:
     return False
 
 
-def _count_dependent_devices(netbox: Any, device_type_id: int) -> tuple[int, List[str]]:
+def _count_dependent_devices(netbox: Any, device_type_id: int, *, new_filters: bool = False) -> tuple[int, List[str]]:
     """Query NetBox for devices using *device_type_id*.
 
     Returns ``(count, sample_names)`` where ``sample_names`` is up to 5 names
     for inclusion in operator-facing logs.  Defensive: any pynetbox/network
     failure is reported as an UNKNOWN large count (``-1``) so the caller treats
     the type as unsafe to auto-resolve.
+
+    Args:
+        netbox: pynetbox API client.
+        device_type_id: ID of the device type to query.
+        new_filters: When True, use ``device_type_id`` filter name (NetBox ≥ 4.1);
+            otherwise use the legacy ``devicetype_id`` name.
     """
+    filter_kwargs = device_type_filter_kwargs(device_type_id, new_filters=new_filters)
     try:
-        devices = list(netbox.dcim.devices.filter(device_type_id=device_type_id, limit=5))
+        devices = list(netbox.dcim.devices.filter(**filter_kwargs, limit=5))
     except Exception:
         return -1, []
     sample = [getattr(d, "name", None) or str(getattr(d, "id", "?")) for d in devices[:5]]
@@ -139,7 +146,7 @@ def _count_dependent_devices(netbox: Any, device_type_id: int) -> tuple[int, Lis
         return len(devices), sample
     # We capped at limit=5; query the real total separately.
     try:
-        total = netbox.dcim.devices.count(device_type_id=device_type_id)
+        total = netbox.dcim.devices.count(**filter_kwargs)
     except Exception:
         total = len(devices)
     return total, sample
@@ -200,7 +207,7 @@ def classify_device_type_update_failure(
     blocking_templates = _list_device_bay_templates(netbox, device_type_id, new_filters=new_filters)
     blocking_names = [getattr(t, "name", str(getattr(t, "id", "?"))) for t in blocking_templates]
 
-    dep_count, dep_sample = _count_dependent_devices(netbox, device_type_id)
+    dep_count, dep_sample = _count_dependent_devices(netbox, device_type_id, new_filters=new_filters)
 
     # YAML must NOT redefine device-bays — otherwise deleting them would just
     # cause our own component-creation step to fail or thrash.  This catches

@@ -428,7 +428,11 @@ class ChangeDetector:
                     )
                     for m in yaml_mappings
                 )
-                canonical = getattr(netbox_comp, "_mappings_canonical", None) or []
+                canonical = getattr(netbox_comp, "_mappings_canonical", None)
+                if canonical is None:
+                    # GraphQL response lacked both mappings and rear_port_position;
+                    # treat as unmanaged to avoid a false COMPONENT_CHANGED.
+                    continue
                 has_names = any(m.get("rear_port_name") is not None for m in canonical)
                 if has_names:
                     # NetBox >= 4.5: compare with rear port names

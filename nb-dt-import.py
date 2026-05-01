@@ -704,6 +704,8 @@ def _log_run_summary(handle, netbox, start_time, dtl_repo=None):
     if netbox.modules:
         handle.log(f"{netbox.counter['module_added']} modules created")
         handle.log(f"{netbox.counter['module_updated']} modules updated")
+        if netbox.counter["module_update_failed"]:
+            handle.log(f"{netbox.counter['module_update_failed']} modules failed to update")
     if netbox.rack_types:
         handle.log(f"{netbox.counter['rack_type_added']} rack types created")
         handle.log(f"{netbox.counter['rack_type_updated']} rack types updated")
