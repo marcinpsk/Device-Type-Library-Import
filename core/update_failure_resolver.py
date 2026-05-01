@@ -24,6 +24,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, List, Optional
 
+from core.compat import device_type_filter_kwargs
+
 
 class FailureKind(str, Enum):
     """High-level classification of a NetBox update failure."""
@@ -152,9 +154,12 @@ def _list_device_bay_templates(netbox: Any, device_type_id: int, *, new_filters:
         new_filters: When True, use ``device_type_id`` filter name (NetBox ≥ 4.1);
             otherwise use the legacy ``devicetype_id`` name.
     """
-    filter_key = "device_type_id" if new_filters else "devicetype_id"
     try:
-        return list(netbox.dcim.device_bay_templates.filter(**{filter_key: device_type_id}))
+        return list(
+            netbox.dcim.device_bay_templates.filter(
+                **device_type_filter_kwargs(device_type_id, new_filters=new_filters)
+            )
+        )
     except Exception:
         return []
 

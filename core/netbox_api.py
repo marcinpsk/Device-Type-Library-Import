@@ -15,6 +15,7 @@ import glob
 from pathlib import Path
 
 from core.change_detector import COMPONENT_ALIASES, ChangeDetector, ChangeType
+from core.compat import device_type_filter_kwargs, module_type_filter_kwargs, module_type_filter_key
 from core.formatting import log_property_diffs
 from core.graphql_client import GraphQLCountMismatchError, GraphQLError, NetBoxGraphQLClient
 from core.normalization import values_equal
@@ -2230,7 +2231,8 @@ class DeviceTypes:
     def _get_filter_kwargs(self, parent_id, parent_type="device"):
         """Build endpoint filter keyword arguments for the given parent type and ID.
 
-        Selects the correct parameter name based on the NetBox version (``self.new_filters``).
+        Delegates to :mod:`core.compat` helpers so the version-compat logic
+        lives in exactly one place.
 
         Args:
             parent_id (int): ID of the device type or module type.
@@ -2240,12 +2242,9 @@ class DeviceTypes:
             dict: Filter kwargs to pass to a pynetbox endpoint's ``filter()`` method.
         """
         if parent_type == "device":
-            key = "device_type_id" if self.new_filters else "devicetype_id"
-            return {key: parent_id}
+            return device_type_filter_kwargs(parent_id, new_filters=self.new_filters)
         else:
-            # Module types: module_type_id (new) vs moduletype_id (old)
-            key = "module_type_id" if self.new_filters else "moduletype_id"
-            return {key: parent_id}
+            return module_type_filter_kwargs(parent_id, new_filters=self.new_filters)
 
     def _get_cached_or_fetch(self, cache_name, parent_id, parent_type, endpoint):
         """Return cached components or fall back to a targeted REST filter.
@@ -2298,7 +2297,7 @@ class DeviceTypes:
             seen_endpoints.add(endpoint_attr)
             targets.append((endpoint_attr, cache_name))
 
-        filter_key = "module_type_id" if self.new_filters else "moduletype_id"
+        filter_key = module_type_filter_key(self.new_filters)
         id_list = sorted(module_type_ids)
 
         # Pre-populate empty entries so cache hits return {} for IDs with no components.
