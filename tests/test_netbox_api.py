@@ -4085,7 +4085,7 @@ class TestPreloadGlobalWithProgress:
     def test_preload_global_no_progress_future_failure(
         self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
     ):
-        """When no progress and a future raises, log is called and result is []."""
+        """When no progress and a future raises, the exception is logged and re-raised."""
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
 
@@ -4105,7 +4105,8 @@ class TestPreloadGlobalWithProgress:
                 "finished_endpoints": set(),
             }
             components = [("interface_templates", "Interface Templates")]
-            dt._preload_global(components, preload_job=preload_job, progress=None)
+            with pytest.raises(RuntimeError, match="network error"):
+                dt._preload_global(components, preload_job=preload_job, progress=None)
 
         mock_settings.handle.log.assert_any_call("Preload failed for Interface Templates: network error")
 
@@ -5292,7 +5293,7 @@ class TestPreloadGlobalMissingLines:
     def test_already_done_endpoint_with_future_exception(
         self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
     ):
-        """already_done endpoint whose future raises → log + empty records (lines 1119-1121)."""
+        """already_done endpoint whose future raises → log + exception re-raised."""
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
 
@@ -5313,7 +5314,8 @@ class TestPreloadGlobalMissingLines:
             "finished_endpoints": {"interface_templates"},  # already done
         }
         components = [("interface_templates", "Interface Templates")]
-        dt._preload_global(components, preload_job=preload_job, progress=progress)
+        with pytest.raises(RuntimeError, match="fetch failed"):
+            dt._preload_global(components, preload_job=preload_job, progress=progress)
         mock_settings.handle.log.assert_any_call("Preload failed for interface_templates: fetch failed")
 
     def test_already_done_endpoint_progress_update_exception_swallowed(
@@ -5346,7 +5348,7 @@ class TestPreloadGlobalMissingLines:
     def test_pending_future_exception_logged(
         self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
     ):
-        """Future raising while pending logs error and stores empty records (1153-1155)."""
+        """Future raising while pending logs error and re-raises."""
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
 
@@ -5368,7 +5370,8 @@ class TestPreloadGlobalMissingLines:
             "finished_endpoints": set(),
         }
         components = [("interface_templates", "Interface Templates")]
-        dt._preload_global(components, preload_job=preload_job, progress=progress)
+        with pytest.raises(RuntimeError, match="network error"):
+            dt._preload_global(components, preload_job=preload_job, progress=progress)
         mock_settings.handle.log.assert_any_call("Preload failed for interface_templates: network error")
 
     def test_progress_updates_get_with_timeout_advances_task(

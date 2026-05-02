@@ -1189,6 +1189,11 @@ class NetBox:
             self.device_types.preload_all_components()
         component_changes = self.change_detector._compare_components(curr_mt, module_type_res.id, parent_type="module")
         if component_changes:
+            component_attempted = any(
+                c.change_type in (ChangeType.COMPONENT_CHANGED, ChangeType.COMPONENT_ADDED)
+                or (remove_components and c.change_type == ChangeType.COMPONENT_REMOVED)
+                for c in component_changes
+            )
             before_updated = self.counter["components_updated"]
             before_added = self.counter["components_added"]
             before_removed = self.counter["components_removed"]
@@ -1202,6 +1207,8 @@ class NetBox:
             )
             if actually_changed and not properties_updated and patch_ok:
                 self.counter["module_updated"] += 1
+            elif component_attempted and not actually_changed and patch_ok:
+                self.counter["module_update_failed"] += 1
 
     def _process_single_module_type(
         self, curr_mt, src_file, all_module_types, module_type_existing_images, only_new, remove_components=False
@@ -1924,7 +1931,7 @@ class DeviceTypes:
                     raise
                 except Exception as exc:
                     self.handle.log(f"Preload failed for {endpoint_name}: {exc}")
-                    records_by_endpoint[endpoint_name] = []
+                    raise
                 if endpoint_name in task_ids:
                     try:
                         final_total = max(
@@ -1993,7 +2000,7 @@ class DeviceTypes:
                     raise
                 except Exception as exc:
                     self.handle.log(f"Preload failed for {endpoint_name}: {exc}")
-                    records_by_endpoint[endpoint_name] = []
+                    raise
                 final_total = max(
                     endpoint_totals.get(endpoint_name) or 0,
                     len(records_by_endpoint[endpoint_name]),
@@ -2053,7 +2060,7 @@ class DeviceTypes:
                 raise
             except Exception as exc:
                 self.handle.log(f"Preload failed for {label}: {exc}")
-                records_by_endpoint[endpoint] = []
+                raise
         return records_by_endpoint
 
     def _preload_global(self, components, progress_wrapper=None, preload_job=None, progress=None):
