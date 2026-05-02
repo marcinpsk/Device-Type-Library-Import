@@ -152,8 +152,11 @@ def _count_dependent_devices(netbox: Any, device_type_id: int, *, new_filters: b
     return total, sample
 
 
-def _list_device_bay_templates(netbox: Any, device_type_id: int, *, new_filters: bool = False) -> List[Any]:
+def _list_device_bay_templates(netbox: Any, device_type_id: int, *, new_filters: bool = False) -> Optional[List[Any]]:
     """Return all ``DeviceBayTemplate`` records attached to *device_type_id*.
+
+    Returns ``None`` when the NetBox query itself fails (network error, 5xx, etc.)
+    so the caller can distinguish "no templates" from "lookup failed".
 
     Args:
         netbox: pynetbox API client.
@@ -168,7 +171,7 @@ def _list_device_bay_templates(netbox: Any, device_type_id: int, *, new_filters:
             )
         )
     except Exception:
-        return []
+        return None
 
 
 def classify_device_type_update_failure(
@@ -205,6 +208,12 @@ def classify_device_type_update_failure(
 
     # SUBDEVICE_ROLE_FLIP path -------------------------------------------------
     blocking_templates = _list_device_bay_templates(netbox, device_type_id, new_filters=new_filters)
+    if blocking_templates is None:
+        return FailureResolution(
+            kind=FailureKind.MANUAL_REQUIRED,
+            description="Cannot inspect blocking device-bay templates: the NetBox lookup failed.",
+            hint="Retry after restoring NetBox connectivity, then re-run the update.",
+        )
     blocking_names = [getattr(t, "name", str(getattr(t, "id", "?"))) for t in blocking_templates]
 
     dep_count, dep_sample = _count_dependent_devices(netbox, device_type_id, new_filters=new_filters)

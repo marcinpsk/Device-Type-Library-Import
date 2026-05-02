@@ -111,7 +111,7 @@ uv run nb-dt-import.py --vendors "Palo Alto" --slugs 440
 | Argument | Default | Description |
 | --- | --- | --- |
 | `--vendors` | all | Comma- or space-separated list of vendors to import (e.g. `apc cisco`) |
-| `--slugs` | all | Space-separated device-type slug substrings to filter (partial match) |
+| `--slugs` | all | Comma- or space-separated device-type slug substrings to filter (partial match) |
 | `--url` / `--git` | community library | Git URL of the device-type library to clone |
 | `--branch` | `master` | Git branch to check out from the repo |
 | `--verbose` | off | Print verbose output (individual create/update messages) |

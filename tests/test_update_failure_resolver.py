@@ -253,12 +253,11 @@ def test_classifier_handles_non_string_msg_in_subdevice_role_list():
 
 
 def test_classifier_handles_template_query_failure():
-    """If listing device-bay templates raises, classifier still produces a resolution.
+    """If listing device-bay templates raises, classifier returns MANUAL_REQUIRED.
 
-    When the template-listing call fails, the blocking templates list is empty.
-    With no blocking templates, ``remediation_steps`` is empty and
-    ``is_actionable`` is False, even though the kind is recognised as
-    SUBDEVICE_ROLE_FLIP.
+    When the template-listing call fails, the result must distinguish
+    "lookup failed" from "no templates" so the operator gets a connectivity
+    hint rather than a misleading "inspect for residual templates" message.
     """
     nb = MagicMock()
     nb.dcim.device_bay_templates.filter.side_effect = RuntimeError("API down")
@@ -270,9 +269,9 @@ def test_classifier_handles_template_query_failure():
         device_type_id=1,
         device_type_yaml={},
     )
-    # No blocking templates -> not actionable, but classifier still recognised the kind.
-    assert res.kind == FailureKind.SUBDEVICE_ROLE_FLIP
-    assert res.remediation_steps == []
+    # Lookup failure → MANUAL_REQUIRED with connectivity hint (not a race-condition message).
+    assert res.kind == FailureKind.MANUAL_REQUIRED
+    assert "lookup failed" in res.description
     assert res.is_actionable is False
 
 

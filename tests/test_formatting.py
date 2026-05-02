@@ -31,7 +31,10 @@ class TestLogPropertyDiffs:
     def test_emits_diff_lines_for_changes(self):
         log_fn = []
         log_property_diffs([("u_height", 1, 2)], log_fn.append)
-        assert any("u_height" in line for line in log_fn)
+        assert log_fn == [
+            "      - u_height: 1",
+            "      + u_height: 2",
+        ]
 
     def test_empty_triples_emits_nothing(self):
         log_fn = []

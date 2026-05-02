@@ -1253,16 +1253,23 @@ class NetBox:
             if actionable_count == 0:
                 if properties_updated and patch_ok:
                     self.counter["module_updated"] += 1
-            elif component_delta == 0:
-                if patch_ok:
+                elif not patch_ok:
                     self.counter["module_update_failed"] += 1
-                # else: the scalar PATCH failure already counted at the call site
+            elif component_delta == 0:
+                if properties_updated and patch_ok:
+                    # Properties patched successfully; components were attempted but
+                    # none changed — treat as a partial success, not a full failure.
+                    self.counter["module_partial_update"] += 1
+                else:
+                    self.counter["module_update_failed"] += 1
             elif component_delta == actionable_count and patch_ok:
                 self.counter["module_updated"] += 1
             else:
                 self.counter["module_partial_update"] += 1
         elif properties_updated and patch_ok:
             self.counter["module_updated"] += 1
+        elif not patch_ok:
+            self.counter["module_update_failed"] += 1
 
     def _process_single_module_type(
         self, curr_mt, src_file, all_module_types, module_type_existing_images, only_new, remove_components=False
@@ -1303,10 +1310,9 @@ class NetBox:
                 ok, properties_updated = self._try_update_module_type(curr_mt, module_type_res, src_file)
                 patch_ok = ok
                 if not ok:
-                    self.counter["module_update_failed"] += 1
-                    # Scalar PATCH failed but the module already exists in NetBox;
-                    # continue with component reconciliation so a transient property
-                    # update failure does not block component sync.
+                    # Scalar PATCH failed; continue with component reconciliation so a
+                    # transient property update failure does not block component sync.
+                    # Outcome counter is determined by _apply_module_type_component_updates.
                     self.handle.verbose_log(
                         f"Scalar PATCH failed for module type "
                         f"{module_type_res.manufacturer.name} - {module_type_res.model}; "

@@ -1094,8 +1094,8 @@ class TestProcessModuleTypesHints:
         logged = [call.args[0] for call in handle.log.call_args_list]
         # --update hint should appear (module_changed_count > 0, update=False)
         assert any("--update" in msg for msg in logged)
-        # --remove-components hint should appear (pending_removal_modules > 0, remove_components=False)
-        assert any("--remove-components" in msg for msg in logged)
+        # Removal guidance must include --update and --remove-components in the same hint.
+        assert any("--update --remove-components" in msg for msg in logged)
 
 
 # ---------------------------------------------------------------------------

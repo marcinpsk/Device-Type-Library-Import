@@ -143,6 +143,13 @@ class OutcomeRegistry:
                 lines.append(f"  ~ [{r.kind.value}] {r.identity}")
                 if r.reason:
                     lines.append(f"      reason: {r.reason}")
+                if r.blocking_objects:
+                    blockers = ", ".join(r.blocking_objects[:5])
+                    if len(r.blocking_objects) > 5:
+                        blockers += f", … (+{len(r.blocking_objects) - 5} more)"
+                    lines.append(f"      blocked by: {blockers}")
+                if r.hint:
+                    lines.append(f"      hint: {r.hint}")
 
         lines.append("=" * 60)
         return lines
