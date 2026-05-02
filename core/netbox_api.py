@@ -1267,11 +1267,16 @@ class NetBox:
                     self.counter["module_partial_update"] += 1
                 else:
                     self.counter["module_update_failed"] += 1
+                    reason = (
+                        "Scalar PATCH failed; component reconciliation ran but applied 0 changes."
+                        if not patch_ok
+                        else "Component reconciliation ran but applied 0 changes."
+                    )
                     self.outcomes.record(
                         EntityKind.MODULE_TYPE,
                         identity,
                         Outcome.FAILED,
-                        reason="Scalar PATCH failed; component reconciliation ran but applied 0 changes.",
+                        reason=reason,
                     )
             elif component_delta == actionable_count and patch_ok:
                 self.counter["module_updated"] += 1

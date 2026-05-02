@@ -2721,6 +2721,14 @@ class TestCreateDeviceTypesUpdatePath:
         )
         # The failure log must surface the model so operators can find it.
         assert any("Device Type Update Failed" in msg and "TestSwitch" in msg for msg in all_calls)
+        # Outcome.FAILED must also be recorded in the registry so the end-of-run report reflects it.
+        from core.outcomes import EntityKind, Outcome
+
+        failures = nb.outcomes.failures()
+        assert len(failures) == 1
+        assert failures[0].kind == EntityKind.DEVICE_TYPE
+        assert failures[0].outcome == Outcome.FAILED
+        assert "TestSwitch" in failures[0].identity
 
     def _build_subdevice_role_flip_setup(self, mock_settings, mock_pynetbox, make_device_types, *, force=False):
         """Shared scaffolding for force-resolve-conflicts integration tests.

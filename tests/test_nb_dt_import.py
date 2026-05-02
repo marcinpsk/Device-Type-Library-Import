@@ -1144,17 +1144,21 @@ class TestLogRunSummary:
         mock_nb = MagicMock()
         mock_nb.modules = False
         mock_nb.rack_types = True
-        mock_nb.counter = {
-            "added": 0,
-            "properties_updated": 0,
-            "components_updated": 0,
-            "components_added": 0,
-            "components_removed": 0,
-            "images": 0,
-            "manufacturer": 0,
-            "rack_type_added": 3,
-            "rack_type_updated": 1,
-        }
+        from collections import Counter
+
+        mock_nb.counter = Counter(
+            {
+                "added": 0,
+                "properties_updated": 0,
+                "components_updated": 0,
+                "components_added": 0,
+                "components_removed": 0,
+                "images": 0,
+                "manufacturer": 0,
+                "rack_type_added": 3,
+                "rack_type_updated": 1,
+            }
+        )
 
         nb_dt_import._log_run_summary(handle, mock_nb, datetime.now())
 
@@ -1169,15 +1173,19 @@ class TestLogRunSummary:
         mock_nb = MagicMock()
         mock_nb.modules = False
         mock_nb.rack_types = False
-        mock_nb.counter = {
-            "added": 0,
-            "properties_updated": 0,
-            "components_updated": 0,
-            "components_added": 0,
-            "components_removed": 0,
-            "images": 0,
-            "manufacturer": 0,
-        }
+        from collections import Counter
+
+        mock_nb.counter = Counter(
+            {
+                "added": 0,
+                "properties_updated": 0,
+                "components_updated": 0,
+                "components_added": 0,
+                "components_removed": 0,
+                "images": 0,
+                "manufacturer": 0,
+            }
+        )
 
         mock_repo = MagicMock()
         mock_repo.duplicate_definitions = [
