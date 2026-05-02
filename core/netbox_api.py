@@ -155,6 +155,20 @@ def _image_dir_for_yaml(src_file: str, src_segment: str, dst_segment: str) -> "P
 # from pynetbox import RequestError as APIRequestError
 
 
+def _any_actionable_component_changes(changes, remove_components):
+    """Return True if any change in *changes* will issue an API call.
+
+    Non-removal changes always qualify; removal changes only qualify when
+    *remove_components* is enabled.  Removal-only diffs with the flag off
+    issue zero API calls and must not be treated as attempted.
+    """
+    return any(
+        c.change_type in (ChangeType.COMPONENT_CHANGED, ChangeType.COMPONENT_ADDED)
+        or (remove_components and c.change_type == ChangeType.COMPONENT_REMOVED)
+        for c in changes
+    )
+
+
 class NetBox:
     """Interface to the NetBox API for importing device and module types."""
 
@@ -474,14 +488,16 @@ class NetBox:
         property_attempted,
         property_succeeded,
         component_attempted,
+        component_succeeded,
         failure_resolution=None,
     ):
         """Emit the right post-update log for an existing device type.
 
         Distinguishes "actually updated", "partial update" (property PATCH
         failed but components ran), and "completely failed" (PATCH was the only
-        action and it failed) so the operator-visible log no longer reports
-        "Device Type Updated" when nothing was applied.
+        action and it failed, or component API calls were issued but all failed)
+        so the operator-visible log no longer reports "Device Type Updated" when
+        nothing was applied.
 
         When the operation failed or was partial, also records a structured
         outcome into :attr:`outcomes` so the end-of-run summary can render an
@@ -493,13 +509,17 @@ class NetBox:
             property_attempted (bool): True if a property PATCH was issued.
             property_succeeded (bool): True if the property PATCH (or its retry)
                 applied cleanly.
-            component_attempted (bool): True if component changes were applied.
+            component_attempted (bool): True if at least one component API call
+                was issued (intent-based: non-removal changes, or removals with
+                --remove-components enabled).
+            component_succeeded (bool): True if at least one component change
+                succeeded (i.e., a counter moved).
             failure_resolution: Optional :class:`FailureResolution` whose
                 ``description``, ``blocking_objects`` and ``hint`` will be
                 attached to the registry record when the update failed.
         """
         identity = f"{dt.manufacturer.name}/{dt.model}"
-        something_applied = property_succeeded or component_attempted
+        something_applied = property_succeeded or component_succeeded
         if something_applied:
             if property_attempted and not property_succeeded:
                 self.counter.update({"device_types_component_updates": 1})
@@ -517,7 +537,7 @@ class NetBox:
                     hint=(failure_resolution.hint if failure_resolution else None),
                 )
             else:
-                if component_attempted and not property_succeeded:
+                if component_succeeded and not property_succeeded:
                     # Component-only update: no property change was attempted or needed.
                     self.counter.update({"device_types_component_updates": 1})
                 self.handle.verbose_log(
@@ -526,18 +546,29 @@ class NetBox:
                     f"{len(dt_change.component_changes or [])} component change(s); "
                     "skipping component creation."
                 )
-        elif property_attempted:
+        elif property_attempted or component_attempted:
             self.counter.update({"device_types_failed": 1})
             self.handle.log(
                 f"Device Type Update Failed: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
-                f"Attempted {len(dt_change.property_changes or [])} property change(s); "
+                f"Attempted {len(dt_change.property_changes or [])} property and "
+                f"{len(dt_change.component_changes or [])} component change(s); "
                 "no changes were applied (see error above)."
             )
             self.outcomes.record(
                 EntityKind.DEVICE_TYPE,
                 identity,
                 Outcome.FAILED,
-                reason=(failure_resolution.description if failure_resolution else "Property PATCH failed."),
+                reason=(
+                    failure_resolution.description
+                    if failure_resolution
+                    else (
+                        "Property PATCH and component updates failed."
+                        if property_attempted and component_attempted
+                        else "Property PATCH failed."
+                        if property_attempted
+                        else "Component updates failed."
+                    )
+                ),
                 blocking_objects=(failure_resolution.blocking_objects if failure_resolution else None),
                 hint=(failure_resolution.hint if failure_resolution else None),
             )
@@ -596,6 +627,7 @@ class NetBox:
             property_attempted = False
             property_succeeded = False
             component_attempted = False
+            component_succeeded = False
             failure_resolution = None
 
             # Apply property changes (exclude image properties — uploads are handled separately)
@@ -631,6 +663,7 @@ class NetBox:
 
             # Apply component changes
             if dt_change.component_changes:
+                component_attempted = _any_actionable_component_changes(dt_change.component_changes, remove_components)
                 before_components = (
                     self.counter["components_updated"],
                     self.counter["components_added"],
@@ -649,10 +682,7 @@ class NetBox:
                     self.counter["components_added"],
                     self.counter["components_removed"],
                 )
-                # Only flag as "attempted/applied" if the API calls actually moved counters.
-                # A removal-only diff with --remove-components off, or update calls that all
-                # failed internally, must NOT be reported as a partial/applied change.
-                component_attempted = after_components != before_components
+                component_succeeded = after_components != before_components
 
             # Distinguish "actually updated" from "attempted but everything failed".
             self._log_device_type_change_outcome(
@@ -661,6 +691,7 @@ class NetBox:
                 property_attempted=property_attempted,
                 property_succeeded=property_succeeded,
                 component_attempted=component_attempted,
+                component_succeeded=component_succeeded,
                 failure_resolution=failure_resolution,
             )
         else:
@@ -1188,11 +1219,7 @@ class NetBox:
             self.device_types.preload_all_components()
         component_changes = self.change_detector._compare_components(curr_mt, module_type_res.id, parent_type="module")
         if component_changes:
-            component_attempted = any(
-                c.change_type in (ChangeType.COMPONENT_CHANGED, ChangeType.COMPONENT_ADDED)
-                or (remove_components and c.change_type == ChangeType.COMPONENT_REMOVED)
-                for c in component_changes
-            )
+            component_attempted = _any_actionable_component_changes(component_changes, remove_components)
             before_updated = self.counter["components_updated"]
             before_added = self.counter["components_added"]
             before_removed = self.counter["components_removed"]

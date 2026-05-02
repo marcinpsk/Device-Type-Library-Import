@@ -2931,6 +2931,64 @@ class TestCreateDeviceTypesUpdatePath:
         assert nb.counter["device_types_component_updates"] == 1
         assert nb.counter.get("properties_updated", 0) == 0
 
+    def test_component_changes_all_fail_increments_device_types_failed(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
+    ):
+        """When component API calls are issued but all fail, device_types_failed must be incremented.
+
+        Regression: the old code set component_attempted by comparing counters
+        before/after the API calls, so a total component failure was silently
+        swallowed (counters didn't move → component_attempted=False → CACHED).
+        """
+        from core.change_detector import (
+            ChangeReport,
+            ChangeType,
+            ComponentChange,
+            DeviceTypeChange,
+        )
+        from core.outcomes import EntityKind, Outcome
+
+        mock_nb_api = mock_pynetbox.api.return_value
+        dt = make_device_types(nb_api=mock_nb_api)
+
+        existing_dt = MagicMock()
+        existing_dt.id = 7
+        existing_dt.model = "FailSwitch"
+        existing_dt.manufacturer.name = "Acme"
+        dt.existing_device_types = {("acme", "FailSwitch"): existing_dt}
+        dt.existing_device_types_by_slug = {}
+
+        nb = NetBox(mock_settings, mock_settings.handle)
+        nb.device_types = dt
+
+        # update_components is called but intentionally moves no counters
+        # (simulates every per-component API call failing internally).
+        dt.update_components = MagicMock()
+
+        change = DeviceTypeChange(
+            manufacturer_slug="acme",
+            model="FailSwitch",
+            slug="failswitch",
+            component_changes=[ComponentChange("interfaces", "eth0", ChangeType.COMPONENT_ADDED)],
+        )
+        report = ChangeReport(modified_device_types=[change])
+        device_type = {
+            "manufacturer": {"slug": "acme"},
+            "model": "FailSwitch",
+            "slug": "failswitch",
+            "src": "/tmp/device-types/acme/failswitch.yaml",
+        }
+        nb.create_device_types([device_type], update=True, change_report=report)
+
+        dt.update_components.assert_called_once()
+        assert nb.counter["device_types_failed"] == 1
+        assert nb.counter.get("device_types_component_updates", 0) == 0
+        failures = nb.outcomes.failures()
+        assert len(failures) == 1
+        assert failures[0].kind == EntityKind.DEVICE_TYPE
+        assert failures[0].outcome == Outcome.FAILED
+        assert "FailSwitch" in failures[0].identity
+
     def test_component_only_update_does_not_count_as_property_update(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types
     ):
