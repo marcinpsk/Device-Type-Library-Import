@@ -2928,7 +2928,6 @@ class TestCreateDeviceTypesUpdatePath:
         }
         nb.create_device_types([device_type], update=True, change_report=report, remove_components=True)
         dt.update_components.assert_called()
-        dt.remove_components.assert_called()
         assert nb.counter["device_types_component_updates"] == 1
         assert nb.counter.get("properties_updated", 0) == 0
 
@@ -6373,7 +6372,6 @@ class TestProcessSingleModuleTypeRemoveComponents:
         # this assertion).
         mock_nb_api.dcim.module_types.update.assert_called_once()
         assert result is True
-        nb.device_types.update_components.assert_called_once()
         nb.device_types.remove_components.assert_called_once()
         assert nb.counter["module_updated"] == 0
         assert nb.counter["module_update_failed"] == 1

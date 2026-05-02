@@ -1133,7 +1133,6 @@ class NetBox:
             return True, False
         try:
             _retry_on_connection_error(self.netbox.dcim.module_types.update, [{"id": module_type_res.id, **updates}])
-            self.counter["module_updated"] += 1
             self.handle.verbose_log(
                 f"Module Type Updated: {module_type_res.manufacturer.name} - "
                 f"{module_type_res.model} - {module_type_res.id} "
@@ -1205,10 +1204,12 @@ class NetBox:
                 or self.counter["components_added"] > before_added
                 or self.counter["components_removed"] > before_removed
             )
-            if actually_changed and not properties_updated and patch_ok:
+            if actually_changed and patch_ok:
                 self.counter["module_updated"] += 1
             elif component_attempted and not actually_changed and patch_ok:
                 self.counter["module_update_failed"] += 1
+        elif properties_updated and patch_ok:
+            self.counter["module_updated"] += 1
 
     def _process_single_module_type(
         self, curr_mt, src_file, all_module_types, module_type_existing_images, only_new, remove_components=False
