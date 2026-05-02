@@ -676,6 +676,36 @@ class TestMain:
                 nb_dt_import.main()
         assert exc_info.value.code == 2
 
+    def test_force_resolve_conflicts_without_update_exits_with_error(self, nb_dt_import):
+        """--force-resolve-conflicts without --update triggers parser.error (SystemExit 2)."""
+        with patch.object(sys, "argv", ["nb-dt-import.py", "--force-resolve-conflicts"]):
+            with pytest.raises(SystemExit) as exc_info:
+                nb_dt_import.main()
+        assert exc_info.value.code == 2
+
+    def test_update_with_force_resolve_conflicts(self, nb_dt_import):
+        """--update --force-resolve-conflicts sets netbox.force_resolve_conflicts=True."""
+        dt = [{"manufacturer": {"slug": "cisco"}, "model": "A", "slug": "a"}]
+        change_entry = SimpleNamespace(manufacturer_slug="cisco", model="A", slug="a")
+        report = SimpleNamespace(new_device_types=[change_entry], modified_device_types=[])
+
+        with (
+            patch.object(sys, "argv", ["nb-dt-import.py", "--update", "--force-resolve-conflicts"]),
+            patch("nb_dt_import.DTLRepo") as MockRepo,
+            patch("nb_dt_import.NetBox") as MockNetBox,
+            patch("nb_dt_import.ChangeDetector") as MockDetector,
+        ):
+            mock_repo = _make_mock_repo(device_types=dt)
+            mock_repo.get_devices.return_value = (["file.yaml"], [{"slug": "cisco"}])
+            MockRepo.return_value = mock_repo
+            mock_nb = _make_mock_netbox()
+            MockNetBox.return_value = mock_nb
+            MockDetector.return_value.detect_changes.return_value = report
+
+            nb_dt_import.main()
+
+            assert mock_nb.force_resolve_conflicts is True
+
     def test_missing_env_var_triggers_system_exit(self, nb_dt_import):
         """A missing mandatory env var calls handle.exception which exits."""
         with (

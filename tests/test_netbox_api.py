@@ -4006,6 +4006,7 @@ class TestCreateModuleTypesEdge:
         nb = NetBox(mock_settings, mock_settings.handle)
         nb.device_types = make_device_types(nb_api=mock_pynetbox.api.return_value)
         nb.device_types.update_components = MagicMock()
+        nb.device_types.remove_components = MagicMock()
 
         existing_mt = DotDict(
             {
@@ -4042,10 +4043,9 @@ class TestCreateModuleTypesEdge:
             remove_components=False,
         )
         mock_pynetbox.api.return_value.dcim.module_types.update.assert_called_once()
+        nb.device_types.remove_components.assert_not_called()
         assert nb.counter["module_updated"] == 1
         assert nb.counter.get("module_update_failed", 0) == 0
-
-    """Tests for count_module_type_images with existing module types."""
 
     def test_existing_module_new_image_counted(self, tmp_path):
         """Existing MT whose image name is NOT in existing_names increments count."""
@@ -5090,9 +5090,16 @@ class TestCreateDeviceTypesCornerCases:
                 "src": "/tmp/device-types/cisco/testswitch.yaml",
             }
         ]
-        # progress wraps the list but is also iterable
-        nb.create_device_types(device_types, progress=iter(device_types))
-        # No assertion needed — just verify no exception
+        # Use a tracking iterator to verify the progress wrapper is actually consumed.
+        consumed = []
+
+        def tracking_iter():
+            for item in device_types:
+                consumed.append(item)
+                yield item
+
+        nb.create_device_types(device_types, progress=tracking_iter())
+        assert len(consumed) > 0, "Progress iterator was not consumed by create_device_types"
 
     def test_image_file_not_found_logs_error(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path
@@ -5179,13 +5186,21 @@ class TestCreateModuleTypesCornerCases:
                 "src": "/repo/module-types/cisco/lc.yaml",
             }
         ]
+        consumed = []
+
+        def tracking_iter():
+            for item in module_types:
+                consumed.append(item)
+                yield item
+
         nb.create_module_types(
             module_types,
-            progress=iter(module_types),
+            progress=tracking_iter(),
             all_module_types={},
             module_type_existing_images={},
         )
         nb.netbox.dcim.module_types.create.assert_called_once()
+        assert len(consumed) > 0, "Progress iterator was not consumed by create_module_types"
 
     def test_all_module_types_fetched_when_none(self, mock_settings, mock_pynetbox, mock_graphql_requests):
         """all_module_types is fetched when not supplied."""
@@ -6548,3 +6563,6 @@ class TestProcessSingleModuleTypeRemoveComponents:
         nb.device_types.remove_components.assert_called_once()
         assert nb.counter["module_updated"] == 0
         assert nb.counter["module_update_failed"] == 1
+        failures = nb.outcomes.failures()
+        assert len(failures) == 1
+        assert "CM-Fail-Patch" in failures[0].identity

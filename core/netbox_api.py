@@ -533,11 +533,11 @@ class NetBox:
                 if component_succeeded and not property_succeeded:
                     # Component-only update: no property change was attempted or needed.
                     self.counter.update({"device_types_component_updates": 1})
+                prop_count = 1 if property_succeeded else 0
+                comp_suffix = "; skipping component creation." if component_delta == 0 else "."
                 self.handle.verbose_log(
                     f"Device Type Updated: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
-                    f"Applied {len(dt_change.property_changes or [])} property and "
-                    f"{len(dt_change.component_changes or [])} component change(s); "
-                    "skipping component creation."
+                    f"Applied {prop_count} property and {component_delta} component change(s)" + comp_suffix
                 )
             else:
                 if component_delta > 0:
@@ -566,8 +566,8 @@ class NetBox:
             self.counter.update({"device_types_failed": 1})
             self.handle.log(
                 f"Device Type Update Failed: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
-                f"Attempted {len(dt_change.property_changes or [])} property and "
-                f"{len(dt_change.component_changes or [])} component change(s); "
+                f"Attempted {1 if property_attempted else 0} property PATCH and "
+                f"{actionable_count} component change(s); "
                 "no changes were applied (see error above)."
             )
             self.outcomes.record(
@@ -1233,6 +1233,7 @@ class NetBox:
         """
         if not self.device_types._global_preload_done:
             self.device_types.preload_all_components()
+        identity = f"{module_type_res.manufacturer.name}/{module_type_res.model}"
         component_changes = self.change_detector._compare_components(curr_mt, module_type_res.id, parent_type="module")
         if component_changes:
             actionable_count = _count_actionable_component_changes(component_changes, remove_components)
@@ -1255,6 +1256,12 @@ class NetBox:
                     self.counter["module_updated"] += 1
                 elif not patch_ok:
                     self.counter["module_update_failed"] += 1
+                    self.outcomes.record(
+                        EntityKind.MODULE_TYPE,
+                        identity,
+                        Outcome.FAILED,
+                        reason="Scalar PATCH failed; no component changes were actionable.",
+                    )
             elif component_delta == 0:
                 if properties_updated and patch_ok:
                     # Properties patched successfully; components were attempted but
@@ -1262,6 +1269,12 @@ class NetBox:
                     self.counter["module_partial_update"] += 1
                 else:
                     self.counter["module_update_failed"] += 1
+                    self.outcomes.record(
+                        EntityKind.MODULE_TYPE,
+                        identity,
+                        Outcome.FAILED,
+                        reason="Scalar PATCH failed; component reconciliation ran but applied 0 changes.",
+                    )
             elif component_delta == actionable_count and patch_ok:
                 self.counter["module_updated"] += 1
             else:
@@ -1270,6 +1283,12 @@ class NetBox:
             self.counter["module_updated"] += 1
         elif not patch_ok:
             self.counter["module_update_failed"] += 1
+            self.outcomes.record(
+                EntityKind.MODULE_TYPE,
+                identity,
+                Outcome.FAILED,
+                reason="Scalar PATCH failed; no component changes detected.",
+            )
 
     def _process_single_module_type(
         self, curr_mt, src_file, all_module_types, module_type_existing_images, only_new, remove_components=False
