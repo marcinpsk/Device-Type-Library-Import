@@ -1126,6 +1126,9 @@ class TestProcessModuleTypesHints:
         assert any("--update" in msg for msg in logged)
         # Removal guidance must include --update and --remove-components in the same hint.
         assert any("--update --remove-components" in msg for msg in logged)
+        # The hint must report the actual counts: 2 components across 1 module type.
+        assert any("2 stale component" in msg for msg in logged)
+        assert any("1 module type" in msg for msg in logged)
 
 
 # ---------------------------------------------------------------------------
@@ -1163,7 +1166,8 @@ class TestLogRunSummary:
         nb_dt_import._log_run_summary(handle, mock_nb, datetime.now())
 
         logged = [call.args[0] for call in handle.log.call_args_list]
-        assert any("rack type" in msg for msg in logged)
+        assert any("3 rack types created" in msg for msg in logged)
+        assert any("1 rack types updated" in msg for msg in logged)
 
     def test_duplicate_definitions_are_logged(self, nb_dt_import):
         """When dtl_repo has duplicate_definitions, each entry is logged with kept/ignored."""
