@@ -1014,8 +1014,13 @@ class NetBox:
             only_new (bool): If True, skip change detection and return only truly new entries.
 
         Returns:
-            tuple[list[dict], dict]: Actionable module types and existing-image mapping
-                ``{module_type_id: set_of_image_names}``.
+            tuple[list[dict], dict, list]: Three-element tuple:
+
+            - Actionable module types (list[dict]) to be created or updated.
+            - Existing-image mapping ``{module_type_id: set_of_image_names}``.
+            - Changed-property log: list of ``(mfr_slug, model, fields_info,
+              comp_changes)`` tuples, one entry per modified module type, used
+              for diff-u output via :meth:`log_module_type_changes`.
         """
         if not module_types:
             return [], {}, []
@@ -2146,7 +2151,13 @@ class DeviceTypes:
 
         Args:
             endpoint_name (str): Component template endpoint name (e.g. ``"interface_templates"``).
-            progress_callback (callable | None): Called with ``(endpoint_name, advance)`` once when done.
+            progress_callback (callable | None): Called with ``(endpoint_name, advance)``
+                once per page during the GraphQL fetch (or once after the batch fetch
+                completes for REST endpoints).  *advance* is a positive integer equal to
+                the number of records on that page.  On a count-mismatch retry the
+                callback is invoked once with a **negative** advance to rewind the
+                progress bar by the same amount, keeping the display consistent across
+                attempts.
             expected_total (int | None): Expected record count obtained from the REST API before the
                 GraphQL fetch.  If provided and the fetched count differs, a warning is logged.
 
