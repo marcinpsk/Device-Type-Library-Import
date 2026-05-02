@@ -155,17 +155,18 @@ def _image_dir_for_yaml(src_file: str, src_segment: str, dst_segment: str) -> "P
 # from pynetbox import RequestError as APIRequestError
 
 
-def _any_actionable_component_changes(changes, remove_components):
-    """Return True if any change in *changes* will issue an API call.
+def _count_actionable_component_changes(changes, remove_components):
+    """Return the count of changes in *changes* that will issue an API call.
 
     Non-removal changes always qualify; removal changes only qualify when
     *remove_components* is enabled.  Removal-only diffs with the flag off
     issue zero API calls and must not be treated as attempted.
     """
-    return any(
-        c.change_type in (ChangeType.COMPONENT_CHANGED, ChangeType.COMPONENT_ADDED)
-        or (remove_components and c.change_type == ChangeType.COMPONENT_REMOVED)
+    return sum(
+        1
         for c in changes
+        if c.change_type in (ChangeType.COMPONENT_CHANGED, ChangeType.COMPONENT_ADDED)
+        or (remove_components and c.change_type == ChangeType.COMPONENT_REMOVED)
     )
 
 
@@ -186,6 +187,7 @@ class NetBox:
             module_added=0,
             module_updated=0,
             module_update_failed=0,
+            module_partial_update=0,
             rack_type_added=0,
             rack_type_updated=0,
             images=0,
@@ -487,17 +489,17 @@ class NetBox:
         *,
         property_attempted,
         property_succeeded,
-        component_attempted,
-        component_succeeded,
+        component_delta,
+        actionable_count,
         failure_resolution=None,
     ):
         """Emit the right post-update log for an existing device type.
 
         Distinguishes "actually updated", "partial update" (property PATCH
-        failed but components ran), and "completely failed" (PATCH was the only
-        action and it failed, or component API calls were issued but all failed)
-        so the operator-visible log no longer reports "Device Type Updated" when
-        nothing was applied.
+        failed but components ran, or only some component changes succeeded),
+        and "completely failed" (PATCH was the only action and it failed, or
+        component API calls were issued but all failed) so the operator-visible
+        log no longer reports "Device Type Updated" when nothing was applied.
 
         When the operation failed or was partial, also records a structured
         outcome into :attr:`outcomes` so the end-of-run summary can render an
@@ -509,34 +511,25 @@ class NetBox:
             property_attempted (bool): True if a property PATCH was issued.
             property_succeeded (bool): True if the property PATCH (or its retry)
                 applied cleanly.
-            component_attempted (bool): True if at least one component API call
-                was issued (intent-based: non-removal changes, or removals with
-                --remove-components enabled).
-            component_succeeded (bool): True if at least one component change
-                succeeded (i.e., a counter moved).
+            component_delta (int): Number of component operations that succeeded
+                (sum of counter deltas for components_updated, components_added,
+                components_removed after the API calls).
+            actionable_count (int): Number of component changes that issued API
+                calls (non-removal changes, or removals with --remove-components
+                enabled).
             failure_resolution: Optional :class:`FailureResolution` whose
                 ``description``, ``blocking_objects`` and ``hint`` will be
                 attached to the registry record when the update failed.
         """
         identity = f"{dt.manufacturer.name}/{dt.model}"
+        component_attempted = actionable_count > 0
+        component_succeeded = component_delta > 0
         something_applied = property_succeeded or component_succeeded
         if something_applied:
-            if property_attempted and not property_succeeded:
-                self.counter.update({"device_types_component_updates": 1})
-                self.handle.verbose_log(
-                    f"Device Type Partially Updated: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
-                    f"Property PATCH failed; applied {len(dt_change.component_changes or [])} "
-                    "component change(s); skipping component creation."
-                )
-                self.outcomes.record(
-                    EntityKind.DEVICE_TYPE,
-                    identity,
-                    Outcome.PARTIAL,
-                    reason="Property PATCH failed; component changes applied.",
-                    blocking_objects=(failure_resolution.blocking_objects if failure_resolution else None),
-                    hint=(failure_resolution.hint if failure_resolution else None),
-                )
-            else:
+            is_full_success = (not property_attempted or property_succeeded) and (
+                not component_attempted or component_delta == actionable_count
+            )
+            if is_full_success:
                 if component_succeeded and not property_succeeded:
                     # Component-only update: no property change was attempted or needed.
                     self.counter.update({"device_types_component_updates": 1})
@@ -545,6 +538,29 @@ class NetBox:
                     f"Applied {len(dt_change.property_changes or [])} property and "
                     f"{len(dt_change.component_changes or [])} component change(s); "
                     "skipping component creation."
+                )
+            else:
+                if component_delta > 0:
+                    self.counter.update({"device_types_component_updates": 1})
+                reason_parts = []
+                if property_attempted and not property_succeeded:
+                    reason_parts.append("Property PATCH failed")
+                if component_attempted:
+                    if component_delta < actionable_count:
+                        reason_parts.append(f"applied {component_delta} of {actionable_count} component change(s)")
+                    else:
+                        reason_parts.append(f"applied {component_delta} component change(s)")
+                reason = "; ".join(reason_parts) + "." if reason_parts else "Partial update."
+                self.handle.verbose_log(
+                    f"Device Type Partially Updated: {dt.manufacturer.name} - {dt.model} - {dt.id}. {reason}"
+                )
+                self.outcomes.record(
+                    EntityKind.DEVICE_TYPE,
+                    identity,
+                    Outcome.PARTIAL,
+                    reason=reason,
+                    blocking_objects=(failure_resolution.blocking_objects if failure_resolution else None),
+                    hint=(failure_resolution.hint if failure_resolution else None),
                 )
         elif property_attempted or component_attempted:
             self.counter.update({"device_types_failed": 1})
@@ -626,8 +642,8 @@ class NetBox:
         if dt_change is not None:
             property_attempted = False
             property_succeeded = False
-            component_attempted = False
-            component_succeeded = False
+            component_delta = 0
+            actionable_count = 0
             failure_resolution = None
 
             # Apply property changes (exclude image properties — uploads are handled separately)
@@ -663,7 +679,7 @@ class NetBox:
 
             # Apply component changes
             if dt_change.component_changes:
-                component_attempted = _any_actionable_component_changes(dt_change.component_changes, remove_components)
+                actionable_count = _count_actionable_component_changes(dt_change.component_changes, remove_components)
                 before_components = (
                     self.counter["components_updated"],
                     self.counter["components_added"],
@@ -682,16 +698,16 @@ class NetBox:
                     self.counter["components_added"],
                     self.counter["components_removed"],
                 )
-                component_succeeded = after_components != before_components
+                component_delta = sum(after_components) - sum(before_components)
 
-            # Distinguish "actually updated" from "attempted but everything failed".
+            # Distinguish full update, partial, and complete failure.
             self._log_device_type_change_outcome(
                 dt,
                 dt_change,
                 property_attempted=property_attempted,
                 property_succeeded=property_succeeded,
-                component_attempted=component_attempted,
-                component_succeeded=component_succeeded,
+                component_delta=component_delta,
+                actionable_count=actionable_count,
                 failure_resolution=failure_resolution,
             )
         else:
@@ -1219,23 +1235,32 @@ class NetBox:
             self.device_types.preload_all_components()
         component_changes = self.change_detector._compare_components(curr_mt, module_type_res.id, parent_type="module")
         if component_changes:
-            component_attempted = _any_actionable_component_changes(component_changes, remove_components)
+            actionable_count = _count_actionable_component_changes(component_changes, remove_components)
             before_updated = self.counter["components_updated"]
             before_added = self.counter["components_added"]
             before_removed = self.counter["components_removed"]
             self.device_types.update_components(curr_mt, module_type_res.id, component_changes, parent_type="module")
             if remove_components:
                 self.device_types.remove_components(module_type_res.id, component_changes, parent_type="module")
-            actually_changed = (
-                self.counter["components_updated"] > before_updated
-                or self.counter["components_added"] > before_added
-                or self.counter["components_removed"] > before_removed
+            component_delta = (
+                self.counter["components_updated"]
+                - before_updated
+                + self.counter["components_added"]
+                - before_added
+                + self.counter["components_removed"]
+                - before_removed
             )
-            if patch_ok:
-                if actually_changed or (properties_updated and not component_attempted):
+            if actionable_count == 0:
+                if properties_updated and patch_ok:
                     self.counter["module_updated"] += 1
-                elif component_attempted and not actually_changed:
+            elif component_delta == 0:
+                if patch_ok:
                     self.counter["module_update_failed"] += 1
+                # else: the scalar PATCH failure already counted at the call site
+            elif component_delta == actionable_count and patch_ok:
+                self.counter["module_updated"] += 1
+            else:
+                self.counter["module_partial_update"] += 1
         elif properties_updated and patch_ok:
             self.counter["module_updated"] += 1
 

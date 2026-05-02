@@ -2989,6 +2989,72 @@ class TestCreateDeviceTypesUpdatePath:
         assert failures[0].outcome == Outcome.FAILED
         assert "FailSwitch" in failures[0].identity
 
+    def test_component_changes_partial_success_records_partial_outcome(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
+    ):
+        """When only some component API calls succeed, a PARTIAL outcome must be recorded.
+
+        Regression: before the delta/count comparison, any non-zero counter
+        movement was treated as full success regardless of how many changes
+        were attempted.
+        """
+        from core.change_detector import (
+            ChangeReport,
+            ChangeType,
+            ComponentChange,
+            DeviceTypeChange,
+        )
+        from core.outcomes import EntityKind, Outcome
+
+        mock_nb_api = mock_pynetbox.api.return_value
+        dt = make_device_types(nb_api=mock_nb_api)
+
+        existing_dt = MagicMock()
+        existing_dt.id = 9
+        existing_dt.model = "PartialSwitch"
+        existing_dt.manufacturer.name = "Acme"
+        dt.existing_device_types = {("acme", "PartialSwitch"): existing_dt}
+        dt.existing_device_types_by_slug = {}
+
+        nb = NetBox(mock_settings, mock_settings.handle)
+        nb.device_types = dt
+
+        # Simulate 1 of 3 component additions succeeding: the mock increments
+        # components_added by 1, leaving actionable_count=3 vs delta=1.
+        def partial_update(*args, **kwargs):
+            nb.counter.update({"components_added": 1})
+
+        dt.update_components = MagicMock(side_effect=partial_update)
+
+        change = DeviceTypeChange(
+            manufacturer_slug="acme",
+            model="PartialSwitch",
+            slug="partialswitch",
+            component_changes=[
+                ComponentChange("interfaces", "eth0", ChangeType.COMPONENT_ADDED),
+                ComponentChange("interfaces", "eth1", ChangeType.COMPONENT_ADDED),
+                ComponentChange("interfaces", "eth2", ChangeType.COMPONENT_ADDED),
+            ],
+        )
+        report = ChangeReport(modified_device_types=[change])
+        device_type = {
+            "manufacturer": {"slug": "acme"},
+            "model": "PartialSwitch",
+            "slug": "partialswitch",
+            "src": "/tmp/device-types/acme/partialswitch.yaml",
+        }
+        nb.create_device_types([device_type], update=True, change_report=report)
+
+        dt.update_components.assert_called_once()
+        assert nb.counter["device_types_failed"] == 0
+        assert nb.counter.get("device_types_component_updates", 0) == 1
+        partials = nb.outcomes.partials()
+        assert len(partials) == 1
+        assert partials[0].kind == EntityKind.DEVICE_TYPE
+        assert partials[0].outcome == Outcome.PARTIAL
+        assert "PartialSwitch" in partials[0].identity
+        assert "1 of 3" in (partials[0].reason or "")
+
     def test_component_only_update_does_not_count_as_property_update(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types
     ):
