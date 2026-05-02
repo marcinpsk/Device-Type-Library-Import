@@ -162,17 +162,6 @@ COMPONENT_TYPES = {
     "module-bays": ("module_bay_templates", ["name", "position", "label", "description"]),
 }
 
-# Aliases for YAML keys that map to the same component type.
-# alias -> canonical key
-COMPONENT_ALIASES = {
-    "power-port": "power-ports",
-}
-
-# canonical key -> list of aliases
-COMPONENT_ALIASES_BY_CANONICAL = {}
-for alias, canonical_key in COMPONENT_ALIASES.items():
-    COMPONENT_ALIASES_BY_CANONICAL.setdefault(canonical_key, []).append(alias)
-
 
 class ChangeDetector:
     """Detects changes between YAML device types and NetBox cached data."""
@@ -335,14 +324,6 @@ class ChangeDetector:
         for yaml_key, (cache_name, properties) in COMPONENT_TYPES.items():
             yaml_components = list(yaml_data.get(yaml_key) or [])
 
-            # Check whether the canonical key or any alias is actually present in YAML
-            aliases_for_key = COMPONENT_ALIASES_BY_CANONICAL.get(yaml_key, [])
-            key_present = yaml_key in yaml_data or any(alias in yaml_data for alias in aliases_for_key)
-
-            # Merge components from any aliases that map to this canonical key
-            for alias in aliases_for_key:
-                yaml_components.extend(yaml_data.get(alias) or [])
-
             # Get cached components for this device type
             cached = self.device_types.cached_components.get(cache_name, {})
             existing_components = cached.get(cache_key, {})
@@ -353,7 +334,7 @@ class ChangeDetector:
             # Check for removed components (exist in NetBox but not in YAML)
             # Only flag removals when the YAML explicitly defines this component type;
             # a missing key means the YAML doesn't manage this type at all.
-            if key_present:
+            if yaml_key in yaml_data:
                 for existing_name in existing_components.keys():
                     if existing_name not in yaml_component_names:
                         changes.append(

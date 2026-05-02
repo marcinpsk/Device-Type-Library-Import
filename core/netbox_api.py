@@ -14,7 +14,7 @@ from sys import exit as system_exit
 import glob
 from pathlib import Path
 
-from core.change_detector import COMPONENT_ALIASES, ChangeDetector, ChangeType
+from core.change_detector import ChangeDetector, ChangeType
 from core.compat import device_type_filter_kwargs, module_type_filter_kwargs, module_type_filter_key
 from core.formatting import log_property_diffs
 from core.graphql_client import GraphQLCountMismatchError, GraphQLError, NetBoxGraphQLClient
@@ -761,8 +761,6 @@ class NetBox:
             self.device_types.create_interfaces(device_type["interfaces"], dt_id)
         if "power-ports" in device_type:
             self.device_types.create_power_ports(device_type["power-ports"], dt_id)
-        if "power-port" in device_type:
-            self.device_types.create_power_ports(device_type["power-port"], dt_id)
         if "console-ports" in device_type:
             self.device_types.create_console_ports(device_type["console-ports"], dt_id)
         if "power-outlets" in device_type:
@@ -1574,7 +1572,6 @@ class NetBox:
 ENDPOINT_CACHE_MAP = {
     "interfaces": ("interface_templates", "interface_templates"),
     "power-ports": ("power_port_templates", "power_port_templates"),
-    "power-port": ("power_port_templates", "power_port_templates"),
     "console-ports": ("console_port_templates", "console_port_templates"),
     "power-outlets": ("power_outlet_templates", "power_outlet_templates"),
     "console-server-ports": (
@@ -2692,11 +2689,6 @@ class DeviceTypes:
         yaml_key = None
         if comp_type in yaml_data:
             yaml_key = comp_type
-        else:
-            for alias, canonical in COMPONENT_ALIASES.items():
-                if canonical == comp_type and alias in yaml_data:
-                    yaml_key = alias
-                    break
         if yaml_key is None:
             return
 

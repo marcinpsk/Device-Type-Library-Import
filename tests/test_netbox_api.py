@@ -3212,7 +3212,7 @@ class TestCreateDeviceTypesRequestErrorAndComponents:
     def test_creates_all_component_types(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
         """All component type branches are called.
 
-        Covers power-port alias, console-ports, power-outlets,
+        Covers power-ports, console-ports, power-outlets,
         console-server-ports, rear-ports, front-ports, device-bays,
         and module-bays.
         """
@@ -3247,7 +3247,7 @@ class TestCreateDeviceTypesRequestErrorAndComponents:
             "manufacturer": {"slug": "cisco"},
             "model": "TestSwitch",
             "slug": "testswitch",
-            "power-port": [{"name": "PSU1"}],
+            "power-ports": [{"name": "PSU1"}],
             "console-ports": [{"name": "Con1"}],
             "power-outlets": [{"name": "PO1"}],
             "console-server-ports": [{"name": "CSP1"}],
@@ -4328,17 +4328,6 @@ class TestPreloadModuleTypeComponents:
         dt.preload_module_type_components(set(), ["interfaces"])
         mock_nb_api.dcim.interface_templates.filter.assert_not_called()
 
-    def test_duplicate_endpoint_skipped(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """Same endpoint_attr from two keys is only fetched once."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-        mock_nb_api.dcim.power_port_templates.filter.return_value = []
-
-        # Both "power-ports" and "power-port" map to the same endpoint_attr
-        dt.preload_module_type_components({1}, ["power-ports", "power-port"])
-        # Should only call filter once (deduplicated)
-        assert mock_nb_api.dcim.power_port_templates.filter.call_count == 1
-
     def test_item_with_no_module_type_skipped(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
         """Items where item.module_type is None are skipped."""
         mock_nb_api = mock_pynetbox.api.return_value
@@ -4501,20 +4490,6 @@ class TestUpdateComponentsMiscBranches:
 
 class TestUpdateComponentsAdditionsBranches:
     """Tests for component-addition branches inside update_components."""
-
-    def test_alias_resolution_power_port(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """'power-port' alias resolves to 'power-ports' component type addition."""
-        from core.change_detector import ChangeType, ComponentChange
-
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"power_port_templates": {("device", 1): {}}}
-
-        changes = [ComponentChange("power-ports", "PSU1", ChangeType.COMPONENT_ADDED)]
-        # yaml_data uses alias "power-port"
-        yaml_data = {"power-port": [{"name": "PSU1"}]}
-        dt.update_components(yaml_data, 1, changes, parent_type="device")
-        mock_nb_api.dcim.power_port_templates.create.assert_called()
 
     def test_yaml_key_none_continues(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
         """If component_type not in yaml_data (neither canonical nor alias), skip."""
