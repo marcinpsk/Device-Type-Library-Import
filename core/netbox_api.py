@@ -1204,10 +1204,11 @@ class NetBox:
                 or self.counter["components_added"] > before_added
                 or self.counter["components_removed"] > before_removed
             )
-            if actually_changed and patch_ok:
-                self.counter["module_updated"] += 1
-            elif component_attempted and not actually_changed and patch_ok:
-                self.counter["module_update_failed"] += 1
+            if patch_ok:
+                if actually_changed or (properties_updated and not component_attempted):
+                    self.counter["module_updated"] += 1
+                elif component_attempted and not actually_changed:
+                    self.counter["module_update_failed"] += 1
         elif properties_updated and patch_ok:
             self.counter["module_updated"] += 1
 

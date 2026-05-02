@@ -3872,6 +3872,55 @@ class TestCreateModuleTypesEdge:
         # removal-only: update_components did nothing (no counter bumps) → module_updated stays 0
         assert nb.counter["module_updated"] == 0
 
+    def test_property_update_plus_removal_only_remove_false_counts_as_updated(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
+    ):
+        """Properties changed + removal-only diff with remove_components=False → module_updated incremented."""
+        from core.graphql_client import DotDict
+
+        mock_pynetbox.api.return_value.version = "3.5"
+        nb = NetBox(mock_settings, mock_settings.handle)
+        nb.device_types = make_device_types(nb_api=mock_pynetbox.api.return_value)
+        nb.device_types.update_components = MagicMock()
+
+        existing_mt = DotDict(
+            {
+                "id": 5,
+                "model": "IOM-s-3.0T",
+                "part_number": "OLD_PN",
+                "manufacturer": {"name": "Nokia", "slug": "nokia"},
+            }
+        )
+        all_module_types = {"nokia": {"IOM-s-3.0T": existing_mt}}
+
+        # Cache has an extra interface not in YAML → COMPONENT_REMOVED
+        nb.device_types.cached_components = {
+            "interface_templates": {
+                ("module", 5): {
+                    "xe-extra": DotDict({"id": "11", "name": "xe-extra", "description": ""}),
+                }
+            },
+        }
+
+        module_type = {
+            "manufacturer": {"slug": "nokia"},
+            "model": "IOM-s-3.0T",
+            "part_number": "3HE16474AA",  # changed from OLD_PN
+            "interfaces": [],  # xe-extra absent → COMPONENT_REMOVED
+            "src": "/repo/module-types/Nokia/IOM-s-3.0T.yaml",
+        }
+        # remove_components=False: the removal-only diff is not actionable,
+        # but the scalar PATCH succeeded → module_updated must be incremented.
+        nb.create_module_types(
+            [module_type],
+            all_module_types=all_module_types,
+            module_type_existing_images={},
+            remove_components=False,
+        )
+        mock_pynetbox.api.return_value.dcim.module_types.update.assert_called_once()
+        assert nb.counter["module_updated"] == 1
+        assert nb.counter.get("module_update_failed", 0) == 0
+
     """Tests for count_module_type_images with existing module types."""
 
     def test_existing_module_new_image_counted(self, tmp_path):

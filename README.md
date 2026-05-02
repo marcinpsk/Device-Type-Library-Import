@@ -106,6 +106,21 @@ uv run nb-dt-import.py --slugs ap4433a,ap7526     # Imports two specific PDUs
 uv run nb-dt-import.py --vendors "Palo Alto" --slugs 440
 ```
 
+#### All Arguments
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `--vendors` | all | Comma- or space-separated list of vendors to import (e.g. `apc cisco`) |
+| `--slugs` | all | Space-separated device-type slug substrings to filter (partial match) |
+| `--url` / `--git` | community library | Git URL of the device-type library to clone |
+| `--branch` | `master` | Git branch to check out from the repo |
+| `--verbose` | off | Print verbose output (individual create/update messages) |
+| `--show-remaining-time` | off | Show estimated remaining time in progress bars |
+| `--only-new` | off | Only create new types, skip all existing ones (mutually exclusive with `--update`) |
+| `--update` | off | Update existing types with changes from the repo (mutually exclusive with `--only-new`) |
+| `--remove-components` | off | Delete components missing from YAML when used with `--update`. **Destructive.** |
+| `--force-resolve-conflicts` | off | Automatically resolve NetBox constraint failures during `--update`. **Destructive.** See below. |
+
 #### Update Mode
 
 By default, the script only creates new device types and skips existing ones. To update
@@ -147,6 +162,39 @@ no longer present in the YAML definition.
 - Components attached to actual device instances may prevent deletion
 - Review the change detection report before enabling component removal
 - Test on a staging NetBox instance first if possible
+
+#### Conflict Resolution (Use with Caution)
+
+> **WARNING**: `--force-resolve-conflicts` performs destructive NetBox operations automatically.
+
+Some NetBox business-logic constraints block updates even when no live device instances use the
+affected type. For example, changing a device type's `subdevice_role` from `parent` to `child`
+requires deleting all device-bay templates first. To allow the script to perform that remediation
+automatically:
+
+```shell
+uv run nb-dt-import.py --update --force-resolve-conflicts
+```
+
+**What it does**:
+
+- When a PATCH fails with a constraint error, the script checks whether any live devices
+  reference the affected type
+- If **no** live devices reference it, the blocking objects (e.g. device-bay templates) are
+  deleted and the PATCH is retried
+- If live devices **do** reference it, the update is skipped and logged as a failure — no
+  destructive action is taken
+
+**Safety guarantees**:
+
+- Never deletes blocking objects when live device instances exist
+- Requires `--update` (will error without it)
+- All auto-resolved and skipped items appear in the run summary
+
+**When to use**:
+
+- After converting device types from parent to child (or vice versa)
+- When the script reports constraint failures that block property updates
 
 ## Contributing
 
