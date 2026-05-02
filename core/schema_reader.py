@@ -8,19 +8,25 @@ change detection comparison.
 import json
 import os
 
+# All JSON Schema primitive types that are safe to compare and PATCH as scalars.
+_SCALAR_TYPES = frozenset({"string", "integer", "number", "boolean", "null"})
+
 
 def load_scalar_properties(schema_path, exclude=None):
     """Read a JSON schema file and return names of comparable scalar properties.
 
     A property is considered *scalar* (and therefore comparable) when it is
-    **not** one of:
+    **explicitly** one of:
 
-    * An array (``"type": "array"``)
-    * A nested object (``"type": "object"``)
-    * Explicitly listed in *exclude*
+    * A ``$ref`` (references are assumed to resolve to a scalar choice/enum)
+    * A plain scalar type: ``string``, ``integer``, ``number``, ``boolean``, or
+      ``null``
+    * A ``type`` union (list) whose every member is one of the scalar types above
 
-    Properties with a ``$ref`` or a plain scalar type (``string``, ``integer``,
-    ``number``, ``boolean``) are included.
+    Everything else — arrays, objects, ``anyOf``/``oneOf``/``allOf``, or entries
+    with no recognisable type — is excluded.  This explicit allowlist prevents
+    bogus PATCH attempts for properties whose schema representation is more
+    complex than a single scalar value.
 
     Args:
         schema_path (str): Absolute path to the JSON schema file.
@@ -55,10 +61,20 @@ def load_scalar_properties(schema_path, exclude=None):
         if not isinstance(defn, dict):
             # Malformed property entry; skip silently rather than raising.
             continue
-        prop_type = defn.get("type")
-        if prop_type in ("array", "object"):
+        # $ref entries (enum choices, foreign-key slugs, etc.) are scalar by
+        # convention in the NetBox device-type library schemas.
+        if "$ref" in defn:
+            result.append(name)
             continue
-        result.append(name)
+        prop_type = defn.get("type")
+        if isinstance(prop_type, list):
+            # JSON Schema allows "type": ["string", "null"] union types.
+            if set(prop_type) <= _SCALAR_TYPES:
+                result.append(name)
+        elif prop_type in _SCALAR_TYPES:
+            result.append(name)
+        # All other entries (anyOf, oneOf, allOf, missing type, object, array)
+        # are intentionally excluded.
 
     return result
 

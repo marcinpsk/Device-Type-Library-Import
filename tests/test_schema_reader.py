@@ -99,6 +99,74 @@ class TestLoadScalarProperties:
         assert "u_height" in result
         assert "is_full_depth" in result
 
+    def test_skips_property_with_no_type_and_no_ref(self, tmp_path):
+        """Properties with no recognisable type (no $ref, no 'type' key) are excluded."""
+        schema = {
+            "properties": {
+                "weird_prop": {"description": "no type at all"},
+                "part_number": {"type": "string"},
+            }
+        }
+        schema_file = tmp_path / "schema.json"
+        schema_file.write_text(json.dumps(schema))
+
+        result = load_scalar_properties(str(schema_file))
+
+        assert "weird_prop" not in result
+        assert "part_number" in result
+
+    def test_skips_anyof_and_oneof_properties(self, tmp_path):
+        """anyOf/oneOf properties are excluded — their resolved type is unpredictable."""
+        schema = {
+            "properties": {
+                "poly_prop": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+                "union_prop": {"oneOf": [{"type": "integer"}, {"$ref": "#/defs/X"}]},
+                "model": {"type": "string"},
+            }
+        }
+        schema_file = tmp_path / "schema.json"
+        schema_file.write_text(json.dumps(schema))
+
+        result = load_scalar_properties(str(schema_file))
+
+        assert "poly_prop" not in result
+        assert "union_prop" not in result
+        assert "model" in result
+
+    def test_includes_nullable_scalar_union_type(self, tmp_path):
+        """A 'type' list whose members are all scalar types is included."""
+        schema = {
+            "properties": {
+                "weight": {"type": ["number", "null"]},
+                "label": {"type": ["string", "null"]},
+            }
+        }
+        schema_file = tmp_path / "schema.json"
+        schema_file.write_text(json.dumps(schema))
+
+        result = load_scalar_properties(str(schema_file))
+
+        assert "weight" in result
+        assert "label" in result
+
+    def test_skips_type_union_containing_array_or_object(self, tmp_path):
+        """A 'type' list that mixes scalars with array/object is excluded."""
+        schema = {
+            "properties": {
+                "mixed": {"type": ["string", "array"]},
+                "obj_or_null": {"type": ["object", "null"]},
+                "valid": {"type": "string"},
+            }
+        }
+        schema_file = tmp_path / "schema.json"
+        schema_file.write_text(json.dumps(schema))
+
+        result = load_scalar_properties(str(schema_file))
+
+        assert "mixed" not in result
+        assert "obj_or_null" not in result
+        assert "valid" in result
+
 
 class TestLoadPropertiesForType:
     """Tests for load_properties_for_type()."""
