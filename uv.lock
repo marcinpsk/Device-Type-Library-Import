@@ -218,10 +218,10 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "gitpython", specifier = ">=3.1.50" },
-    { name = "pynetbox", specifier = ">=7.6.0" },
+    { name = "pynetbox", specifier = ">=7.7.0" },
     { name = "python-dotenv", specifier = ">=1.2.1" },
     { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "requests", specifier = ">=2.32.5" },
+    { name = "requests", specifier = ">=2.34.0" },
     { name = "rich", specifier = ">=15.0.0" },
 ]
 
@@ -414,15 +414,15 @@ wheels = [
 
 [[package]]
 name = "pynetbox"
-version = "7.6.1"
+version = "7.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "packaging" },
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/11/0a/f0b733d44c4793ee3be0ee142a8ac92cfdd6232f64e4ae2dda256a08fb41/pynetbox-7.6.1.tar.gz", hash = "sha256:8a7ee99b89d08848be134793015afc17c85711a18e8c7e67c353362e1c8d7fc7", size = 92489, upload-time = "2026-01-28T16:50:50.223Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f7/99/dd840cd6a09956b2f762319e9c88c6afcd58b8094a127c7bd0e7017caca1/pynetbox-7.7.0.tar.gz", hash = "sha256:6ebf1a68fe19e3c9528f1fcf214ceee719ace937c5f78f3f33964738e3cd3f25", size = 98206, upload-time = "2026-05-05T21:37:15.863Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c0/f6/a11612421017fdd8f93e653ea1505d4e64e9a24de0974c53a36b154cd945/pynetbox-7.6.1-py3-none-any.whl", hash = "sha256:daa064b1cc4e7d871124ddca1e0de3a36e7ff9e0814fb046a90e36024fd59e4b", size = 39319, upload-time = "2026-01-28T16:50:49.234Z" },
+    { url = "https://files.pythonhosted.org/packages/8e/bd/43f14b5d0c3f7a801e6bc40295667ae6be262560da063cd240f012410309/pynetbox-7.7.0-py3-none-any.whl", hash = "sha256:48de7c1d23aa0a16e78e76e68a58fbdd72782e13be7f25facafdf325ef0d3640", size = 40047, upload-time = "2026-05-05T21:37:14.9Z" },
 ]
 
 [[package]]
@@ -536,7 +536,7 @@ wheels = [
 
 [[package]]
 name = "requests"
-version = "2.33.1"
+version = "2.34.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "certifi" },
@@ -544,9 +544,9 @@ dependencies = [
     { name = "idna" },
     { name = "urllib3" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5f/a4/98b9c7c6428a668bf7e42ebb7c79d576a1c3c1e3ae2d47e674b468388871/requests-2.33.1.tar.gz", hash = "sha256:18817f8c57c6263968bc123d237e3b8b08ac046f5456bd1e307ee8f4250d3517", size = 134120, upload-time = "2026-03-30T16:09:15.531Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/43/b8/7a707d60fea4c49094e40262cc0e2ca6c768cca21587e34d3f705afec47e/requests-2.34.0.tar.gz", hash = "sha256:7d62fe92f50eb82c529b0916bb445afa1531a566fc8f35ffdc64446e771b856a", size = 142436, upload-time = "2026-05-11T19:29:51.717Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d7/8e/7540e8a2036f79a125c1d2ebadf69ed7901608859186c856fa0388ef4197/requests-2.33.1-py3-none-any.whl", hash = "sha256:4e6d1ef462f3626a1f0a0a9c42dd93c63bad33f9f1c1937509b8c5c8718ab56a", size = 64947, upload-time = "2026-03-30T16:09:13.83Z" },
+    { url = "https://files.pythonhosted.org/packages/ef/e6/e300fce5fe83c30520607a015dabd985df3251e188d234bfe9492e17a389/requests-2.34.0-py3-none-any.whl", hash = "sha256:917520a21b767485ce7c588f4ebb917c436b24a31231b44228715eaeb5a52c60", size = 73021, upload-time = "2026-05-11T19:29:49.923Z" },
 ]
 
 [[package]]
