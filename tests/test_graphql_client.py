@@ -4,7 +4,7 @@ import pytest
 from unittest.mock import MagicMock
 import requests
 
-from core.graphql_client import DotDict
+from core.graphql_client import DotDict, NetBoxGraphQLClient
 
 
 def _make_paged_responses(data, list_key):
@@ -391,7 +391,7 @@ class TestGraphQLQueryAll:
         assert "10" in warned_msgs[0]  # requested page size in warning
 
     def test_query_all_clamping_warning_emitted_only_once(self, mock_post):
-        """Clamping warning is emitted at most once per client instance."""
+        """Clamping warning is emitted at most once per URL+page-size combination."""
 
         # Two separate query_all calls, each seeing clamping.
         def make_pages(n_pages, page_size=2):
@@ -861,6 +861,122 @@ class TestGetModuleTypeImages:
         result = client.get_module_type_images()
 
         assert result == {10: {"front"}}
+
+
+# ── get_module_type_image_details tests ───────────────────────────────────
+
+
+class TestGetModuleTypeImageDetails:
+    """Tests for the get_module_type_image_details() convenience method."""
+
+    def _make_client(self):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        return NetBoxGraphQLClient("http://netbox.local", "tok")
+
+    def test_returns_mapping_by_module_type_id(self, mocker):
+        """Returns dict with structure {module_type_id: {attachment_name: {"att_id": id, "url": url}}}."""
+        items = [
+            {"id": 1, "name": "front", "object_id": 42, "image": {"url": "http://example.com/front.jpg"}},
+            {"id": 2, "name": "rear", "object_id": 42, "image": {"url": "http://example.com/rear.jpg"}},
+            {"id": 3, "name": "detail", "object_id": 43, "image": {"url": "http://example.com/detail.jpg"}},
+        ]
+        client = self._make_client()
+        mocker.patch.object(client, "query_all", return_value=items)
+
+        result = client.get_module_type_image_details()
+
+        assert result[42]["front"] == {"att_id": 1, "url": "http://example.com/front.jpg"}
+        assert result[42]["rear"] == {"att_id": 2, "url": "http://example.com/rear.jpg"}
+        assert result[43]["detail"] == {"att_id": 3, "url": "http://example.com/detail.jpg"}
+
+    def test_fallback_on_graphql_error(self, mocker):
+        """When filtered query fails, falls back to fetch-all + Python filter by object_type."""
+        from core.graphql_client import GraphQLError
+
+        client = self._make_client()
+        error = GraphQLError("Field 'filters' not found")
+
+        fallback_items = [
+            {
+                "id": 1,
+                "name": "front",
+                "object_id": 42,
+                "image": {"url": "http://example.com/front.jpg"},
+                "object_type": {"app_label": "dcim", "model": "moduletype"},
+            },
+            {
+                "id": 2,
+                "name": "other",
+                "object_id": 50,
+                "image": {"url": "http://example.com/other.jpg"},
+                "object_type": {"app_label": "circuits", "model": "provider"},
+            },
+        ]
+        mocker.patch.object(client, "query_all", side_effect=[error, fallback_items])
+
+        result = client.get_module_type_image_details()
+
+        assert result[42]["front"] == {"att_id": 1, "url": "http://example.com/front.jpg"}
+        assert 50 not in result
+
+    def test_skips_items_without_name(self, mocker):
+        """Items with None or empty name should be skipped."""
+        items = [
+            {"id": 1, "name": None, "object_id": 42, "image": {"url": "http://example.com/1.jpg"}},
+            {"id": 2, "name": "", "object_id": 42, "image": {"url": "http://example.com/2.jpg"}},
+            {"id": 3, "name": "valid", "object_id": 42, "image": {"url": "http://example.com/3.jpg"}},
+        ]
+        client = self._make_client()
+        mocker.patch.object(client, "query_all", return_value=items)
+
+        result = client.get_module_type_image_details()
+
+        assert 42 in result
+        assert "valid" in result[42]
+        assert None not in result[42]
+        assert "" not in result[42]
+
+    def test_string_object_id_coerced_to_int(self, mocker):
+        """String object_id values should be coerced to integers."""
+        items = [
+            {"id": 1, "name": "img", "object_id": "42", "image": {"url": "http://example.com/1.jpg"}},
+        ]
+        client = self._make_client()
+        mocker.patch.object(client, "query_all", return_value=items)
+
+        result = client.get_module_type_image_details()
+
+        assert 42 in result
+        assert result[42]["img"]["att_id"] == 1
+
+    def test_string_att_id_coerced_to_int(self, mocker):
+        """String attachment IDs should be coerced to integers."""
+        items = [{"id": "99", "name": "img", "object_id": 10, "image": {"url": "http://x.com/1.jpg"}}]
+        client = self._make_client()
+        mocker.patch.object(client, "query_all", return_value=items)
+        result = client.get_module_type_image_details()
+        assert result[10]["img"]["att_id"] == 99
+
+    def test_invalid_string_att_id_stored_as_none(self, mocker):
+        """A non-numeric attachment ID string should store att_id=None, not crash."""
+        items = [{"id": "not-valid", "name": "img", "object_id": 10, "image": {"url": "http://x.com/1.jpg"}}]
+        client = self._make_client()
+        mocker.patch.object(client, "query_all", return_value=items)
+        result = client.get_module_type_image_details()
+        assert result[10]["img"]["att_id"] is None
+
+    def test_non_numeric_string_object_id_is_skipped(self, mocker):
+        """Items with a non-numeric string object_id should be skipped silently."""
+        items = [
+            {"id": 1, "name": "front", "object_id": "not-a-number", "image": {"url": "http://x.com/1.jpg"}},
+            {"id": 2, "name": "rear", "object_id": "42", "image": {"url": "http://x.com/2.jpg"}},
+        ]
+        client = self._make_client()
+        mocker.patch.object(client, "query_all", return_value=items)
+        result = client.get_module_type_image_details()
+        assert 42 in result
+        assert all("front" not in v for v in result.values())
 
 
 # ── get_component_templates tests ──────────────────────────────────────────
@@ -1538,3 +1654,547 @@ class TestGraphQLQueryErrorPaths:
         with patch("core.graphql_client.time.sleep"):
             with pytest.raises(GraphQLError, match="timed out"):
                 client.query("{ test }", _retries=1)
+
+
+# ── Vendor-scoped filtering tests ─────────────────────────────────────────
+
+
+class TestVendorScopedDeviceTypes:
+    """Tests for vendor-scoped filtering in get_device_types()."""
+
+    def _make_client(self):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        return NetBoxGraphQLClient("http://netbox.local", "tok")
+
+    def test_single_vendor_filter(self, mock_post):
+        """Test filtering by a single manufacturer slug."""
+        data = {
+            "device_type_list": [
+                {
+                    "id": "1",
+                    "model": "Catalyst 3850",
+                    "slug": "catalyst-3850",
+                    "u_height": 1.0,
+                    "part_number": "WS-C3850-24P",
+                    "is_full_depth": True,
+                    "subdevice_role": None,
+                    "airflow": "front-to-rear",
+                    "weight": 5.4,
+                    "weight_unit": "kg",
+                    "description": "Test device",
+                    "comments": "",
+                    "front_image": None,
+                    "rear_image": None,
+                    "manufacturer": {"id": "10", "name": "Cisco", "slug": "cisco"},
+                }
+            ]
+        }
+        mock_post.side_effect = _make_paged_responses(data, "device_type_list")
+
+        client = self._make_client()
+        by_model, by_slug = client.get_device_types(manufacturer_slugs=["cisco"])
+
+        assert ("cisco", "Catalyst 3850") in by_model
+        assert by_model[("cisco", "Catalyst 3850")].model == "Catalyst 3850"
+        # Verify the filter was applied via GraphQL variable (not string interpolation)
+        call_payload = mock_post.call_args_list[0][1]["json"]
+        query = call_payload["query"]
+        variables = call_payload["variables"]
+        assert "filters: {manufacturer: {slug: {exact: $manufacturer_slug}}}" in query
+        assert "$manufacturer_slug: String!" in query
+        assert variables["manufacturer_slug"] == "cisco"
+
+    def test_multiple_vendor_filter(self, mock_post):
+        """Test filtering by multiple manufacturer slugs."""
+        data = {
+            "device_type_list": [
+                {
+                    "id": "1",
+                    "model": "Catalyst 3850",
+                    "slug": "catalyst-3850",
+                    "u_height": 1.0,
+                    "part_number": "",
+                    "is_full_depth": True,
+                    "subdevice_role": None,
+                    "airflow": None,
+                    "weight": None,
+                    "weight_unit": None,
+                    "description": "",
+                    "comments": "",
+                    "front_image": None,
+                    "rear_image": None,
+                    "manufacturer": {"id": "10", "name": "Cisco", "slug": "cisco"},
+                },
+                {
+                    "id": "2",
+                    "model": "EX4300",
+                    "slug": "ex4300",
+                    "u_height": 1.0,
+                    "part_number": "",
+                    "is_full_depth": False,
+                    "subdevice_role": None,
+                    "airflow": None,
+                    "weight": None,
+                    "weight_unit": None,
+                    "description": "",
+                    "comments": "",
+                    "front_image": None,
+                    "rear_image": None,
+                    "manufacturer": {"id": "20", "name": "Juniper", "slug": "juniper"},
+                },
+            ]
+        }
+        mock_post.side_effect = _make_paged_responses(data, "device_type_list")
+
+        client = self._make_client()
+        by_model, by_slug = client.get_device_types(manufacturer_slugs=["cisco", "juniper"])
+
+        assert ("cisco", "Catalyst 3850") in by_model
+        assert ("juniper", "EX4300") in by_model
+        # Verify the filter was applied via GraphQL variable (not string interpolation)
+        call_payload = mock_post.call_args_list[0][1]["json"]
+        query = call_payload["query"]
+        variables = call_payload["variables"]
+        assert "filters: {manufacturer: {slug: {in_list: $manufacturer_slugs}}}" in query
+        assert "$manufacturer_slugs: [String!]!" in query
+        assert variables["manufacturer_slugs"] == ["cisco", "juniper"]
+
+    def test_none_manufacturer_slugs_unfiltered(self, mock_post):
+        """Test that manufacturer_slugs=None produces unfiltered behavior."""
+        data = {
+            "device_type_list": [
+                {
+                    "id": "1",
+                    "model": "Test",
+                    "slug": "test",
+                    "u_height": 1.0,
+                    "part_number": "",
+                    "is_full_depth": True,
+                    "subdevice_role": None,
+                    "airflow": None,
+                    "weight": None,
+                    "weight_unit": None,
+                    "description": "",
+                    "comments": "",
+                    "front_image": None,
+                    "rear_image": None,
+                    "manufacturer": {"id": "1", "name": "Test", "slug": "test"},
+                }
+            ]
+        }
+        mock_post.side_effect = _make_paged_responses(data, "device_type_list")
+
+        client = self._make_client()
+        by_model, by_slug = client.get_device_types(manufacturer_slugs=None)
+
+        # Verify no filter in the query and no manufacturer variable sent
+        call_payload = mock_post.call_args_list[0][1]["json"]
+        query = call_payload["query"]
+        variables = call_payload["variables"]
+        assert "filters:" not in query
+        assert "manufacturer_slug" not in variables
+
+    def test_empty_list_raises_value_error(self):
+        """Passing [] for manufacturer_slugs should raise ValueError immediately."""
+        client = self._make_client()
+        with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty list"):
+            client.get_device_types(manufacturer_slugs=[])
+
+
+class TestVendorScopedModuleTypes:
+    """Tests for vendor-scoped filtering in get_module_types()."""
+
+    def _make_client(self):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        return NetBoxGraphQLClient("http://netbox.local", "tok")
+
+    def test_single_vendor_filter(self, mock_post):
+        """Test filtering by a single manufacturer slug."""
+        data = {
+            "module_type_list": [
+                {
+                    "id": "1",
+                    "model": "C9300-NM-8X",
+                    "part_number": "C9300-NM-8X",
+                    "airflow": None,
+                    "description": "",
+                    "comments": "",
+                    "weight": None,
+                    "weight_unit": None,
+                    "manufacturer": {"id": "10", "name": "Cisco", "slug": "cisco"},
+                }
+            ]
+        }
+        mock_post.side_effect = _make_paged_responses(data, "module_type_list")
+
+        client = self._make_client()
+        result = client.get_module_types(manufacturer_slugs=["cisco"])
+
+        assert "cisco" in result
+        assert "C9300-NM-8X" in result["cisco"]
+        # Verify the filter was applied via GraphQL variable (not string interpolation)
+        call_payload = mock_post.call_args_list[0][1]["json"]
+        query = call_payload["query"]
+        variables = call_payload["variables"]
+        assert "filters: {manufacturer: {slug: {exact: $manufacturer_slug}}}" in query
+        assert "$manufacturer_slug: String!" in query
+        assert variables["manufacturer_slug"] == "cisco"
+
+    def test_multiple_vendor_filter(self, mock_post):
+        """Test filtering by multiple manufacturer slugs."""
+        data = {
+            "module_type_list": [
+                {
+                    "id": "1",
+                    "model": "C9300-NM-8X",
+                    "part_number": "",
+                    "airflow": None,
+                    "description": "",
+                    "comments": "",
+                    "weight": None,
+                    "weight_unit": None,
+                    "manufacturer": {"id": "10", "name": "Cisco", "slug": "cisco"},
+                },
+                {
+                    "id": "2",
+                    "model": "MIC-3D-20GE-SFP",
+                    "part_number": "",
+                    "airflow": None,
+                    "description": "",
+                    "comments": "",
+                    "weight": None,
+                    "weight_unit": None,
+                    "manufacturer": {"id": "20", "name": "Juniper", "slug": "juniper"},
+                },
+            ]
+        }
+        mock_post.side_effect = _make_paged_responses(data, "module_type_list")
+
+        client = self._make_client()
+        result = client.get_module_types(manufacturer_slugs=["cisco", "juniper"])
+
+        assert "cisco" in result
+        assert "juniper" in result
+        # Verify the filter was applied via GraphQL variable (not string interpolation)
+        call_payload = mock_post.call_args_list[0][1]["json"]
+        query = call_payload["query"]
+        variables = call_payload["variables"]
+        assert "filters: {manufacturer: {slug: {in_list: $manufacturer_slugs}}}" in query
+        assert "$manufacturer_slugs: [String!]!" in query
+        assert variables["manufacturer_slugs"] == ["cisco", "juniper"]
+
+    def test_empty_list_raises_value_error(self):
+        """Passing [] for manufacturer_slugs should raise ValueError immediately."""
+        client = self._make_client()
+        with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty list"):
+            client.get_module_types(manufacturer_slugs=[])
+
+
+class TestVendorScopedRackTypes:
+    """Tests for vendor-scoped filtering in get_rack_types()."""
+
+    def _make_client(self):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        return NetBoxGraphQLClient("http://netbox.local", "tok")
+
+    def test_single_vendor_filter(self, mock_post):
+        """Test filtering by a single manufacturer slug."""
+        data = {
+            "rack_type_list": [
+                {
+                    "id": "10",
+                    "model": "AR1300",
+                    "slug": "apc-ar1300",
+                    "form_factor": "4-post-cabinet",
+                    "width": 19,
+                    "u_height": 42,
+                    "starting_unit": 1,
+                    "outer_width": None,
+                    "outer_height": None,
+                    "outer_depth": None,
+                    "outer_unit": None,
+                    "mounting_depth": None,
+                    "weight": None,
+                    "max_weight": None,
+                    "weight_unit": None,
+                    "desc_units": False,
+                    "comments": "",
+                    "description": "",
+                    "manufacturer": {"id": "5", "name": "APC", "slug": "apc"},
+                }
+            ]
+        }
+        mock_post.side_effect = _make_paged_responses(data, "rack_type_list")
+
+        client = self._make_client()
+        result = client.get_rack_types(manufacturer_slugs=["apc"])
+
+        assert "apc" in result
+        assert "AR1300" in result["apc"]
+        # Verify the filter was applied via GraphQL variable (not string interpolation)
+        call_payload = mock_post.call_args_list[0][1]["json"]
+        query = call_payload["query"]
+        variables = call_payload["variables"]
+        assert "filters: {manufacturer: {slug: {exact: $manufacturer_slug}}}" in query
+        assert "$manufacturer_slug: String!" in query
+        assert variables["manufacturer_slug"] == "apc"
+
+    def test_empty_list_raises_value_error(self):
+        """Passing [] for manufacturer_slugs should raise ValueError immediately."""
+        client = self._make_client()
+        with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty list"):
+            client.get_rack_types(manufacturer_slugs=[])
+
+
+class TestVendorScopedComponentTemplates:
+    """Tests for vendor-scoped filtering in get_component_templates()."""
+
+    def _make_client(self):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        return NetBoxGraphQLClient("http://netbox.local", "tok")
+
+    def test_unfiltered_query(self, mock_post):
+        """Test that manufacturer_slug=None produces unfiltered behavior."""
+        data = {
+            "interface_template_list": [
+                {
+                    "id": "1",
+                    "name": "Ethernet1/0/1",
+                    "type": "1000base-t",
+                    "device_type": {"id": "10"},
+                    "module_type": None,
+                }
+            ]
+        }
+        mock_post.side_effect = _make_paged_responses(data, "interface_template_list")
+
+        client = self._make_client()
+        result = client.get_component_templates("interface_templates", manufacturer_slug=None)
+
+        assert len(result) == 1
+        assert result[0].name == "Ethernet1/0/1"
+        # Verify no filter in the query
+        call_args = mock_post.call_args_list[0]
+        query = call_args[1]["json"]["query"]
+        assert "filters:" not in query
+
+    def test_vendor_scoped_two_queries(self, mock_post):
+        """Test that vendor-scoped query makes two separate queries (device + module)."""
+        device_data = {
+            "interface_template_list": [
+                {
+                    "id": "1",
+                    "name": "Ethernet1/0/1",
+                    "type": "1000base-t",
+                    "device_type": {"id": "10"},
+                    "module_type": None,
+                }
+            ]
+        }
+        module_data = {
+            "interface_template_list": [
+                {
+                    "id": "2",
+                    "name": "GigabitEthernet0/0",
+                    "type": "1000base-t",
+                    "device_type": None,
+                    "module_type": {"id": "20"},
+                }
+            ]
+        }
+        # Each query needs a data page followed by an empty page
+        device_responses = _make_paged_responses(device_data, "interface_template_list")
+        module_responses = _make_paged_responses(module_data, "interface_template_list")
+        mock_post.side_effect = device_responses + module_responses
+
+        client = self._make_client()
+        result = client.get_component_templates("interface_templates", manufacturer_slug="cisco")
+
+        assert len(result) == 2
+        assert result[0].name == "Ethernet1/0/1"
+        assert result[1].name == "GigabitEthernet0/0"
+
+        # Verify both filters were applied via GraphQL variables (not string interpolation)
+        calls = mock_post.call_args_list
+        # calls[0]: device_type filter query – data page
+        device_payload = calls[0][1]["json"]
+        device_query = device_payload["query"]
+        device_vars = device_payload["variables"]
+        # calls[1]: device_type filter query – empty terminator (pagination ends)
+        # calls[2]: module_type filter query – data page
+        module_payload = calls[2][1]["json"]
+        module_query = module_payload["query"]
+        module_vars = module_payload["variables"]
+
+        assert "filters: {device_type: {manufacturer: {slug: {exact: $manufacturer_slug}}}}" in device_query
+        assert device_vars["manufacturer_slug"] == "cisco"
+        assert "filters: {module_type: {manufacturer: {slug: {exact: $manufacturer_slug}}}}" in module_query
+        assert module_vars["manufacturer_slug"] == "cisco"
+
+    def test_vendor_scoped_device_bay_single_query(self, mock_post):
+        """Test that device_bay_templates makes only one query (no module_type field)."""
+        device_data = {
+            "device_bay_template_list": [
+                {
+                    "id": "1",
+                    "name": "Device Bay 1",
+                    "label": "Bay 1",
+                    "description": "",
+                    "device_type": {"id": "10"},
+                }
+            ]
+        }
+        mock_post.side_effect = _make_paged_responses(device_data, "device_bay_template_list")
+
+        client = self._make_client()
+        result = client.get_component_templates("device_bay_templates", manufacturer_slug="cisco")
+
+        assert len(result) == 1
+        assert result[0].name == "Device Bay 1"
+
+        # Verify only device_type filter was applied (no module_type query)
+        assert mock_post.call_count == 2  # Just data + empty page
+        device_payload = mock_post.call_args_list[0][1]["json"]
+        device_query = device_payload["query"]
+        device_vars = device_payload["variables"]
+        assert "filters: {device_type: {manufacturer: {slug: {exact: $manufacturer_slug}}}}" in device_query
+        assert device_vars["manufacturer_slug"] == "cisco"
+
+    def test_empty_string_raises_value_error(self):
+        """Passing empty string for manufacturer_slug should raise ValueError immediately."""
+        client = self._make_client()
+        with pytest.raises(ValueError, match="manufacturer_slug must be None or a non-empty string"):
+            client.get_component_templates("interface_templates", manufacturer_slug="")
+
+    def test_vendor_scoped_with_on_page_callback(self, mock_post):
+        """Test that on_page callback is called for both queries."""
+        device_data = {
+            "interface_template_list": [
+                {"id": "1", "name": "eth0", "type": "1000base-t", "device_type": {"id": "10"}, "module_type": None},
+            ]
+        }
+        module_data = {
+            "interface_template_list": [
+                {"id": "2", "name": "eth1", "type": "1000base-t", "device_type": None, "module_type": {"id": "20"}},
+            ]
+        }
+
+        mock_post.side_effect = _make_paged_responses(device_data, "interface_template_list") + _make_paged_responses(
+            module_data, "interface_template_list"
+        )
+
+        on_page_calls = []
+
+        def on_page_callback(count):
+            on_page_calls.append(count)
+
+        client = self._make_client()
+        result = client.get_component_templates(
+            "interface_templates", manufacturer_slug="cisco", on_page=on_page_callback
+        )
+
+        assert len(result) == 2
+        # Callback should be called for both queries
+        assert len(on_page_calls) >= 2
+
+
+class TestLastUpdatedInQueries:
+    """Verify last_updated is returned by the three type-fetching methods."""
+
+    def _mock_graphql(self, mocker, items):
+        client = NetBoxGraphQLClient("http://nb/", "token")
+        mocker.patch.object(client, "query_all", return_value=items)
+        return client
+
+    def test_get_device_types_includes_last_updated(self, mocker):
+        items = [
+            {
+                "id": "1",
+                "model": "M",
+                "slug": "m",
+                "u_height": 1,
+                "part_number": None,
+                "is_full_depth": True,
+                "subdevice_role": None,
+                "airflow": None,
+                "weight": None,
+                "weight_unit": None,
+                "description": "",
+                "comments": "",
+                "front_image": None,
+                "rear_image": None,
+                "last_updated": "2024-01-15T10:00:00Z",
+                "manufacturer": {"id": "1", "name": "Acme", "slug": "acme"},
+            }
+        ]
+        client = self._mock_graphql(mocker, items)
+        by_model, by_slug = client.get_device_types()
+        record = by_model[("acme", "M")]
+        assert record.last_updated == "2024-01-15T10:00:00Z"
+
+    def test_get_module_types_includes_last_updated(self, mocker):
+        items = [
+            {
+                "id": "2",
+                "model": "MM",
+                "part_number": None,
+                "airflow": None,
+                "description": "",
+                "comments": "",
+                "weight": None,
+                "weight_unit": None,
+                "last_updated": "2024-02-01T00:00:00Z",
+                "manufacturer": {"id": "1", "name": "Acme", "slug": "acme"},
+            }
+        ]
+        client = self._mock_graphql(mocker, items)
+        result = client.get_module_types()
+        assert result["acme"]["MM"].last_updated == "2024-02-01T00:00:00Z"
+
+    def test_get_rack_types_includes_last_updated(self, mocker):
+        items = [
+            {
+                "id": "3",
+                "model": "RR",
+                "slug": "acme-rr",
+                "form_factor": "4-post-cabinet",
+                "width": 19,
+                "u_height": 42,
+                "starting_unit": 1,
+                "outer_width": None,
+                "outer_height": None,
+                "outer_depth": None,
+                "outer_unit": None,
+                "mounting_depth": None,
+                "weight": None,
+                "max_weight": None,
+                "weight_unit": None,
+                "desc_units": False,
+                "comments": "",
+                "description": "",
+                "last_updated": "2024-03-10T12:00:00Z",
+                "manufacturer": {"id": "1", "name": "Acme", "slug": "acme"},
+            }
+        ]
+        client = self._mock_graphql(mocker, items)
+        result = client.get_rack_types()
+        assert result["acme"]["RR"].last_updated == "2024-03-10T12:00:00Z"
+
+
+class TestErrorHierarchy:
+    """GraphQL exception classes must form the correct inheritance tree."""
+
+    def test_count_mismatch_error_is_graphql_error(self):
+        from core.graphql_client import GraphQLCountMismatchError, GraphQLError
+
+        assert issubclass(GraphQLCountMismatchError, GraphQLError)
+
+    def test_count_mismatch_error_is_caught_by_graphql_error_handler(self):
+        from core.graphql_client import GraphQLCountMismatchError, GraphQLError
+
+        with pytest.raises(GraphQLError):
+            raise GraphQLCountMismatchError("page cap exceeded")

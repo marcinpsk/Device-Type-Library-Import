@@ -1,12 +1,91 @@
 """Git repository helpers for cloning, updating, and parsing the device-type library."""
 
 import os
+import pickle
 from glob import glob
 from re import sub as re_sub
+from typing import Optional
 from urllib.parse import urlparse
 from git import Repo, exc
 import yaml
 import concurrent.futures
+
+
+class _RestrictedUnpickler(pickle.Unpickler):
+    """Unpickler that refuses to instantiate any class.
+
+    The DTL upstream pickle files (``tests/known-*.pickle``) contain only
+    plain sets of (str, str) tuples and require no GLOBAL opcodes.  This
+    subclass overrides ``find_class`` so that if a crafted/malicious pickle
+    were ever substituted it could not import or execute arbitrary code.
+    """
+
+    def find_class(self, module, name):
+        raise pickle.UnpicklingError(
+            f"DTL pickle safety: loading class '{module}.{name}' is not permitted. "
+            "The known-*.pickle files must contain only sets of string tuples."
+        )
+
+
+_PICKLE_MAX_BYTES = 10 * 1024 * 1024  # 10 MiB — DTL pickles are typically <500 KiB
+
+
+def _vendor_slugs_from_pickle(
+    pickle_path: str, slugs_lower: list, slug_format, subdir_filter: "Optional[str]" = None
+) -> "Optional[set]":
+    """Load a (model_name, vendor_dir) pickle and return the set of vendor slugs matching *slugs_lower*.
+
+    *subdir_filter*, if given, requires the vendor_dir to contain that substring.
+    Returns ``None`` when the pickle is unavailable (missing or unreadable), so callers
+    can distinguish "no matches" (empty set) from "hint unavailable" (None).
+    """
+    if not os.path.exists(pickle_path):
+        return None
+    try:
+        entries = _safe_pickle_load(pickle_path)
+    except Exception:
+        return None
+    result = set()
+    for model_name, vendor_dir in entries:
+        if subdir_filter and subdir_filter not in vendor_dir.replace("\\", "/"):
+            continue
+        if not any(s in model_name.casefold() for s in slugs_lower):
+            continue
+        vendor_name = vendor_dir.replace("\\", "/").split("/")[-1]
+        result.add(slug_format(vendor_name))
+    return result
+
+
+def _safe_abs_path(repo_root: str, relpath: str) -> "Optional[str]":
+    """Return the absolute path for *relpath* inside *repo_root*, or None if it escapes the root."""
+    abs_path = os.path.normpath(os.path.join(repo_root, *relpath.replace("\\", "/").split("/")))
+    return abs_path if abs_path.startswith(os.path.normpath(repo_root) + os.sep) else None
+
+
+def _safe_pickle_load(path: str):
+    """Load a DTL upstream pickle using the restricted unpickler.
+
+    Enforces a hard size cap before unpickling and validates the loaded object
+    is a set/list of (str, str) 2-tuples so malformed/oversized pickles cannot
+    cause resource exhaustion.  Returns the loaded set on success or raises
+    ``ValueError`` on shape violations (callers should catch and fall back).
+    """
+    size = os.path.getsize(path)
+    if size > _PICKLE_MAX_BYTES:
+        raise ValueError(f"Pickle file {path!r} is {size} bytes (limit {_PICKLE_MAX_BYTES}); refusing to load.")
+    with open(path, "rb") as fh:
+        data = _RestrictedUnpickler(fh).load()
+    if not isinstance(data, (set, list, frozenset)):
+        raise ValueError(f"Unexpected pickle root type {type(data).__name__!r}; expected set/list.")
+    for item in data:
+        if (
+            not isinstance(item, tuple)
+            or len(item) != 2
+            or not isinstance(item[0], str)
+            or not isinstance(item[1], str)
+        ):
+            raise ValueError(f"Unexpected item shape in pickle: {item!r}")
+    return data
 
 
 def validate_git_url(url):
@@ -402,6 +481,118 @@ class DTLRepo:
                 for extension in self.yaml_extensions:
                     files.extend(glob(os.path.join(base_path, folder, f"*.{extension}")))
         return files, discovered_vendors
+
+    def resolve_slug_files(self, slugs):
+        """Use the upstream pickle indexes to resolve YAML file paths for slug/model matches.
+
+        The DTL repo ships three pickle files under ``tests/``:
+
+        * ``known-slugs.pickle`` — set of ``(manufacturer_prefixed_slug, relpath)`` for
+          device types.  ``relpath`` is relative to the repo root, e.g.
+          ``device-types/Nokia/7750-SR-7s.yaml``.
+        * ``known-modules.pickle`` — set of ``(model_name, vendor_dir)`` for module
+          types.  Only the vendor directory is stored, not the file name.
+        * ``known-racks.pickle``  — same format as known-modules.
+
+        Matching uses a **case-insensitive substring** check identical to the runtime
+        :meth:`parse_files` filter so that partial slug/model searches work the same way.
+
+        Args:
+            slugs (list[str]): User-supplied slug/model substrings (``--slugs``).
+
+        Returns:
+            dict or None: ``None`` when the device pickle is unavailable (caller falls back
+            to the normal glob path).  Otherwise a dict with the keys:
+
+            ``"device_files"``
+                ``{vendor_slug: [abs_path, ...]}`` for devices resolved via pickle.
+            ``"module_vendors"``
+                ``{vendor_slug}`` — set of vendor slugs that may contain matching module
+                types, or ``None`` when the module pickle was unavailable (caller should
+                fall back to full glob+parse instead of skipping).
+            ``"rack_vendors"``
+                ``{vendor_slug}`` — same for rack types; ``None`` means unavailable.
+        """
+        repo_root = self.get_absolute_path()
+        device_pickle = os.path.join(repo_root, "tests", "known-slugs.pickle")
+        module_pickle = os.path.join(repo_root, "tests", "known-modules.pickle")
+        rack_pickle = os.path.join(repo_root, "tests", "known-racks.pickle")
+
+        if not os.path.exists(device_pickle):
+            return None
+
+        slugs_lower = [s.casefold() for s in slugs]
+
+        # --- device types --------------------------------------------------
+        device_files = {}  # vendor_slug -> [abs_path]
+        try:
+            known_slugs = _safe_pickle_load(device_pickle)
+        except Exception:
+            return None
+
+        for entry_slug, relpath in known_slugs:
+            if not any(s in entry_slug.casefold() for s in slugs_lower):
+                continue
+            parts = relpath.replace("\\", "/").split("/")
+            if len(parts) < 3:
+                continue
+            vendor_name = parts[1]
+            vendor_slug = self.slug_format(vendor_name)
+            abs_path = _safe_abs_path(repo_root, relpath)
+            if abs_path is None:
+                continue
+            device_files.setdefault(vendor_slug, []).append(abs_path)
+
+        # --- module types --------------------------------------------------
+        module_vendors = _vendor_slugs_from_pickle(module_pickle, slugs_lower, self.slug_format)
+
+        # --- rack types ----------------------------------------------------
+        rack_vendors = _vendor_slugs_from_pickle(rack_pickle, slugs_lower, self.slug_format, subdir_filter="rack-types")
+
+        return {
+            "device_files": device_files,
+            "module_vendors": module_vendors,
+            "rack_vendors": rack_vendors,
+        }
+
+    def discover_vendors(self, devices_path, modules_path, racks_path):
+        """Discover all vendor directories across device-types/, module-types/, and rack-types/.
+
+        Args:
+            devices_path (str): Path to device-types directory.
+            modules_path (str): Path to module-types directory.
+            racks_path (str): Path to rack-types directory.
+
+        Returns:
+            list: Sorted list of unique vendor dictionaries with keys 'name' (str) and 'slug' (str).
+                Vendors are deduplicated across all three paths and the "testing" folder is excluded.
+        """
+        vendors_dict = {}  # Use dict to deduplicate by slug
+
+        for path in [devices_path, modules_path, racks_path]:
+            if not os.path.exists(path):
+                continue
+
+            try:
+                vendor_dirs = sorted(os.listdir(path))
+            except OSError:
+                continue
+
+            for folder in vendor_dirs:
+                if folder.casefold() == "testing":
+                    continue
+
+                full_path = os.path.join(path, folder)
+                if not os.path.isdir(full_path):
+                    continue
+
+                slug = self.slug_format(folder)
+                # Only add if we haven't seen this slug before
+                if slug not in vendors_dict:
+                    vendors_dict[slug] = {"name": folder, "slug": slug}
+
+        # Return sorted list by slug
+        return sorted(vendors_dict.values(), key=lambda v: v["slug"])
 
     def parse_files(self, files: list, slugs: list = None, progress=None):
         """Parse YAML device files into device type dicts, optionally filtering and tracking progress.

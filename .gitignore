@@ -137,3 +137,14 @@ CLAUDE.md
 CODE_REVIEW_PLAN.md
 
 repo
+
+# Image hash cache for --verify-images (local state, not for commit)
+tests/known-image-hashes.pickle
+tests/known-image-hashes.json
+
+# Superpowers skill/spec files (local tooling, not for commit)
+docs/superpowers/
+
+# Export-diff output directory and manifest (local state, not for commit)
+extra/
+**/.export-manifest.json

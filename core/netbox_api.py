@@ -3,9 +3,12 @@
 from collections import Counter
 import concurrent.futures
 from functools import lru_cache
+import hashlib
 import itertools
+import json
 import queue
 import re
+import tempfile
 import time
 import pynetbox
 import requests
@@ -15,7 +18,12 @@ import glob
 from pathlib import Path
 
 from core.change_detector import ChangeDetector, ChangeType
-from core.compat import device_type_filter_kwargs, module_type_filter_kwargs, module_type_filter_key
+from core.compat import (
+    device_type_filter_key,
+    device_type_filter_kwargs,
+    module_type_filter_key,
+    module_type_filter_kwargs,
+)
 from core.formatting import log_property_diffs
 from core.graphql_client import GraphQLCountMismatchError, GraphQLError, NetBoxGraphQLClient
 from core.normalization import values_equal
@@ -33,6 +41,27 @@ def _build_auth_header(token):
     return f"{scheme} {token}"
 
 
+def _fmt_connection_error(url: str, exc: Exception) -> str:
+    """Return a human-friendly message for a connection-level network error.
+
+    Used wherever a ``requests.exceptions.ConnectionError`` (which wraps
+    ``urllib3`` ``ProtocolError`` / ``RemoteDisconnected`` etc.) is caught, so
+    that the message format is consistent across all call sites.
+
+    Args:
+        url: The NetBox base URL that was being contacted.
+        exc: The caught exception.
+
+    Returns:
+        A single multi-line string suitable for printing to stderr or a log.
+    """
+    return (
+        f"Connection error while contacting NetBox at {url}: {exc}\n"
+        "The remote end closed the connection unexpectedly. "
+        "Verify that NetBox is running, reachable, and not being restarted."
+    )
+
+
 # Transient connection errors that warrant a retry
 _RETRYABLE_EXCEPTIONS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
 
@@ -42,6 +71,177 @@ _RETRY_BACKOFF = (2, 5, 10)  # seconds to wait before each retry attempt
 # Sentinel used when a YAML record has no "src" key (e.g. synthesised entries).
 # _image_dir_for_yaml treats this value as "no path known" and returns None.
 _UNKNOWN_SRC = "Unknown"
+
+
+def _check_image_url(
+    base_url: str,
+    image_url_path: str,
+    ignore_ssl: bool,
+    token: str = "",
+    log_fn=None,
+) -> str:
+    """Check whether a remote image URL is physically accessible.
+
+    Issues an authenticated HTTP GET and reports whether the image exists on the server.
+    Content/byte comparison is intentionally omitted: NetBox re-encodes images on
+    upload so remote bytes never match the originals.  Use
+    :func:`_is_image_hash_changed` for local-file change detection instead.
+
+    Returns "ok" only when the server returns a 2xx response *and* the Content-Type
+    indicates an actual image.  A 2xx with a non-image Content-Type (e.g. ``text/html``
+    from a login-redirect) is treated as "missing" so that files absent from the
+    filesystem but still recorded in the database are re-uploaded.
+
+    Returns:
+        "missing": the server returned a non-2xx response, or a 2xx but with a
+                   non-image Content-Type (image not physically present / auth redirect)
+        "ok":      image exists (2xx with image Content-Type) or a network error
+                   occurred (conservative — avoids spurious re-uploads on transient
+                   failures; network error is logged at verbose level when *log_fn*
+                   is provided so operators can spot degraded runs)
+
+    Args:
+        base_url: NetBox base URL (e.g. "https://netbox.example.com").
+        image_url_path: Relative path from NetBox (e.g. "/media/devicetype-images/foo.png")
+            or a full URL starting with "http".
+        ignore_ssl: When True, SSL certificate verification is skipped.
+        token: NetBox API token.  When non-empty, sent using the same
+            ``Authorization`` scheme as ``_build_auth_header`` (``Bearer`` for
+            ``nbt_…`` tokens, ``Token`` otherwise) to support all NetBox token
+            types.  Auth is only sent when the URL resolves to the same host as
+            *base_url*, preventing credential leakage to off-host URLs.
+        log_fn: Optional callable ``(msg: str) -> None`` invoked at verbose level
+            when a network error is swallowed.  Pass ``handle.verbose_log``.
+    """
+    full_url = image_url_path if image_url_path.startswith("http") else base_url.rstrip("/") + image_url_path
+    headers = {}
+    if token:
+        # Only send auth header when the effective URL is on the same host as base_url.
+        from urllib.parse import urlparse
+
+        base_host = urlparse(base_url).netloc
+        target_host = urlparse(full_url).netloc
+        if base_host == target_host:
+            headers["Authorization"] = _build_auth_header(token)
+    try:
+        response = requests.get(full_url, headers=headers, verify=(not ignore_ssl), timeout=30)
+    except requests.RequestException as exc:
+        if log_fn is not None:
+            log_fn(
+                f"[yellow]Network error checking image {full_url}: {exc} "
+                f"— treating as present to avoid spurious re-upload[/yellow]"
+            )
+        return "ok"
+    if not response.ok:
+        return "missing"
+    content_type = response.headers.get("Content-Type", "")
+    if content_type.startswith("text/") or content_type.startswith("application/json"):
+        return "missing"
+    return "ok"
+
+
+def _is_image_hash_changed(local_path: str, hash_cache: dict) -> bool:
+    """Return True if the local file's SHA-256 hash differs from the cached value.
+
+    The cache maps local file paths to the SHA-256 hex-digest recorded at the time
+    the file was last uploaded.  Comparing local-to-local (rather than local-to-remote)
+    avoids the unreliability caused by NetBox re-encoding images on upload.
+
+    Returns False when *local_path* is absent from *hash_cache* (conservative: avoids
+    re-uploading images that have never been tracked).
+
+    Args:
+        local_path: Absolute filesystem path to the local image file.
+        hash_cache: Dict mapping local path strings to SHA-256 hex-digests.
+    """
+    cached = hash_cache.get(local_path)
+    if cached is None:
+        return False
+    try:
+        with open(local_path, "rb") as fh:
+            current = hashlib.sha256(fh.read()).hexdigest()
+    except OSError:
+        return False
+    return current != cached
+
+
+def _load_image_hash_cache(path: str) -> dict:
+    """Load the image-hash cache from *path* (JSON).  Returns an empty dict on any error."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _save_image_hash_cache(path: str, cache: dict) -> bool:
+    """Persist *cache* to *path* as a JSON file, written atomically.
+
+    Writes to a temporary file in the same directory, fsyncs it, then
+    replaces *path* with ``os.replace`` so callers never see a truncated file.
+
+    Returns True on success, False on I/O failure.  Callers should warn when
+    False is returned: a missing cache entry causes ``_is_image_hash_changed``
+    to report "unchanged", which would suppress re-uploads for locally edited
+    images on the next run.
+    """
+    dir_ = os.path.dirname(os.path.abspath(path))
+    tmp_path = None
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=dir_, suffix=".tmp")
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(cache, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, path)
+        tmp_path = None  # successfully replaced; skip cleanup
+        return True
+    except Exception:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+        return False
+
+
+def _store_image_hashes(cache: dict, images: dict) -> None:
+    """Compute and store SHA-256 hashes for each local image path in *images*.
+
+    *images* maps arbitrary string keys to local file paths.  Entries that cannot
+    be read are silently skipped.  Updates *cache* in-place.
+    """
+    for path in images.values():
+        try:
+            with open(path, "rb") as fh:
+                cache[path] = hashlib.sha256(fh.read()).hexdigest()
+        except OSError:
+            pass
+
+
+def _delete_image_attachment(base_url: str, token: str, att_id: int, ignore_ssl: bool, handle) -> bool:
+    """Delete a NetBox image attachment by ID via DELETE /api/extras/image-attachments/{id}/.
+
+    Args:
+        base_url: NetBox base URL.
+        token: API token used for the Authorization header.
+        att_id: Numeric ID of the image attachment to delete.
+        ignore_ssl: When True, skip SSL certificate verification.
+        handle: Log handler with a ``log`` method for error reporting.
+
+    Returns:
+        bool: True on success, False on any HTTP or network error.
+    """
+    url = f"{base_url}/api/extras/image-attachments/{att_id}/"
+    headers = {"Authorization": _build_auth_header(token)}
+    try:
+        response = requests.delete(url, headers=headers, verify=(not ignore_ssl), timeout=30)
+        response.raise_for_status()
+        return True
+    except requests.RequestException as e:
+        handle.log(f"Error deleting image attachment {att_id}: {e}")
+        return False
 
 
 def _retry_on_connection_error(func, *args, **kwargs):
@@ -207,6 +407,25 @@ class NetBox:
         self.m2m_front_ports = False  # True for NetBox >= 4.5 (M2M port mappings)
         self.rack_types = False
         self.force_resolve_conflicts = False
+        self.remove_unmanaged_types = False
+        self.verify_images = False
+        self._module_image_details: dict = {}  # populated by _fetch_module_type_existing_images in verify mode
+        # Image hash cache: local file path -> SHA-256 hex-digest at last upload time.
+        # Used by --verify-images to detect whether the local file changed since last upload,
+        # avoiding the unreliability of comparing local bytes to NetBox-served bytes (NetBox
+        # re-encodes images).  Stored under ~/.cache/nb-dt-import/ (XDG_CACHE_HOME respected).
+        _cache_dir = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "nb-dt-import"
+        try:
+            _cache_dir.mkdir(parents=True, exist_ok=True)
+            self._image_hash_cache_path = str(_cache_dir / "image-hashes.json")
+        except OSError:
+            self.handle.verbose_log(
+                "[yellow]Warning: could not create image hash cache directory "
+                f"({_cache_dir}); hash-based re-upload detection will be disabled "
+                "for this run.[/yellow]"
+            )
+            self._image_hash_cache_path = None
+        self._image_hash_cache: dict = _load_image_hash_cache(self._image_hash_cache_path)
         self.connect_api()
         self.verify_compatibility()
         self.graphql = NetBoxGraphQLClient(
@@ -231,16 +450,44 @@ class NetBox:
                 m2m_front_ports=self.m2m_front_ports,
                 max_threads=settings.PRELOAD_THREADS,
             )
-        except GraphQLError as e:
-            system_exit(f"GraphQL error fetching device types: {e}")
+        except Exception as e:
+            system_exit(f"Error initializing device types: {e}")
         self._change_detector: ChangeDetector | None = None
 
     @property
     def change_detector(self) -> "ChangeDetector":
         """Lazily initialised, reused :class:`ChangeDetector` instance."""
         if self._change_detector is None:
-            self._change_detector = ChangeDetector(self.device_types, self.handle)
+            self._change_detector = ChangeDetector(
+                self.device_types,
+                self.handle,
+                remove_unmanaged_types=self.remove_unmanaged_types,
+            )
         return self._change_detector
+
+    def load_vendor(self, manufacturer_slug: str):
+        """Load device types for *manufacturer_slug* and reset per-vendor state.
+
+        Delegates to :meth:`DeviceTypes.load_for_vendor` to populate the device
+        type lookup indexes, then clears the cached :class:`ChangeDetector` so
+        that the next access constructs a fresh instance against the new data.
+
+        Args:
+            manufacturer_slug (str): Manufacturer slug to load.
+        """
+        self.device_types.load_for_vendor(manufacturer_slug)
+        self._change_detector = None
+        self._module_image_details = {}  # stale module entries must not bleed across vendors
+
+    def _persist_hash_cache(self) -> None:
+        """Save the image hash cache and warn once if the write fails."""
+        if self._image_hash_cache_path is None:
+            return
+        if not _save_image_hash_cache(self._image_hash_cache_path, self._image_hash_cache):
+            self.handle.verbose_log(
+                "[yellow]Warning: failed to persist image hash cache; "
+                "local image edits may not be detected on the next run.[/yellow]"
+            )
 
     def connect_api(self):
         """Connect to the NetBox API using the stored URL and token credentials."""
@@ -281,10 +528,7 @@ class NetBox:
                 f"(both with and without brackets for IPv6, e.g. '::1,[::1]')."
             )
         except requests.exceptions.ConnectionError as e:
-            system_exit(
-                f"Connection error while connecting to NetBox at {self.url}: {e}\n"
-                f"Hint: Verify that NetBox is running and reachable at {self.url}."
-            )
+            system_exit(_fmt_connection_error(self.url, e))
         except pynetbox.core.query.RequestError as e:
             endpoint = getattr(e, "base", self.url)
             status = getattr(e.req, "status_code", "?") if hasattr(e, "req") else "?"
@@ -594,6 +838,57 @@ class NetBox:
                 "No property or component changes applied."
             )
 
+    def _filter_images_for_upload(self, dt, saved_images):
+        """Remove from *saved_images* any image that does not need uploading.
+
+        For each image kind present in *saved_images* that already has a record in NetBox,
+        either removes the entry unconditionally (default mode) or verifies physical
+        presence and local-file hash (``--verify-images`` mode) before deciding.
+
+        In ``--verify-images`` mode two independent checks are run:
+
+        1. **HTTP accessibility** — an HTTP GET confirms the file exists on the server.
+           A non-2xx response means the file is physically missing.
+        2. **Local-file hash** — the current SHA-256 of the local image is compared to
+           the hash recorded in the image-hash cache at the time of the last upload.
+           A mismatch means the local source file was updated since the last import.
+
+        NetBox re-encodes images on upload so comparing local bytes to remote bytes is
+        unreliable; the local-hash cache approach is used instead.
+
+        Args:
+            dt: pynetbox device type record for the existing device type.
+            saved_images (dict): Mapping of image kind to local file path; modified in-place.
+        """
+        for image_kind in ("front_image", "rear_image"):
+            if image_kind not in saved_images:
+                continue
+            db_url = getattr(dt, image_kind, None)
+            if not db_url:
+                continue  # no record in NetBox yet → keep for upload
+            label = image_kind.replace("_", " ").capitalize()
+            if not self.verify_images:
+                self.handle.verbose_log(f"{label} already exists for {dt.model}, skipping upload.")
+                del saved_images[image_kind]
+                continue
+            # --verify-images: Step 1 — check physical presence via HTTP
+            status = _check_image_url(self.url, db_url, self.ignore_ssl, self.token, log_fn=self.handle.verbose_log)
+            if status == "missing":
+                self.handle.verbose_log(f"{label} is missing on server for {dt.model}, will re-upload.")
+                continue  # keep in saved_images for upload
+            # --verify-images: Step 2 — check if local file changed since last upload
+            if _is_image_hash_changed(saved_images[image_kind], self._image_hash_cache):
+                self.handle.verbose_log(f"{label} content has changed for {dt.model}, will re-upload.")
+                continue  # keep in saved_images for upload
+            # Both checks passed — image is present and unchanged;
+            # seed hash cache so future local edits will be detected.
+            local_path = saved_images[image_kind]
+            if local_path not in self._image_hash_cache:
+                _store_image_hashes(self._image_hash_cache, {image_kind: local_path})
+                self._persist_hash_cache()
+            self.handle.verbose_log(f"{label} verified OK for {dt.model}, skipping upload.")
+            del saved_images[image_kind]
+
     def _handle_existing_device_type(
         self,
         dt,
@@ -621,16 +916,11 @@ class NetBox:
                 absent from the YAML.
         """
         if saved_images:
-            if "front_image" in saved_images and getattr(dt, "front_image", None):
-                self.handle.verbose_log(f"Front image already exists for {dt.model}, skipping upload.")
-                del saved_images["front_image"]
-
-            if "rear_image" in saved_images and getattr(dt, "rear_image", None):
-                self.handle.verbose_log(f"Rear image already exists for {dt.model}, skipping upload.")
-                del saved_images["rear_image"]
-
+            self._filter_images_for_upload(dt, saved_images)
             if saved_images:
                 self.device_types.upload_images(self.url, self.token, saved_images, dt.id)
+                _store_image_hashes(self._image_hash_cache, saved_images)
+                self._persist_hash_cache()
 
         if only_new:
             self.handle.verbose_log(
@@ -777,6 +1067,8 @@ class NetBox:
             self.device_types.create_module_bays(device_type["module-bays"], dt_id)
         if saved_images:
             self.device_types.upload_images(self.url, self.token, saved_images, dt_id)
+            _store_image_hashes(self._image_hash_cache, saved_images)
+            self._persist_hash_cache()
 
     def create_device_types(
         self,
@@ -1105,6 +1397,12 @@ class NetBox:
             image_changed = any(
                 os.path.splitext(os.path.basename(path))[0] not in existing_images for path in image_files
             )
+            # With --verify-images, images whose names already exist in NetBox also need
+            # to be re-examined for physical presence and local-file hash changes.
+            # _upload_module_type_images contains all the probe + decision logic; we just
+            # need to ensure this module type is considered actionable so it reaches that path.
+            if not image_changed and self.verify_images and image_files and existing_images:
+                image_changed = True
 
             changed_fields_info = []
             for f in _load_module_type_properties():
@@ -1149,10 +1447,21 @@ class NetBox:
     def _fetch_module_type_existing_images(self):
         """Query NetBox for all image attachments on module types via GraphQL and return a mapping.
 
+        When ``self.verify_images`` is True the richer attachment metadata (ID + URL) is fetched
+        via :meth:`~core.graphql_client.NetBoxGraphQLClient.get_module_type_image_details` and
+        stored on ``self._module_image_details`` for use by
+        :meth:`_upload_module_type_images`.
+
         Returns:
             dict: ``{module_type_id: set_of_attachment_names}``
         """
-        module_type_existing_images = self.graphql.get_module_type_images()
+        if self.verify_images:
+            details = self.graphql.get_module_type_image_details()
+            self._module_image_details = details
+            module_type_existing_images = {obj_id: set(names.keys()) for obj_id, names in details.items()}
+        else:
+            self._module_image_details = {}
+            module_type_existing_images = self.graphql.get_module_type_images()
         self.handle.verbose_log(
             f"Found {len(module_type_existing_images)} module type(s) with existing image attachments."
         )
@@ -1456,8 +1765,9 @@ class NetBox:
 
             for i in ["front_image", "rear_image"]:
                 if device_type.get(i):
-                    # Skip if existing device type already has this image
-                    if dt is not None and getattr(dt, i, None):
+                    # Skip if existing device type already has this image, unless verify_images
+                    # is active (in that case we may re-upload even existing images so count them).
+                    if not self.verify_images and dt is not None and getattr(dt, i, None):
                         continue
                     image_glob = f"{image_base}/{device_slug}.{i.split('_')[0]}.*"
                     if glob.glob(image_glob, recursive=False):
@@ -1538,6 +1848,31 @@ class NetBox:
         image_files = glob.glob(str(image_dir / f"{src_path.stem}.*"))
         return [f for f in image_files if os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS]
 
+    def _try_delete_stale_attachment(self, detail, img_path, module_type_res, existing, img_name) -> bool:
+        """Delete the stale attachment for *img_name* so a fresh upload can follow.
+
+        Returns True when the attachment was successfully deleted (caller should
+        proceed to re-upload).  Returns False when deletion is skipped or fails
+        (caller should ``continue`` without re-uploading to avoid duplicates).
+        """
+        att_id = detail.get("att_id") if isinstance(detail, dict) else None
+        if not isinstance(att_id, int):
+            self.handle.verbose_log(
+                f"Cannot delete stale attachment for "
+                f"'{os.path.basename(img_path)}' on {module_type_res.model}: "
+                "missing or invalid att_id, skipping upload to avoid duplicates."
+            )
+            return False
+        if not _delete_image_attachment(self.url, self.token, att_id, self.ignore_ssl, self.handle):
+            self.handle.verbose_log(
+                f"Failed to delete stale attachment for "
+                f"'{os.path.basename(img_path)}' on {module_type_res.model}, "
+                "skipping upload to avoid duplicates."
+            )
+            return False
+        existing.discard(img_name)
+        return True
+
     def _upload_module_type_images(self, module_type_res, src_file, module_type_existing_images):
         """Discover and upload images for a module type, skipping duplicates.
 
@@ -1547,6 +1882,11 @@ class NetBox:
         ``<stem>.front.<ext>``, ``<stem>.rear.<ext>``). Only uploads images whose name
         (basename without extension) is not already present in
         module_type_existing_images for this module type.
+
+        When ``self.verify_images`` is True, existing attachments are verified via
+        HTTP GET. If an attachment is missing on the server or its content differs
+        from the local file, the stale attachment is deleted and the image is
+        re-uploaded.
 
         Args:
             module_type_res: pynetbox Record for the module type.
@@ -1561,14 +1901,70 @@ class NetBox:
         for img_path in image_files:
             img_name = os.path.splitext(os.path.basename(img_path))[0]
             if img_name in existing:
-                self.handle.verbose_log(
-                    f"Image '{os.path.basename(img_path)}' already exists for {module_type_res.model}, skipping."
-                )
-                continue
+                if self.verify_images:
+                    detail = self._module_image_details.get(module_type_res.id, {}).get(img_name)
+                    if detail:
+                        img_url = detail.get("url", "")
+                        full_url = img_url if img_url.startswith("http") else self.url.rstrip("/") + img_url
+                        # Step 1: HTTP accessibility check
+                        status = _check_image_url(
+                            self.url,
+                            full_url,
+                            self.ignore_ssl,
+                            self.token,
+                            log_fn=self.handle.verbose_log,
+                        )
+                        if status == "missing":
+                            self.handle.verbose_log(
+                                f"Image '{os.path.basename(img_path)}' missing on server for "
+                                f"{module_type_res.model}, re-uploading."
+                            )
+                            deleted = self._try_delete_stale_attachment(
+                                detail, img_path, module_type_res, existing, img_name
+                            )
+                            if not deleted:
+                                continue
+                        # Step 2: local-file hash check
+                        elif _is_image_hash_changed(img_path, self._image_hash_cache):
+                            self.handle.verbose_log(
+                                f"Image '{os.path.basename(img_path)}' content has changed for "
+                                f"{module_type_res.model}, re-uploading."
+                            )
+                            deleted = self._try_delete_stale_attachment(
+                                detail, img_path, module_type_res, existing, img_name
+                            )
+                            if not deleted:
+                                continue
+                        else:
+                            # Verify OK: image present and hash unchanged.
+                            # Seed hash cache so future local edits will be detected.
+                            if img_path not in self._image_hash_cache:
+                                _store_image_hashes(self._image_hash_cache, {"image": img_path})
+                                self._persist_hash_cache()
+                            self.handle.verbose_log(
+                                f"Image '{os.path.basename(img_path)}' verified OK for "
+                                f"{module_type_res.model}, skipping."
+                            )
+                            continue
+                    else:
+                        # If no detail available, skip upload to avoid creating duplicate attachments.
+                        self.handle.verbose_log(
+                            f"Image '{os.path.basename(img_path)}' already exists for "
+                            f"{module_type_res.model} but detail is unavailable; "
+                            "skipping upload to avoid duplicates."
+                        )
+                        continue
+                else:
+                    self.handle.verbose_log(
+                        f"Image '{os.path.basename(img_path)}' already exists for {module_type_res.model}, skipping."
+                    )
+                    continue
             if self.device_types.upload_image_attachment(
                 self.url, self.token, img_path, "dcim.moduletype", module_type_res.id
             ):
                 existing.add(img_name)
+                _store_image_hashes(self._image_hash_cache, {"image": img_path})
+                self._persist_hash_cache()
 
 
 # Component type -> (dcim endpoint attribute name, cache key name).
@@ -1673,7 +2069,10 @@ class DeviceTypes:
         m2m_front_ports=False,
         max_threads=8,
     ):
-        """Initialize the DeviceTypes cache and load all existing device types from NetBox.
+        """Initialize empty DeviceTypes cache structures; no data is fetched at construction time.
+
+        Device type data is loaded lazily via :meth:`load_for_vendor` on a per-vendor
+        basis rather than eagerly at startup.
 
         Args:
             netbox: Connected pynetbox API instance.
@@ -1696,7 +2095,8 @@ class DeviceTypes:
         self.cached_components = {}
         self._global_preload_done = False
         self._image_progress = None
-        self.existing_device_types, self.existing_device_types_by_slug = self.get_device_types()
+        self.existing_device_types = {}
+        self.existing_device_types_by_slug = {}
 
     def get_device_types(self):
         """Fetch all device types from NetBox via GraphQL and build two lookup indexes.
@@ -1708,11 +2108,30 @@ class DeviceTypes:
         """
         return self.graphql.get_device_types()
 
+    def load_for_vendor(self, manufacturer_slug: str):
+        """Fetch device types for a single vendor and populate the lookup indexes.
+
+        Replaces any previously loaded data so that state from a prior vendor
+        does not bleed into the current one.
+
+        Args:
+            manufacturer_slug (str): Manufacturer slug to load device types for.
+        """
+        self.cached_components = {}
+        self._global_preload_done = False
+        by_model, by_slug = self.graphql.get_device_types(manufacturer_slugs=[manufacturer_slug])
+        self.existing_device_types = by_model
+        self.existing_device_types_by_slug = by_slug
+
     # Endpoints whose GraphQL schema is missing fields required for accurate
     # change detection and where the REST API provides the missing data.
     # Add endpoint names here if a future NetBox version drops a field from
     # GraphQL but keeps it in REST (or vice-versa).
     REST_ONLY_ENDPOINTS: frozenset = frozenset()
+
+    # Endpoints that only apply to device types (no module-type path).
+    # Matches _NO_MODULE_TYPE in graphql_client.py.
+    _NO_MODULE_TYPE_ENDPOINTS: frozenset = frozenset({"device_bay_templates"})
 
     @staticmethod
     def _component_preload_targets():
@@ -1729,79 +2148,41 @@ class DeviceTypes:
             ("module_bay_templates", "Module Bays"),
         ]
 
-    def _get_rest_component_count(self, endpoint_name):
-        """Return the REST API count for *endpoint_name*, or ``None`` on failure.
-
-        Issues a single lightweight ``?limit=1`` REST call that returns just the
-        total record count — no item data is transferred.  Used to validate that
-        subsequent GraphQL fetches returned the expected number of records.
-
-        Args:
-            endpoint_name (str): Component template endpoint name (e.g. ``"interface_templates"``).
-
-        Returns:
-            int | None: Total record count, or ``None`` if the request fails.
-        """
-        try:
-            return getattr(self.netbox.dcim, endpoint_name).count()
-        except Exception as exc:
-            self.handle.verbose_log(
-                f"REST count unavailable for {endpoint_name}; skipping GraphQL count verification: {exc}"
-            )
-            return None
-
-    def _get_endpoint_totals(self, components):
-        """Fetch REST record counts for each component endpoint in parallel.
-
-        Issues one lightweight ``?limit=1`` REST call per endpoint to obtain the
-        expected total before the GraphQL fetch begins.  These totals are later
-        used to detect silent truncation in :meth:`_fetch_global_endpoint_records`.
-
-        REST-only endpoints (see :attr:`REST_ONLY_ENDPOINTS`) are excluded because
-        their counts will be determined by the REST fetch itself.
+    def start_component_preload(
+        self,
+        progress=None,
+        manufacturer_slug: str | None = None,
+        task_registry: dict | None = None,
+    ):
+        """Start concurrent component prefetch and return a preload job handle.
 
         Args:
-            components: Iterable of ``(endpoint_name, label)`` tuples.
-
-        Returns:
-            dict: ``{endpoint_name: count_or_None}`` for graphql endpoints (``None``
-                preserves the "count unavailable" sentinel from
-                :meth:`_get_rest_component_count`), and ``0`` for REST-only endpoints
-                (whose authoritative count is established by the REST fetch itself).
+            progress: Optional Rich Progress instance for task tracking.
+            manufacturer_slug (str | None): When provided, fetch only component templates
+                belonging to this manufacturer's device types and module types.
+            task_registry (dict | None): When provided, task_ids are looked up or created
+                in this shared registry so they persist and accumulate counts across all
+                vendors rather than appearing and disappearing per vendor.
         """
-        graphql_endpoints = [ep for ep, _label in components if ep not in self.REST_ONLY_ENDPOINTS]
-        totals = {ep: (0 if ep in self.REST_ONLY_ENDPOINTS else None) for ep, _label in components}
-
-        max_workers = max(1, min(len(graphql_endpoints), self.max_threads))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            future_to_ep = {executor.submit(self._get_rest_component_count, ep): ep for ep in graphql_endpoints}
-            for future in concurrent.futures.as_completed(future_to_ep):
-                ep = future_to_ep[future]
-                result = future.result()
-                if isinstance(result, int) and not isinstance(result, bool):
-                    totals[ep] = result
-
-        return totals
-
-    def start_component_preload(self, progress=None):
-        """Start concurrent component prefetch and return a preload job handle."""
         components = self._component_preload_targets()
         max_workers = max(1, min(len(components), self.max_threads))
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
 
         try:
-            endpoint_totals = self._get_endpoint_totals(components)
+            endpoint_totals = {endpoint_name: None for endpoint_name, _label in components}
             progress_updates = queue.Queue()
             task_ids = None
 
             if progress is not None:
-                task_ids = {
-                    endpoint_name: progress.add_task(
-                        f"Caching {label}",
-                        total=endpoint_totals.get(endpoint_name),
-                    )
-                    for endpoint_name, label in components
-                }
+                task_ids = {}
+                for endpoint_name, label in components:
+                    desc = f"Caching {label}"
+                    if task_registry is not None:
+                        if desc not in task_registry:
+                            task_registry[desc] = progress.add_task(desc, total=None)
+                        task_ids[endpoint_name] = task_registry[desc]
+                    else:
+                        task_ids[endpoint_name] = progress.add_task(desc, total=None)
 
             def update_progress(endpoint_name, advance):
                 """Put a progress update onto the queue for the main thread to consume."""
@@ -1812,7 +2193,7 @@ class DeviceTypes:
                     self._fetch_global_endpoint_records,
                     endpoint_name,
                     update_progress,
-                    endpoint_totals.get(endpoint_name),
+                    manufacturer_slug,
                 )
                 for endpoint_name, _label in components
             }
@@ -1825,17 +2206,22 @@ class DeviceTypes:
                 "task_ids": task_ids,
                 "finished_endpoints": set(),
                 "executor": executor,
+                # When task_registry is provided the caller owns the tasks;
+                # this job must not stop or remove them on completion.
+                "owns_tasks": task_registry is None,
             }
         except Exception:
             executor.shutdown(wait=False, cancel_futures=True)
             raise
 
     @staticmethod
-    def stop_component_preload(preload_job):
+    def stop_component_preload(preload_job, progress=None):
         """Cancel any pending futures in *preload_job* and shut down its executor.
 
         Args:
             preload_job (dict | None): Preload job returned by :meth:`start_component_preload`; no-op if None.
+            progress: Optional Rich Progress instance; if provided, any remaining progress
+                tasks in the job are removed from the display.
         """
         if not preload_job:
             return
@@ -1849,6 +2235,17 @@ class DeviceTypes:
         if executor:
             executor.shutdown(wait=False, cancel_futures=True)
             preload_job["executor"] = None
+
+        if progress is not None:
+            task_ids = preload_job.get("task_ids") or {}
+            owns_tasks = preload_job.get("owns_tasks", True)
+            if owns_tasks:
+                for task_id in task_ids.values():
+                    try:
+                        progress.stop_task(task_id)
+                        progress.remove_task(task_id)
+                    except Exception:
+                        pass
 
     @staticmethod
     def _apply_progress_updates(progress_updates, progress, task_ids, allowed_endpoints=None):
@@ -1923,6 +2320,7 @@ class DeviceTypes:
         )
 
         task_ids = preload_job.get("task_ids") or {}
+        owns_tasks = preload_job.get("owns_tasks", True)
         for endpoint_name in pending_endpoints:
             future = futures.get(endpoint_name)
             if future is None or not future.done():
@@ -1933,8 +2331,10 @@ class DeviceTypes:
                     final_total = max(len(records), 1)
                 except Exception:
                     final_total = 1
-                progress.update(task_ids[endpoint_name], total=final_total, completed=final_total)
-                progress.stop_task(task_ids[endpoint_name])
+                if owns_tasks:
+                    progress.update(task_ids[endpoint_name], total=final_total, completed=final_total)
+                    progress.stop_task(task_ids[endpoint_name])
+                    progress.remove_task(task_ids[endpoint_name])
             finished_endpoints.add(endpoint_name)
             advanced = True
 
@@ -1945,17 +2345,20 @@ class DeviceTypes:
         progress_wrapper=None,
         preload_job=None,
         progress=None,
+        manufacturer_slug: str | None = None,
+        task_registry: dict | None = None,
     ):
         """Pre-fetch component templates to avoid N+1 queries during updates.
 
-        Always fetches all components globally via GraphQL — fast enough
-        that vendor/device-type scoping is unnecessary.
-
         Args:
-            progress_wrapper: Optional callable to wrap iterables with progress bars
-            preload_job: Optional preload job from start_component_preload().
+            progress_wrapper: Optional callable to wrap iterables with progress bars.
+            preload_job: Optional preload job from :meth:`start_component_preload`.
             progress: Optional shared Rich Progress instance used to render
                 all caching tasks inside a single progress panel.
+            manufacturer_slug (str | None): When provided, only fetch component templates
+                for device/module types belonging to this manufacturer.
+            task_registry (dict | None): Shared registry for cumulative progress tasks.
+                When provided, "Caching X" tasks persist across all vendors.
         """
         components = self._component_preload_targets()
 
@@ -1965,11 +2368,31 @@ class DeviceTypes:
                 progress_wrapper,
                 preload_job=preload_job,
                 progress=progress,
+                task_registry=task_registry,
             )
-            self._global_preload_done = True
-            return
+        else:
+            self._preload_global(
+                components,
+                progress_wrapper,
+                progress=progress,
+                manufacturer_slug=manufacturer_slug,
+                task_registry=task_registry,
+            )
 
-        self._preload_global(components, progress_wrapper, progress=progress)
+        if manufacturer_slug is not None:
+            try:
+                vendor_dt_ids = {record.id for record in self.existing_device_types.values()}
+                vendor_mt_data = self.graphql.get_module_types(manufacturer_slugs=[manufacturer_slug])
+                vendor_mt_ids = {record.id for models in vendor_mt_data.values() for record in models.values()}
+            except Exception as exc:
+                self.handle.log(f"WARNING: Component cache integrity check skipped: {exc}")
+            else:
+                self._verify_component_cache_integrity(vendor_dt_ids, vendor_mt_ids)
+                # Count check is intentionally outside the warning try/except above:
+                # a mismatch means GraphQL silently truncated results and the import
+                # must not proceed with incomplete data.
+                self._check_component_counts_against_rest(vendor_dt_ids, vendor_mt_ids)
+
         self._global_preload_done = True
 
     def _preload_track_progress(
@@ -1981,6 +2404,7 @@ class DeviceTypes:
         preload_job,
         progress_updates,
         endpoint_totals,
+        owns_tasks=True,
     ):
         """Collect preload results and advance progress tasks as each endpoint future completes.
 
@@ -1995,6 +2419,7 @@ class DeviceTypes:
             preload_job (dict | None): Shared preload-job state dict, or None.
             progress_updates (queue.Queue | None): Queue carrying ``(endpoint_name, advance)`` tuples.
             endpoint_totals (dict): Expected record count per endpoint.
+            owns_tasks (bool): Whether this call owns the progress tasks and should stop/remove them.
 
         Returns:
             dict: ``{endpoint_name: [records]}`` populated as futures complete.
@@ -2008,8 +2433,6 @@ class DeviceTypes:
             for endpoint_name in already_done:
                 try:
                     records_by_endpoint[endpoint_name] = future_map[endpoint_name].result()
-                except GraphQLCountMismatchError:
-                    raise
                 except Exception as exc:
                     self.handle.log(f"Preload failed for {endpoint_name}: {exc}")
                     raise
@@ -2020,12 +2443,14 @@ class DeviceTypes:
                             len(records_by_endpoint[endpoint_name]),
                             1,
                         )
-                        progress.update(
-                            task_ids[endpoint_name],
-                            total=final_total,
-                            completed=final_total,
-                        )
-                        progress.stop_task(task_ids[endpoint_name])
+                        if owns_tasks:
+                            progress.update(
+                                task_ids[endpoint_name],
+                                total=final_total,
+                                completed=final_total,
+                            )
+                            progress.stop_task(task_ids[endpoint_name])
+                            progress.remove_task(task_ids[endpoint_name])
                     except Exception:
                         pass
             # Exclude from pending to avoid double stop_task.
@@ -2038,6 +2463,7 @@ class DeviceTypes:
             progress_updates,
             endpoint_totals,
             records_by_endpoint,
+            owns_tasks=owns_tasks,
         )
         return records_by_endpoint
 
@@ -2050,6 +2476,7 @@ class DeviceTypes:
         progress_updates,
         endpoint_totals,
         records_by_endpoint,
+        owns_tasks=True,
     ):
         """Wait for pending endpoint futures to complete, collecting results and updating progress.
 
@@ -2064,6 +2491,7 @@ class DeviceTypes:
             progress_updates (queue.Queue | None): Queue of ``(endpoint_name, advance)`` tuples.
             endpoint_totals (dict): Expected record count per endpoint.
             records_by_endpoint (dict): Accumulator dict updated in-place with results.
+            owns_tasks (bool): Whether this call owns the progress tasks and should stop/remove them.
         """
         while pending:
             had_updates = self._apply_progress_updates(
@@ -2077,8 +2505,6 @@ class DeviceTypes:
                 pending.remove(endpoint_name)
                 try:
                     records_by_endpoint[endpoint_name] = future_map[endpoint_name].result()
-                except GraphQLCountMismatchError:
-                    raise
                 except Exception as exc:
                     self.handle.log(f"Preload failed for {endpoint_name}: {exc}")
                     raise
@@ -2088,9 +2514,10 @@ class DeviceTypes:
                     1,
                 )
                 task_id = task_ids.get(endpoint_name)
-                if task_id is not None:
+                if task_id is not None and owns_tasks:
                     progress.update(task_id, total=final_total, completed=final_total)
                     progress.stop_task(task_id)
+                    progress.remove_task(task_id)
             if pending and not had_updates:
                 if progress_updates is not None:
                     try:
@@ -2137,15 +2564,21 @@ class DeviceTypes:
             self.handle.verbose_log(f"Pre-fetching {label}...")
             try:
                 records_by_endpoint[endpoint] = futures[endpoint].result()
-            except GraphQLCountMismatchError:
-                raise
             except Exception as exc:
                 self.handle.log(f"Preload failed for {label}: {exc}")
                 raise
         return records_by_endpoint
 
-    def _preload_global(self, components, progress_wrapper=None, preload_job=None, progress=None):
-        """Fetch all component templates globally (no vendor/device filter)."""
+    def _preload_global(
+        self,
+        components,
+        progress_wrapper=None,
+        preload_job=None,
+        progress=None,
+        manufacturer_slug=None,
+        task_registry=None,
+    ):
+        """Fetch all component templates, optionally scoped to a single manufacturer."""
         own_executor = preload_job is None
         if preload_job:
             executor = preload_job.get("executor")
@@ -2154,7 +2587,7 @@ class DeviceTypes:
             endpoint_totals = preload_job.get("endpoint_totals", {})
         else:
             max_workers = max(1, min(len(components), self.max_threads))
-            endpoint_totals = self._get_endpoint_totals(components)
+            endpoint_totals = {endpoint_name: None for endpoint_name, _label in components}
             executor = None
             futures = {}
             progress_updates = None
@@ -2174,7 +2607,7 @@ class DeviceTypes:
                             self._fetch_global_endpoint_records,
                             endpoint,
                             update_progress,
-                            endpoint_totals.get(endpoint),
+                            manufacturer_slug,
                         )
                         for endpoint, _label in components
                     }
@@ -2184,20 +2617,23 @@ class DeviceTypes:
                             self._fetch_global_endpoint_records,
                             endpoint,
                             None,
-                            endpoint_totals.get(endpoint),
+                            manufacturer_slug,
                         )
                         for endpoint, _label in components
                     }
             if progress is not None:
                 task_ids = preload_job.get("task_ids") if preload_job else None
+                owns_tasks = preload_job.get("owns_tasks", True) if preload_job else (task_registry is None)
                 if not task_ids:
-                    task_ids = {
-                        endpoint: progress.add_task(
-                            f"Caching {label}",
-                            total=endpoint_totals.get(endpoint),
-                        )
-                        for endpoint, label in components
-                    }
+                    task_ids = {}
+                    for endpoint, label in components:
+                        desc = f"Caching {label}"
+                        if task_registry is not None:
+                            if desc not in task_registry:
+                                task_registry[desc] = progress.add_task(desc, total=None)
+                            task_ids[endpoint] = task_registry[desc]
+                        else:
+                            task_ids[endpoint] = progress.add_task(desc, total=None)
                 records_by_endpoint = self._preload_track_progress(
                     components,
                     futures,
@@ -2206,6 +2642,7 @@ class DeviceTypes:
                     preload_job,
                     progress_updates,
                     endpoint_totals,
+                    owns_tasks=owns_tasks,
                 )
             else:
                 records_by_endpoint = self._preload_no_progress(components, futures)
@@ -2223,7 +2660,7 @@ class DeviceTypes:
                     executor.shutdown(wait=True)
                     preload_job["executor"] = None
 
-    def _fetch_global_endpoint_records(self, endpoint_name, progress_callback=None, expected_total=None):
+    def _fetch_global_endpoint_records(self, endpoint_name, progress_callback=None, manufacturer_slug=None):
         """Fetch all records for *endpoint_name* from NetBox.
 
         Most endpoints are fetched via GraphQL for speed.  Endpoints listed in
@@ -2242,12 +2679,9 @@ class DeviceTypes:
             progress_callback (callable | None): Called with ``(endpoint_name, advance)``
                 once per page during the GraphQL fetch (or once after the batch fetch
                 completes for REST endpoints).  *advance* is a positive integer equal to
-                the number of records on that page.  On a count-mismatch retry the
-                callback is invoked once with a **negative** advance to rewind the
-                progress bar by the same amount, keeping the display consistent across
-                attempts.
-            expected_total (int | None): Expected record count obtained from the REST API before the
-                GraphQL fetch.  If provided and the fetched count differs, a warning is logged.
+                the number of records on that page.
+            manufacturer_slug (str | None): When provided, only templates belonging to
+                device types or module types of this manufacturer are fetched.
 
         Returns:
             list: All component template records.
@@ -2261,45 +2695,16 @@ class DeviceTypes:
                 progress_callback(endpoint_name, len(records))
             return records
 
-        for attempt in range(_MAX_RETRIES + 1):
-            # Forward per-page advances LIVE so the progress bar moves while a
-            # large endpoint (e.g. interfaces, 100k+ records) is fetching.  Track
-            # fetched_this_attempt so that on a count-mismatch retry we can
-            # rewind by the same amount, keeping the bar consistent.
-            fetched_this_attempt = 0
+        def _live_advance(n):
+            if progress_callback is not None and n:
+                progress_callback(endpoint_name, n)
 
-            def _live_advance(n):
-                nonlocal fetched_this_attempt
-                fetched_this_attempt += n
-                if progress_callback is not None and n:
-                    progress_callback(endpoint_name, n)
-
-            on_page = _live_advance if progress_callback is not None else None
-            records = self.graphql.get_component_templates(endpoint_name, on_page=on_page)
-            if endpoint_name == "front_port_templates":
-                records = [_FrontPortRecordWithMappings(r) for r in records]
-
-            if expected_total is not None and len(records) != expected_total:
-                if attempt < _MAX_RETRIES:
-                    backoff = _RETRY_BACKOFF[attempt]
-                    self.handle.log(
-                        f"WARNING: GraphQL returned {len(records)} {endpoint_name} "
-                        f"but REST API expected {expected_total}. "
-                        f"Retrying in {backoff}s (attempt {attempt + 1}/{_MAX_RETRIES})…"
-                    )
-                    if progress_callback is not None and fetched_this_attempt:
-                        # Rewind the bar so the next attempt's live advances do
-                        # not double-count.
-                        progress_callback(endpoint_name, -fetched_this_attempt)
-                    time.sleep(backoff)
-                    continue
-                raise GraphQLCountMismatchError(
-                    f"GraphQL returned {len(records)} {endpoint_name} "
-                    f"but REST API expected {expected_total} "
-                    f"after {_MAX_RETRIES} retries. "
-                    "Run aborted to prevent processing an incomplete component cache."
-                )
-            break
+        on_page = _live_advance if progress_callback is not None else None
+        records = self.graphql.get_component_templates(
+            endpoint_name, manufacturer_slug=manufacturer_slug, on_page=on_page
+        )
+        if endpoint_name == "front_port_templates":
+            records = [_FrontPortRecordWithMappings(r) for r in records]
 
         return records
 
@@ -2337,6 +2742,106 @@ class DeviceTypes:
             count += 1
 
         return cache, count
+
+    def _verify_component_cache_integrity(self, vendor_dt_ids: set, vendor_mt_ids: set) -> bool:
+        """Check that cached component records belong to the current vendor.
+
+        For each endpoint in :attr:`cached_components`, verifies that at least one
+        record has a parent ID (``device_type.id`` or ``module_type.id``) that
+        appears in *vendor_dt_ids* or *vendor_mt_ids* respectively.  A non-empty
+        endpoint whose records contain **no** matching IDs is treated as garbage
+        data and cleared.
+
+        Args:
+            vendor_dt_ids (set): Device type IDs belonging to the current vendor.
+            vendor_mt_ids (set): Module type IDs belonging to the current vendor.
+
+        Returns:
+            bool: ``True`` if all non-empty endpoints passed the check,
+                ``False`` if any were cleared.
+        """
+        all_ok = True
+        for endpoint_name, entries in list(self.cached_components.items()):
+            if not entries:
+                continue
+            has_valid = any(
+                (parent_type == "device" and parent_id in vendor_dt_ids)
+                or (parent_type == "module" and parent_id in vendor_mt_ids)
+                for (parent_type, parent_id) in entries
+            )
+            if not has_valid:
+                self.handle.log(
+                    f"ERROR: Cached {endpoint_name} contains no records matching the current vendor — "
+                    "clearing to prevent cross-vendor contamination."
+                )
+                self.cached_components[endpoint_name] = {}
+                all_ok = False
+        return all_ok
+
+    def _rest_count_chunked(self, rest_endpoint, filter_key, ids, chunk_size=100):
+        """Return REST count for *ids* using *filter_key*, chunked to avoid URL-length limits.
+
+        Args:
+            rest_endpoint: pynetbox endpoint object (e.g. ``self.netbox.dcim.interface_templates``).
+            filter_key (str): Filter parameter name (e.g. ``"device_type_id"``).
+            ids (list): List of integer IDs to filter by.
+            chunk_size (int): Maximum IDs per REST request.
+
+        Returns:
+            int: Total count across all chunks.
+        """
+        total = 0
+        for i in range(0, len(ids), chunk_size):
+            chunk = ids[i : i + chunk_size]
+            total += rest_endpoint.count(**{filter_key: chunk})
+        return total
+
+    def _check_component_counts_against_rest(self, vendor_dt_ids: set, vendor_mt_ids: set):
+        """Verify that GraphQL-cached component counts match REST API counts for this vendor.
+
+        For each preloaded component endpoint, counts cached records belonging to the
+        current vendor and compares with pynetbox REST counts.  A discrepancy means
+        GraphQL silently truncated the fetch and the import should not proceed.
+
+        Args:
+            vendor_dt_ids: Device type IDs for the current vendor.
+            vendor_mt_ids: Module type IDs for the current vendor.
+
+        Raises:
+            GraphQLCountMismatchError: If any endpoint's cached count differs from REST.
+        """
+        dt_filter_key = device_type_filter_key(self.new_filters)
+        mt_filter_key = module_type_filter_key(self.new_filters)
+        dt_ids = list(vendor_dt_ids)
+        mt_ids = list(vendor_mt_ids)
+
+        for endpoint_name, _label in self._component_preload_targets():
+            if endpoint_name in self.REST_ONLY_ENDPOINTS:
+                # REST-only endpoints are fetched via REST already — comparing REST
+                # count to REST count is tautological and adds no value.
+                continue
+
+            endpoint_cache = self.cached_components.get(endpoint_name, {})
+            cached_count = sum(
+                len(records)
+                for (parent_type, parent_id), records in endpoint_cache.items()
+                if (parent_type == "device" and parent_id in vendor_dt_ids)
+                or (parent_type == "module" and parent_id in vendor_mt_ids)
+            )
+
+            rest_ep = getattr(self.netbox.dcim, endpoint_name)
+            rest_count = 0
+            if dt_ids:
+                rest_count += self._rest_count_chunked(rest_ep, dt_filter_key, dt_ids)
+            if mt_ids and endpoint_name not in self._NO_MODULE_TYPE_ENDPOINTS:
+                rest_count += self._rest_count_chunked(rest_ep, mt_filter_key, mt_ids)
+
+            if cached_count != rest_count:
+                raise GraphQLCountMismatchError(
+                    f"{endpoint_name}: GraphQL returned {cached_count} records "
+                    f"but REST reports {rest_count} — "
+                    "GraphQL may have silently truncated the result set."
+                )
 
     def _get_filter_kwargs(self, parent_id, parent_type="device"):
         """Build endpoint filter keyword arguments for the given parent type and ID.

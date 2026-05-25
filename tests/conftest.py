@@ -4,6 +4,16 @@ from unittest.mock import MagicMock, patch
 
 
 @pytest.fixture(autouse=True)
+def reset_graphql_clamping_warned(mock_env_vars):
+    """Reset the module-level page-size clamping warning dedup set before each test."""
+    import core.graphql_client as _gql
+
+    _gql._CLAMPING_WARNED.clear()
+    yield
+    _gql._CLAMPING_WARNED.clear()
+
+
+@pytest.fixture(autouse=True)
 def mock_env_vars():
     """Set mandatory environment variables to prevent settings.py from exiting."""
     with patch.dict(

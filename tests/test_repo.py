@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import MagicMock, call, mock_open, patch
 from git import exc as git_exc
-from core.repo import DTLRepo, validate_git_url, normalize_port_mappings
+from core.repo import DTLRepo, _safe_pickle_load, validate_git_url, normalize_port_mappings
 
 
 class TestValidateGitUrl:
@@ -346,6 +346,237 @@ class TestGetDevices:
         ):
             files, vendors = repo.get_devices("/base/path")
         assert not any(v["name"] == "testing" for v in vendors)
+
+
+class TestDiscoverVendors:
+    """Tests for DTLRepo.discover_vendors(): vendor discovery across multiple paths with deduplication."""
+
+    def _make_repo(self):
+        mock_args = MagicMock()
+        mock_args.url = "https://github.com/org/repo.git"
+        mock_args.branch = "master"
+        mock_handle = MagicMock()
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("core.repo.Repo") as MockRepo,
+        ):
+            mock_git_repo = MagicMock()
+            mock_git_repo.remotes.origin.url = "https://github.com/org/repo.git"
+            ref = MagicMock()
+            ref.name = "origin/master"
+            mock_git_repo.remotes.origin.refs = [ref]
+            MockRepo.return_value = mock_git_repo
+            repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+        return repo
+
+    def test_discovers_vendors_from_single_path(self):
+        """Test discovery from a single existing path."""
+        repo = self._make_repo()
+
+        def mock_exists(path):
+            return "devices" in path
+
+        with (
+            patch("os.path.exists", side_effect=mock_exists),
+            patch("os.listdir", return_value=["Cisco", "Juniper"]),
+            patch("os.path.isdir", return_value=True),
+        ):
+            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
+        assert len(vendors) == 2
+        assert vendors[0]["name"] == "Cisco"
+        assert vendors[0]["slug"] == "cisco"
+        assert vendors[1]["name"] == "Juniper"
+        assert vendors[1]["slug"] == "juniper"
+
+    def test_discovers_vendors_from_multiple_paths(self):
+        """Test discovery and merging from multiple paths."""
+        repo = self._make_repo()
+
+        def mock_listdir(path):
+            if "devices" in path:
+                return ["Cisco", "Juniper"]
+            elif "modules" in path:
+                return ["Arista", "Cisco"]
+            elif "racks" in path:
+                return ["Dell"]
+            return []
+
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("os.listdir", side_effect=mock_listdir),
+            patch("os.path.isdir", return_value=True),
+        ):
+            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
+
+        assert len(vendors) == 4
+        vendor_names = [v["name"] for v in vendors]
+        assert "Cisco" in vendor_names
+        assert "Juniper" in vendor_names
+        assert "Arista" in vendor_names
+        assert "Dell" in vendor_names
+
+    def test_deduplicates_vendors_across_paths(self):
+        """Test that vendors appearing in multiple paths are deduplicated."""
+        repo = self._make_repo()
+
+        def mock_listdir(path):
+            # Cisco appears in all three paths
+            if "devices" in path:
+                return ["Cisco", "Juniper"]
+            elif "modules" in path:
+                return ["Cisco", "Arista"]
+            elif "racks" in path:
+                return ["Cisco"]
+            return []
+
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("os.listdir", side_effect=mock_listdir),
+            patch("os.path.isdir", return_value=True),
+        ):
+            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
+
+        # Cisco should appear only once despite being in all three paths
+        cisco_vendors = [v for v in vendors if v["slug"] == "cisco"]
+        assert len(cisco_vendors) == 1
+        assert len(vendors) == 3  # Cisco, Juniper, Arista
+
+    def test_skips_testing_folder(self):
+        """Test that 'testing' folder (case-insensitive) is excluded."""
+        repo = self._make_repo()
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("os.listdir", return_value=["Cisco", "testing", "Testing", "TESTING"]),
+            patch("os.path.isdir", return_value=True),
+        ):
+            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
+
+        assert len(vendors) == 1
+        assert vendors[0]["name"] == "Cisco"
+        assert not any(v["name"].lower() == "testing" for v in vendors)
+
+    def test_handles_nonexistent_paths(self):
+        """Test graceful handling of non-existent paths."""
+        repo = self._make_repo()
+
+        def mock_exists(path):
+            return "devices" in path  # Only devices path exists
+
+        def mock_listdir(path):
+            if "devices" in path:
+                return ["Cisco"]
+            return []
+
+        with (
+            patch("os.path.exists", side_effect=mock_exists),
+            patch("os.listdir", side_effect=mock_listdir),
+            patch("os.path.isdir", return_value=True),
+        ):
+            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
+
+        assert len(vendors) == 1
+        assert vendors[0]["name"] == "Cisco"
+
+    def test_handles_all_nonexistent_paths(self):
+        """Test that all non-existent paths returns empty list."""
+        repo = self._make_repo()
+        with patch("os.path.exists", return_value=False):
+            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
+        assert vendors == []
+
+    def test_handles_os_errors_gracefully(self):
+        """Test graceful handling of OS errors when listing directories."""
+        repo = self._make_repo()
+
+        def mock_listdir(path):
+            if "devices" in path:
+                raise OSError("Permission denied")
+            elif "modules" in path:
+                return ["Cisco"]
+            return []
+
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("os.listdir", side_effect=mock_listdir),
+            patch("os.path.isdir", return_value=True),
+        ):
+            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
+
+        assert len(vendors) == 1
+        assert vendors[0]["name"] == "Cisco"
+
+    def test_skips_non_directory_entries(self):
+        """Test that files (non-directories) are skipped."""
+        repo = self._make_repo()
+
+        def mock_isdir(path):
+            # Only Cisco is a directory, README.md is a file
+            return "Cisco" in path
+
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("os.listdir", return_value=["Cisco", "README.md"]),
+            patch("os.path.isdir", side_effect=mock_isdir),
+        ):
+            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
+
+        assert len(vendors) == 1
+        assert vendors[0]["name"] == "Cisco"
+
+    def test_returns_sorted_by_slug(self):
+        """Test that vendors are returned sorted by slug."""
+        repo = self._make_repo()
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("os.listdir", return_value=["Zebra", "Arista", "Cisco", "Dell"]),
+            patch("os.path.isdir", return_value=True),
+        ):
+            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
+
+        slugs = [v["slug"] for v in vendors]
+        assert slugs == sorted(slugs)
+        assert slugs == ["arista", "cisco", "dell", "zebra"]
+
+    def test_uses_slug_format_correctly(self):
+        """Test that slug_format is applied correctly to vendor names."""
+        repo = self._make_repo()
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("os.listdir", return_value=["Extreme Networks", "HPE-Aruba"]),
+            patch("os.path.isdir", return_value=True),
+        ):
+            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
+
+        assert len(vendors) == 2
+        # slug_format lowercases and replaces non-word chars with hyphens
+        assert any(v["slug"] == "extreme-networks" for v in vendors)
+        assert any(v["slug"] == "hpe-aruba" for v in vendors)
+
+    def test_vendor_name_selection_is_deterministic_for_same_slug(self):
+        """Vendor name must be deterministic when multiple folders map to same slug.
+
+        When two folder names produce the same slug, the alphabetically first
+        folder name must always win regardless of os.listdir() iteration order.
+
+        Before the fix, os.listdir() was non-deterministic, so "Nokia" vs "nokia"
+        folders could produce different vendor names across runs.
+        """
+        repo = self._make_repo()
+
+        # Simulate os.listdir returning folders in reverse-alphabetical order
+        def mock_listdir_rev(_path):
+            return ["nokia", "Nokia"]  # lowercase first → would win without sorting
+
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("os.listdir", side_effect=mock_listdir_rev),
+            patch("os.path.isdir", return_value=True),
+        ):
+            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
+
+        # sorted("Nokia", "nokia") → "Nokia" < "nokia" (uppercase sorts first in ASCII)
+        assert len(vendors) == 1
+        assert vendors[0]["name"] == "Nokia"  # alphabetically first
 
 
 class TestParseFilesExtended:
@@ -1055,3 +1286,229 @@ class TestParseFilesDuplicateLogging:
         assert len(repo.duplicate_definitions) == 1
         assert repo.duplicate_definitions[0]["manufacturer"] == "cisco"
         assert repo.duplicate_definitions[0]["model"] == "X"
+
+
+# ---------------------------------------------------------------------------
+# resolve_slug_files
+# ---------------------------------------------------------------------------
+
+
+class TestRestrictedPickleLoading:
+    """Tests for _RestrictedUnpickler and _safe_pickle_load security guards."""
+
+    def test_safe_pickle_load_rejects_global_opcode(self, tmp_path):
+        import pickle
+
+        class Evil:
+            def __reduce__(self):
+                return (len, ([1, 2, 3],))
+
+        path = tmp_path / "evil.pickle"
+        path.write_bytes(pickle.dumps(Evil()))
+
+        with pytest.raises(pickle.UnpicklingError, match="not permitted"):
+            _safe_pickle_load(str(path))
+
+
+class TestResolveSlugFiles:
+    """Tests for the pickle-based slug fast path."""
+
+    def _make_repo(self):
+        mock_args = MagicMock()
+        mock_args.url = "https://github.com/org/repo.git"
+        mock_args.branch = "master"
+        mock_handle = MagicMock()
+        with (
+            patch("os.path.isdir", return_value=True),
+            patch("core.repo.Repo") as MockRepo,
+        ):
+            mock_git_repo = MagicMock()
+            mock_git_repo.remotes.origin.url = "https://github.com/org/repo.git"
+            ref = MagicMock()
+            ref.name = "origin/master"
+            mock_git_repo.remotes.origin.refs = [ref]
+            MockRepo.return_value = mock_git_repo
+            repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+        return repo
+
+    def test_returns_none_when_pickle_missing(self, tmp_path):
+        """Returns None gracefully when the device pickle doesn't exist."""
+        repo = self._make_repo()
+        repo.repo_path = str(tmp_path)
+        repo.cwd = ""
+        result = repo.resolve_slug_files(["nokia-7750-sr-7s"])
+        assert result is None
+
+    def test_returns_device_files_for_matching_slug(self, tmp_path):
+        """Pickle entry matches → file path appears in device_files under correct vendor."""
+        import pickle
+
+        # Build a minimal pickle
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        known = {("nokia-7750-sr-7s", "device-types/Nokia/7750-SR-7s.yaml")}
+        (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(known))
+        # Create an empty module/rack pickle so those code paths don't crash
+        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
+        (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
+
+        repo = self._make_repo()
+        repo.repo_path = str(tmp_path)
+        repo.cwd = ""
+
+        result = repo.resolve_slug_files(["nokia-7750-sr-7s"])
+
+        assert result is not None
+        assert "nokia" in result["device_files"]
+        expected_path = str(tmp_path / "device-types" / "Nokia" / "7750-SR-7s.yaml")
+        assert expected_path in result["device_files"]["nokia"]
+
+    def test_substring_match(self, tmp_path):
+        """Partial slug matches (substring) are found."""
+        import pickle
+
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        known = {
+            ("nokia-7750-sr-7s", "device-types/Nokia/7750-SR-7s.yaml"),
+            ("nokia-7750-sr-12e", "device-types/Nokia/7750-SR-12e.yaml"),
+            ("cisco-catalyst-9200", "device-types/Cisco/Catalyst-9200.yaml"),
+        }
+        (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(known))
+        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
+        (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
+
+        repo = self._make_repo()
+        repo.repo_path = str(tmp_path)
+        repo.cwd = ""
+
+        result = repo.resolve_slug_files(["7750-sr"])
+
+        assert result is not None
+        assert "nokia" in result["device_files"]
+        assert len(result["device_files"]["nokia"]) == 2
+        assert "cisco" not in result["device_files"]
+
+    def test_no_match_returns_empty_dict(self, tmp_path):
+        """No matching slug returns empty device_files (not None)."""
+        import pickle
+
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        known = {("cisco-catalyst-9200", "device-types/Cisco/Catalyst-9200.yaml")}
+        (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(known))
+        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
+        (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
+
+        repo = self._make_repo()
+        repo.repo_path = str(tmp_path)
+        repo.cwd = ""
+
+        result = repo.resolve_slug_files(["nokia-7750-sr-7s"])
+
+        assert result is not None
+        assert result["device_files"] == {}
+        assert result["module_vendors"] == set()
+
+    def test_corrupted_device_pickle_returns_none(self, tmp_path):
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "known-slugs.pickle").write_bytes(b"not-a-pickle")
+
+        repo = self._make_repo()
+        repo.repo_path = str(tmp_path)
+        repo.cwd = ""
+
+        assert repo.resolve_slug_files(["nokia"]) is None
+
+    def test_short_device_relpath_is_skipped(self, tmp_path):
+        import pickle
+
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps({("nokia-7750-sr-7s", "device-types/Nokia.yaml")}))
+        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
+        (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
+
+        repo = self._make_repo()
+        repo.repo_path = str(tmp_path)
+        repo.cwd = ""
+
+        result = repo.resolve_slug_files(["7750-sr"])
+
+        assert result["device_files"] == {}
+
+    def test_corrupted_module_pickle_is_ignored(self, tmp_path):
+        import pickle
+
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(set()))
+        (tests_dir / "known-modules.pickle").write_bytes(b"bad-module-pickle")
+        (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
+
+        repo = self._make_repo()
+        repo.repo_path = str(tmp_path)
+        repo.cwd = ""
+
+        result = repo.resolve_slug_files(["module"])
+
+        assert result["module_vendors"] is None
+
+    def test_matching_module_pickle_adds_vendor_slug(self, tmp_path):
+        import pickle
+
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(set()))
+        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps({("7750 line card", "module-types/Nokia")}))
+        (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
+
+        repo = self._make_repo()
+        repo.repo_path = str(tmp_path)
+        repo.cwd = ""
+
+        result = repo.resolve_slug_files(["7750"])
+
+        assert result["module_vendors"] == {"nokia"}
+
+    def test_corrupted_rack_pickle_is_ignored(self, tmp_path):
+        import pickle
+
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(set()))
+        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
+        (tests_dir / "known-racks.pickle").write_bytes(b"bad-rack-pickle")
+
+        repo = self._make_repo()
+        repo.repo_path = str(tmp_path)
+        repo.cwd = ""
+
+        result = repo.resolve_slug_files(["rack"])
+
+        assert result["rack_vendors"] is None
+
+    def test_rack_pickle_only_uses_rack_type_entries(self, tmp_path):
+        import pickle
+
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(set()))
+        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
+        (tests_dir / "known-racks.pickle").write_bytes(
+            pickle.dumps(
+                {
+                    ("42U Rack", "rack-types/APC"),
+                    ("Not A Rack", "module-types/Nokia"),
+                }
+            )
+        )
+
+        repo = self._make_repo()
+        repo.repo_path = str(tmp_path)
+        repo.cwd = ""
+
+        result = repo.resolve_slug_files(["rack"])
+
+        assert result["rack_vendors"] == {"apc"}

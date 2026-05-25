@@ -104,3 +104,19 @@ def test_render_failure_report_includes_partials_section():
     assert "Nokia/IOM-s-3.0T" in text
     assert "image upload failed but properties applied" in text
     assert "v/no-reason-partial" in text
+
+
+def test_render_failure_report_includes_partial_blockers_and_hint():
+    reg = OutcomeRegistry()
+    reg.record(
+        EntityKind.MODULE_TYPE,
+        "Cisco/LC1",
+        Outcome.PARTIAL,
+        blocking_objects=["front", "rear"],
+        hint="retry module image upload",
+    )
+
+    text = "\n".join(reg.render_failure_report())
+
+    assert "blocked by: front, rear" in text
+    assert "hint: retry module image upload" in text

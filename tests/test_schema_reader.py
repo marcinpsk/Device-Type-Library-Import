@@ -50,6 +50,13 @@ class TestLoadScalarProperties:
         assert "broken_prop" not in result
         assert "also_broken" not in result
 
+    def test_non_object_properties_key_raises_value_error(self, tmp_path):
+        schema_file = tmp_path / "bad-props.json"
+        schema_file.write_text(json.dumps({"properties": []}))
+
+        with pytest.raises(ValueError, match="non-object 'properties'"):
+            load_scalar_properties(str(schema_file))
+
     def test_excludes_named_properties(self, tmp_path):
         schema = {
             "properties": {

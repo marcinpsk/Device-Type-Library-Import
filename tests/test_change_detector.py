@@ -133,6 +133,17 @@ class TestCompareComponents:
         changes = detector._compare_components(yaml_data, 1)
         assert not any(c.component_name == "eth99" for c in changes)
 
+    def test_removal_when_key_absent_with_remove_unmanaged_types(self):
+        """remove_unmanaged_types=True flags removals even when the YAML omits the section entirely."""
+        existing_comp = MagicMock()
+        existing_comp.name = "eth99"
+        dt_instance = MagicMock()
+        dt_instance.cached_components = {"interface_templates": {("device", 1): {"eth99": existing_comp}}}
+        detector = ChangeDetector(dt_instance, MagicMock(), remove_unmanaged_types=True)
+        yaml_data = {}  # 'interfaces' key absent
+        changes = detector._compare_components(yaml_data, 1)
+        assert any(c.component_name == "eth99" and c.change_type == ChangeType.COMPONENT_REMOVED for c in changes)
+
     def test_component_changed_when_property_differs(self):
         existing_comp = MagicMock()
         existing_comp.type = "virtual"
@@ -253,11 +264,23 @@ class TestLogChangeReport:
         handle.args = SimpleNamespace(verbose=verbose)
         return ChangeDetector(dt_instance, handle)
 
-    def test_empty_report_logs_zeros(self):
+    def test_empty_report_logs_nothing(self):
+        """An all-zero report (no new, no modified, no unchanged) should be silent."""
         detector = self._make_detector()
         report = ChangeReport(new_device_types=[], modified_device_types=[], unchanged_count=0)
         detector.log_change_report(report)
-        detector.handle.log.assert_any_call("New device types: 0")
+        detector.handle.log.assert_not_called()
+        detector.handle.verbose_log.assert_not_called()
+
+    def test_unchanged_only_report_logs_verbose(self):
+        """When only unchanged types exist, a brief verbose_log summary is emitted."""
+        detector = self._make_detector()
+        report = ChangeReport(new_device_types=[], modified_device_types=[], unchanged_count=5)
+        detector.log_change_report(report)
+        detector.handle.log.assert_not_called()
+        detector.handle.verbose_log.assert_called_once()
+        msg = detector.handle.verbose_log.call_args[0][0]
+        assert "5 unchanged" in msg
 
     def test_modified_with_removals_always_logged(self):
         detector = self._make_detector(verbose=False)
@@ -489,6 +512,29 @@ class TestCompareComponentPropertiesMappings:
         )
         assert any(c.property_name == "_mappings" for c in changes)
 
+    def test_missing_canonical_mappings_are_treated_as_unmanaged(self):
+        yaml_comp = {
+            "name": "FP1",
+            "_mappings": [{"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 1}],
+        }
+        netbox_comp = self._make_netbox_comp(None)
+
+        changes = self._cd()._compare_component_properties(
+            yaml_comp, netbox_comp, ["_mappings"], comp_type="front-ports"
+        )
+
+        assert changes == []
+
+    def test_missing_component_attribute_is_skipped(self):
+        yaml_comp = {"name": "eth0", "type": "1000base-t"}
+        netbox_comp = SimpleNamespace()
+
+        changes = self._cd()._compare_component_properties(
+            yaml_comp, netbox_comp, ["name", "type"], comp_type="interfaces"
+        )
+
+        assert changes == []
+
     def test_no_mappings_key_in_yaml_skips_comparison(self):
         """When _mappings is absent from YAML, no comparison is done (absent != removal)."""
         yaml_comp = {"name": "FP1", "type": "8p8c"}  # no _mappings key
@@ -587,6 +633,21 @@ class TestLoadDeviceTypePropertiesFallback:
 # ---------------------------------------------------------------------------
 # _MISSING sentinel skip in _compare_device_type_properties (line 246)
 # ---------------------------------------------------------------------------
+
+
+class TestLogChangeReportNoModified:
+    """Tests for log_change_report when there are no modified types."""
+
+    def test_logs_zero_modified_when_only_new_types_exist(self):
+        handle = MagicMock()
+        handle.args.verbose = False
+        detector = ChangeDetector(MagicMock(), handle)
+        report = ChangeReport(new_device_types=[DeviceTypeChange("cisco", "X", "x", is_new=True)])
+
+        detector.log_change_report(report)
+
+        logged = [call.args[0] for call in handle.log.call_args_list]
+        assert "Modified device types: 0" in logged
 
 
 class TestCompareDeviceTypePropertiesMissingAttribute:

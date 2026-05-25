@@ -166,15 +166,20 @@ COMPONENT_TYPES = {
 class ChangeDetector:
     """Detects changes between YAML device types and NetBox cached data."""
 
-    def __init__(self, device_types_instance, handle):
+    def __init__(self, device_types_instance, handle, remove_unmanaged_types: bool = False):
         """Initialize the change detector.
 
         Args:
             device_types_instance: DeviceTypes instance with cached data
             handle: LogHandler for logging
+            remove_unmanaged_types: When True, propose removal of components whose entire
+                YAML section is missing (not just those listed in an empty/partial section).
+                Only honoured when callers also pass ``remove_components=True`` to the
+                applier; this flag controls *detection*, not application.
         """
         self.device_types = device_types_instance
         self.handle = handle
+        self.remove_unmanaged_types = remove_unmanaged_types
 
     def detect_changes(self, device_types: List[dict], progress=None) -> ChangeReport:
         """Analyze all device types and generate a change report.
@@ -333,8 +338,11 @@ class ChangeDetector:
 
             # Check for removed components (exist in NetBox but not in YAML)
             # Only flag removals when the YAML explicitly defines this component type;
-            # a missing key means the YAML doesn't manage this type at all.
-            if yaml_key in yaml_data:
+            # a missing key normally means the YAML doesn't manage this type at all.
+            # When remove_unmanaged_types is True, the missing-key case is treated the
+            # same as an empty list so chassis YAMLs that omit (e.g.) interfaces can
+            # still drive cleanup of stale templates in NetBox.
+            if yaml_key in yaml_data or self.remove_unmanaged_types:
                 for existing_name in existing_components.keys():
                     if existing_name not in yaml_component_names:
                         changes.append(
@@ -571,7 +579,18 @@ class ChangeDetector:
                 self.handle.verbose_log(f"        - {comp.component_type}: {comp.component_name}")
 
     def log_change_report(self, report: ChangeReport):
-        """Log the change report in a clear, readable format."""
+        """Log the change report in a clear, readable format.
+
+        Suppresses the full banner when there are no new or modified types —
+        emits a single verbose-level summary instead to avoid flooding the
+        terminal with empty reports during a multi-vendor run.
+        """
+        has_changes = report.new_device_types or report.modified_device_types
+        if not has_changes:
+            if report.unchanged_count:
+                self.handle.verbose_log(f"No device type changes ({report.unchanged_count} unchanged).")
+            return
+
         self.handle.log("=" * 60)
         self.handle.log("CHANGE DETECTION REPORT")
         self.handle.log("=" * 60)

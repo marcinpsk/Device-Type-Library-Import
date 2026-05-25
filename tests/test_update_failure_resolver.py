@@ -8,6 +8,7 @@ import pytest
 
 from core.update_failure_resolver import (
     FailureKind,
+    _extract_error_payload,
     classify_device_type_update_failure,
 )
 
@@ -192,6 +193,16 @@ def test_classifier_handles_bytes_payload():
         device_type_yaml={},
     )
     assert res.kind == FailureKind.SUBDEVICE_ROLE_FLIP
+
+
+class _BrokenBytes(bytes):
+    def decode(self, *args, **kwargs):
+        raise RuntimeError("decode failed")
+
+
+def test_extract_error_payload_returns_original_bytes_on_decode_failure():
+    payload = _BrokenBytes(b"bad")
+    assert _extract_error_payload(payload) is payload
 
 
 @pytest.mark.parametrize(

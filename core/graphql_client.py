@@ -10,17 +10,22 @@ import time
 
 import requests
 
+# Module-level dedup: tracks (url, requested_page_size) pairs that have already
+# emitted the page-size clamping warning so the message appears at most once
+# even when multiple client instances share the same server.
+_CLAMPING_WARNED: set = set()
+_CLAMPING_WARNED_LOCK = threading.Lock()
+
 
 class GraphQLError(Exception):
     """Raised when a GraphQL query fails (HTTP error or GraphQL-level errors)."""
 
 
 class GraphQLCountMismatchError(GraphQLError):
-    """Raised when the number of records returned by GraphQL does not match the REST count.
+    """Raised when a GraphQL-cached component count differs from the REST API count.
 
-    This indicates a silent truncation in the GraphQL response — e.g. the server
-    returned far fewer records than it reports via the REST API.  The run is aborted
-    to prevent processing an incomplete cache.
+    Indicates that GraphQL silently truncated results, which would lead to
+    incomplete data being imported.  The import should be aborted and retried.
     """
 
 
@@ -176,8 +181,6 @@ class NetBoxGraphQLClient:
         self.token = token
         self.ignore_ssl = ignore_ssl
         self._log_handler = log_handler
-        self._page_size_clamping_warned = False
-        self._page_size_clamping_lock = threading.Lock()
 
         self._session = requests.Session()
         # v2 tokens start with "nbt_" prefix (format: nbt_<key>.<secret>);
@@ -318,9 +321,10 @@ class NetBoxGraphQLClient:
             elif n > 0 and effective_page_size < page_size:
                 # Second page arrived and the first page was smaller than
                 # requested — clamping confirmed.
-                with self._page_size_clamping_lock:
-                    if not self._page_size_clamping_warned:
-                        self._page_size_clamping_warned = True
+                _key = (self.url, page_size)
+                with _CLAMPING_WARNED_LOCK:
+                    if _key not in _CLAMPING_WARNED:
+                        _CLAMPING_WARNED.add(_key)
                         msg = (
                             f"WARNING: NetBox capped the GraphQL page size at "
                             f"{effective_page_size} (requested {page_size}). "
@@ -359,17 +363,61 @@ class NetBoxGraphQLClient:
         items = self.query_all(query, list_key="manufacturer_list")
         return {item["name"]: _to_dotdict(item) for item in items}
 
-    def get_device_types(self):
+    def _build_manufacturer_filter(self, slugs):
+        """Return ``(var_decl, filter_fragment, extra_variables)`` for manufacturer filtering.
+
+        ``var_decl`` is appended to the query's variable list (e.g.
+        ``', $manufacturer_slug: String!'``).  ``filter_fragment`` is placed
+        before the ``pagination`` argument in the list field call.
+        ``extra_variables`` is the dict to pass as ``variables`` to
+        :meth:`query_all`.
+
+        Args:
+            slugs: ``None`` or a non-empty list of manufacturer slug strings.
+
+        Returns:
+            tuple[str, str, dict]
+        """
+        if not slugs:
+            return "", "", {}
+        if not isinstance(slugs, list) or any(not isinstance(s, str) or not s.strip() for s in slugs):
+            raise ValueError("manufacturer_slugs must be None or a non-empty list of non-empty strings")
+        slugs = [s.strip() for s in slugs]
+        if len(slugs) == 1:
+            return (
+                ", $manufacturer_slug: String!",
+                "filters: {manufacturer: {slug: {exact: $manufacturer_slug}}}, ",
+                {"manufacturer_slug": slugs[0]},
+            )
+        return (
+            ", $manufacturer_slugs: [String!]!",
+            "filters: {manufacturer: {slug: {in_list: $manufacturer_slugs}}}, ",
+            {"manufacturer_slugs": slugs},
+        )
+
+    def get_device_types(self, manufacturer_slugs=None):
         """Fetch all device types and return two lookup indexes.
+
+        Args:
+            manufacturer_slugs: Optional list of manufacturer slugs to filter by.
+                When provided, only device types from the specified manufacturers are returned.
 
         Returns:
             tuple[dict, dict]:
                 - ``by_model``: ``{(manufacturer_slug, model): record}``
                 - ``by_slug``: ``{(manufacturer_slug, slug): record}``
+
+        Raises:
+            ValueError: If *manufacturer_slugs* is an empty list.
         """
-        query = """
-        query($pagination: OffsetPaginationInput) {
-          device_type_list(pagination: $pagination) {
+        if manufacturer_slugs is not None and len(manufacturer_slugs) == 0:
+            raise ValueError("manufacturer_slugs must be None or a non-empty list")
+
+        var_decl, filter_fragment, extra_vars = self._build_manufacturer_filter(manufacturer_slugs)
+
+        query = f"""
+        query($pagination: OffsetPaginationInput{var_decl}) {{
+          device_type_list({filter_fragment}pagination: $pagination) {{
             id
             model
             slug
@@ -382,17 +430,18 @@ class NetBoxGraphQLClient:
             weight_unit
             description
             comments
-            front_image { url }
-            rear_image { url }
-            manufacturer {
+            last_updated
+            front_image {{ url }}
+            rear_image {{ url }}
+            manufacturer {{
               id
               name
               slug
-            }
-          }
-        }
+            }}
+          }}
+        }}
         """
-        items = self.query_all(query, list_key="device_type_list")
+        items = self.query_all(query, list_key="device_type_list", variables=extra_vars or None)
 
         by_model = {}
         by_slug = {}
@@ -409,15 +458,27 @@ class NetBoxGraphQLClient:
 
         return by_model, by_slug
 
-    def get_module_types(self):
+    def get_module_types(self, manufacturer_slugs=None):
         """Fetch all module types and return them indexed by manufacturer slug and model.
+
+        Args:
+            manufacturer_slugs: Optional list of manufacturer slugs to filter by.
+                When provided, only module types from the specified manufacturers are returned.
 
         Returns:
             dict: ``{manufacturer_slug: {model: record}}``
+
+        Raises:
+            ValueError: If *manufacturer_slugs* is an empty list.
         """
-        query = """
-        query($pagination: OffsetPaginationInput) {
-          module_type_list(pagination: $pagination) {
+        if manufacturer_slugs is not None and len(manufacturer_slugs) == 0:
+            raise ValueError("manufacturer_slugs must be None or a non-empty list")
+
+        var_decl, filter_fragment, extra_vars = self._build_manufacturer_filter(manufacturer_slugs)
+
+        query = f"""
+        query($pagination: OffsetPaginationInput{var_decl}) {{
+          module_type_list({filter_fragment}pagination: $pagination) {{
             id
             model
             part_number
@@ -426,15 +487,16 @@ class NetBoxGraphQLClient:
             comments
             weight
             weight_unit
-            manufacturer {
+            last_updated
+            manufacturer {{
               id
               name
               slug
-            }
-          }
-        }
+            }}
+          }}
+        }}
         """
-        items = self.query_all(query, list_key="module_type_list")
+        items = self.query_all(query, list_key="module_type_list", variables=extra_vars or None)
 
         result = {}
         for item in items:
@@ -444,15 +506,27 @@ class NetBoxGraphQLClient:
 
         return result
 
-    def get_rack_types(self):
+    def get_rack_types(self, manufacturer_slugs=None):
         """Fetch all rack types and return them indexed by manufacturer slug and model.
+
+        Args:
+            manufacturer_slugs: Optional list of manufacturer slugs to filter by.
+                When provided, only rack types from the specified manufacturers are returned.
 
         Returns:
             dict: ``{manufacturer_slug: {model: record}}``
+
+        Raises:
+            ValueError: If *manufacturer_slugs* is an empty list.
         """
-        query = """
-        query($pagination: OffsetPaginationInput) {
-          rack_type_list(pagination: $pagination) {
+        if manufacturer_slugs is not None and len(manufacturer_slugs) == 0:
+            raise ValueError("manufacturer_slugs must be None or a non-empty list")
+
+        var_decl, filter_fragment, extra_vars = self._build_manufacturer_filter(manufacturer_slugs)
+
+        query = f"""
+        query($pagination: OffsetPaginationInput{var_decl}) {{
+          rack_type_list({filter_fragment}pagination: $pagination) {{
             id
             model
             slug
@@ -471,15 +545,16 @@ class NetBoxGraphQLClient:
             desc_units
             comments
             description
-            manufacturer {
+            last_updated
+            manufacturer {{
               id
               name
               slug
-            }
-          }
-        }
+            }}
+          }}
+        }}
         """
-        items = self.query_all(query, list_key="rack_type_list")
+        items = self.query_all(query, list_key="rack_type_list", variables=extra_vars or None)
         result = {}
         for item in items:
             record = _to_dotdict(item)
@@ -513,7 +588,9 @@ class NetBoxGraphQLClient:
         """
         try:
             items = self.query_all(query, list_key="image_attachment_list")
-        except GraphQLError:
+        except GraphQLError as e:
+            if isinstance(e, GraphQLCountMismatchError):
+                raise
             # Fallback: fetch all attachments and filter in Python
             fallback_query = """
             query($pagination: OffsetPaginationInput) {
@@ -548,11 +625,159 @@ class NetBoxGraphQLClient:
 
         return result
 
-    def get_component_templates(self, endpoint_name, on_page=None):
+    def get_module_type_image_details(self):
+        """Fetch image attachments for module types including attachment IDs and URLs.
+
+        Used by the ``--verify-images`` code path to obtain the information needed to
+        check physical presence, compare content hashes, and delete stale attachments.
+
+        Returns:
+            dict: ``{module_type_id: {attachment_name: {"att_id": id, "url": url}}}``
+        """
+        query = """
+        query($pagination: OffsetPaginationInput) {
+          image_attachment_list(
+            pagination: $pagination,
+            filters: {object_type: {app_label: {exact: "dcim"}, model: {exact: "moduletype"}}}
+          ) {
+            id
+            name
+            object_id
+            image { url }
+          }
+        }
+        """
+        try:
+            items = self.query_all(query, list_key="image_attachment_list")
+        except GraphQLError as e:
+            if isinstance(e, GraphQLCountMismatchError):
+                raise
+            fallback_query = """
+            query($pagination: OffsetPaginationInput) {
+              image_attachment_list(pagination: $pagination) {
+                id
+                name
+                object_id
+                image { url }
+                object_type { app_label model }
+              }
+            }
+            """
+            all_items = self.query_all(fallback_query, list_key="image_attachment_list")
+            items = [
+                i
+                for i in all_items
+                if (i.get("object_type") or {}).get("app_label") == "dcim"
+                and (i.get("object_type") or {}).get("model") == "moduletype"
+            ]
+
+        result = {}
+        for item in items:
+            name = item.get("name")
+            if not name:
+                continue
+            obj_id = item["object_id"]
+            if isinstance(obj_id, str):
+                try:
+                    obj_id = int(obj_id)
+                except ValueError:
+                    continue
+            att_id = item.get("id")
+            if isinstance(att_id, str):
+                try:
+                    att_id = int(att_id)
+                except ValueError:
+                    att_id = None
+            image_field = item.get("image") or {}
+            url = image_field.get("url", "") if isinstance(image_field, dict) else str(image_field or "")
+            result.setdefault(obj_id, {})[name] = {"att_id": att_id, "url": url}
+
+        return result
+
+    @staticmethod
+    def _front_port_field_variants(fields):
+        """Yield successive field-list tiers for the front_port_templates fallback.
+
+        Tier 1: mappings block (NetBox 4.5+)
+        Tier 2: rear_port_position scalar (<4.5)
+        Tier 3: neither (field removed entirely)
+        """
+        yield fields
+        fallback = []
+        for f in fields:
+            if "mappings" in f:
+                fallback.extend(["rear_port_position", "rear_port { id name }"])
+            else:
+                fallback.append(f)
+        yield fallback
+        stripped = [f for f in fallback if f != "rear_port_position" and "rear_port" not in f]
+        if len(stripped) < len(fallback):
+            yield stripped
+
+    def _query_component_endpoint(
+        self, list_key, filter_clause, endpoint_name, fields, parent_fields, on_page, var_decl="", extra_variables=None
+    ):
+        """Query a component template endpoint with fallback logic for front_port_templates.
+
+        Args:
+            list_key: GraphQL list key (e.g., "interface_template_list").
+            filter_clause: GraphQL filter clause string (empty or with trailing comma/space).
+            endpoint_name: Endpoint name for fallback handling.
+            fields: List of field strings.
+            parent_fields: String with device_type/module_type fields.
+            on_page: Optional callable for progress reporting.
+            var_decl: Optional variable declaration string appended to the query signature.
+            extra_variables: Optional dict of extra variables to pass to query_all.
+
+        Returns:
+            list: Raw items (not DotDict-wrapped).
+        """
+
+        def _build_query(field_list):
+            field_block = "\n            ".join(field_list)
+            return f"""
+        query($pagination: OffsetPaginationInput{var_decl}) {{
+          {list_key}({filter_clause}pagination: $pagination) {{
+            {field_block}
+            {parent_fields}
+          }}
+        }}
+        """
+
+        is_front_port_with_mappings = endpoint_name == "front_port_templates" and any("mappings" in f for f in fields)
+        field_variants = list(self._front_port_field_variants(fields)) if is_front_port_with_mappings else [fields]
+
+        # Three-tier fallback for front_port_templates:
+        #   Tier 1: mappings { ... }       (NetBox 4.5+)
+        #   Tier 2: rear_port_position     (<4.5 direct scalar field)
+        #   Tier 3: neither                (future: field removed entirely)
+        original_exc = last_exc = None
+        for variant in field_variants:
+            try:
+                return self.query_all(
+                    _build_query(variant), list_key=list_key, on_page=on_page, variables=extra_variables
+                )
+            except GraphQLError as exc:
+                if isinstance(exc, GraphQLCountMismatchError):
+                    raise
+                last_exc = exc
+                if original_exc is None:
+                    original_exc = exc
+
+        if original_exc is last_exc:
+            raise last_exc
+        raise last_exc from original_exc
+
+    def get_component_templates(self, endpoint_name, manufacturer_slug=None, on_page=None):
         """Fetch component template records for the given endpoint.
 
         Args:
             endpoint_name: Endpoint name as used by DeviceTypes (e.g. ``"interface_templates"``).
+            manufacturer_slug: Optional manufacturer slug to filter by. When provided,
+                fetches templates for both device types and module types from that manufacturer.
+                This is intentionally a single slug (not a list) because component preloading
+                operates one vendor at a time, unlike :meth:`get_device_types` /
+                :meth:`get_module_types` which accept a ``manufacturer_slugs`` list.
             on_page: Optional callable passed to :meth:`query_all` to receive the item
                 count after each page is fetched.
 
@@ -561,71 +786,62 @@ class NetBoxGraphQLClient:
 
         Raises:
             ValueError: If *endpoint_name* is not a recognized component template endpoint.
+            ValueError: If *manufacturer_slug* is an empty string.
         """
         if endpoint_name not in COMPONENT_TEMPLATE_FIELDS or endpoint_name not in ENDPOINT_TO_LIST_KEY:
             raise ValueError(f"Unknown component endpoint: {endpoint_name}")
 
+        if manufacturer_slug is not None and len(manufacturer_slug) == 0:
+            raise ValueError("manufacturer_slug must be None or a non-empty string")
+
         fields = COMPONENT_TEMPLATE_FIELDS[endpoint_name]
         list_key = ENDPOINT_TO_LIST_KEY[endpoint_name]
-        field_block = "\n            ".join(fields)
 
         parent_fields = "device_type { id }"
         if endpoint_name not in _NO_MODULE_TYPE:
             parent_fields += "\n            module_type { id }"
 
-        query = f"""
-        query($pagination: OffsetPaginationInput) {{
-          {list_key}(pagination: $pagination) {{
-            {field_block}
-            {parent_fields}
-          }}
-        }}
-        """
+        if manufacturer_slug is None:
+            # Unfiltered query (original behavior)
+            items = self._query_component_endpoint(
+                list_key=list_key,
+                filter_clause="",
+                endpoint_name=endpoint_name,
+                fields=fields,
+                parent_fields=parent_fields,
+                on_page=on_page,
+            )
+        else:
+            var_decl = ", $manufacturer_slug: String!"
+            extra_vars = {"manufacturer_slug": manufacturer_slug}
+            # Vendor-scoped: query device-type-filtered templates
+            device_filter = "filters: {device_type: {manufacturer: {slug: {exact: $manufacturer_slug}}}}, "
+            device_items = self._query_component_endpoint(
+                list_key=list_key,
+                filter_clause=device_filter,
+                endpoint_name=endpoint_name,
+                fields=fields,
+                parent_fields=parent_fields,
+                on_page=on_page,
+                var_decl=var_decl,
+                extra_variables=extra_vars,
+            )
 
-        try:
-            items = self.query_all(query, list_key=list_key, on_page=on_page)
-        except GraphQLError as original_exc:
-            if endpoint_name == "front_port_templates":
-                # Three-tier fallback for front_port_templates:
-                #   1. Primary:         mappings { ... }       (NetBox 4.5+)
-                #   2. First fallback:  rear_port_position     (<4.5 direct scalar field)
-                #   3. Second fallback: neither                (future: field removed entirely)
-                has_mappings = any("mappings" in f for f in fields)
-                if not has_mappings:
-                    raise
-
-                # First fallback: replace the mappings block with the scalar rear_port_position
-                fallback_fields = ["rear_port_position" if "mappings" in f else f for f in fields]
-                field_block = "\n            ".join(fallback_fields)
-                fallback_query = f"""
-        query($pagination: OffsetPaginationInput) {{
-          {list_key}(pagination: $pagination) {{
-            {field_block}
-            {parent_fields}
-          }}
-        }}
-        """
-                try:
-                    items = self.query_all(fallback_query, list_key=list_key, on_page=on_page)
-                except GraphQLError as fallback_exc:
-                    # Second fallback: strip rear_port_position too
-                    second_fallback_fields = [f for f in fallback_fields if f != "rear_port_position"]
-                    if len(second_fallback_fields) == len(fallback_fields):
-                        # rear_port_position wasn't in fallback_fields — nothing more to try
-                        raise fallback_exc from original_exc
-                    field_block = "\n            ".join(second_fallback_fields)
-                    second_fallback_query = f"""
-        query($pagination: OffsetPaginationInput) {{
-          {list_key}(pagination: $pagination) {{
-            {field_block}
-            {parent_fields}
-          }}
-        }}
-        """
-                    try:
-                        items = self.query_all(second_fallback_query, list_key=list_key, on_page=on_page)
-                    except GraphQLError as second_exc:
-                        raise second_exc from original_exc
+            # If endpoint supports module_type, also query module-type-filtered templates
+            if endpoint_name not in _NO_MODULE_TYPE:
+                module_filter = "filters: {module_type: {manufacturer: {slug: {exact: $manufacturer_slug}}}}, "
+                module_items = self._query_component_endpoint(
+                    list_key=list_key,
+                    filter_clause=module_filter,
+                    endpoint_name=endpoint_name,
+                    fields=fields,
+                    parent_fields=parent_fields,
+                    on_page=on_page,
+                    var_decl=var_decl,
+                    extra_variables=extra_vars,
+                )
+                items = device_items + module_items
             else:
-                raise
+                items = device_items
+
         return [_to_dotdict(item) for item in items]

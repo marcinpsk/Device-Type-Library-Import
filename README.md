@@ -119,7 +119,9 @@ uv run nb-dt-import.py --vendors "Palo Alto" --slugs 440
 | `--only-new` | off | Only create new types, skip all existing ones (mutually exclusive with `--update`) |
 | `--update` | off | Update existing types with changes from the repo (mutually exclusive with `--only-new`) |
 | `--remove-components` | off | Delete components missing from YAML when used with `--update`. **Destructive.** |
+| `--remove-unmanaged-types` | off | Also delete components whose entire YAML section is missing (e.g. NetBox has interfaces but YAML defines none). Requires `--remove-components`. **Aggressive.** |
 | `--force-resolve-conflicts` | off | Automatically resolve NetBox constraint failures during `--update`. **Destructive.** See below. |
+| `--verify-images` | off | Verify images recorded in NetBox are physically present on the server. Uses an HTTP presence check per image and a local SHA-256 cache to detect local file changes (does not hash the remote file). Re-uploads any image that is missing on the server or whose local file has changed. Useful after recreating a devcontainer or updating local image files. **Makes one HTTP request per image.** |
 
 #### Update Mode
 
@@ -162,6 +164,15 @@ no longer present in the YAML definition.
 - Components attached to actual device instances may prevent deletion
 - Review the change detection report before enabling component removal
 - Test on a staging NetBox instance first if possible
+- By default, `--remove-components` only removes components from YAML sections that are
+  *present but no longer list a given component*. If a YAML omits an entire section
+  (for example, a chassis with no `interfaces:` key), pre-existing NetBox interfaces are
+  left untouched. Add `--remove-unmanaged-types` to treat a missing section the same as an
+  empty list and remove every component of that type from NetBox.
+
+```shell
+uv run nb-dt-import.py --update --remove-components --remove-unmanaged-types
+```
 
 #### Conflict Resolution (Use with Caution)
 
@@ -196,7 +207,31 @@ uv run nb-dt-import.py --update --force-resolve-conflicts
 - After converting device types from parent to child (or vice versa)
 - When the script reports constraint failures that block property updates
 
-## Contributing
+#### Image Verification (`--verify-images`)
+
+By default, the script skips uploading images that already have a URL recorded in the NetBox
+database. This means physically missing images (e.g. after recreating a devcontainer) or updated
+local image files are not re-uploaded. Use `--verify-images` to re-check:
+
+```shell
+uv run nb-dt-import.py --vendors nokia --verify-images
+```
+
+**What it does**:
+
+- For each device type / module type whose image is already recorded in NetBox, issues an HTTP
+  GET to verify the file is physically accessible on the server
+- Compares the local file's SHA-256 hash against a persistent local cache (the remote file is
+  **not** downloaded or hashed; a 2xx HTTP response is treated as "present")
+- Re-uploads the image if it is **missing** (server returned a non-2xx response) or
+  **changed** (the local file's hash differs from the cached value recorded at last upload)
+
+**When to use**:
+
+- After recreating a devcontainer or restoring NetBox without its media volume — the database
+  still knows about images, but the files are gone
+- After replacing a local image file with a higher-quality version and wanting NetBox to pick
+  it up
 
 We're happy about any pull requests!
 

@@ -50,7 +50,7 @@
 
 ### Features
 
-- Schema-driven property comparison for device/module types (#64, [`2af54a0`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2af54a09255225f75457d159bbb6c5afbdf0f1e7))
+- `--verify-images`: verify image physical presence and content hash, re-upload if missing or changed
 - Full component comparison for module types with description/color/rf_role coverage (#64, [`2af54a0`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2af54a09255225f75457d159bbb6c5afbdf0f1e7))
 - Validate graphql component fetch counts against rest api (#64, [`2af54a0`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2af54a09255225f75457d159bbb6c5afbdf0f1e7))
 - Graphql count mismatch retry logic, 100% docstring coverage (#64, [`2af54a0`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2af54a09255225f75457d159bbb6c5afbdf0f1e7))
