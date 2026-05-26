@@ -513,7 +513,11 @@ class Exporter:
                 if isinstance(data, dict) and "slug" in data:
                     key = (mfr_slug, data["slug"])
                     if key in result:
-                        raise ValueError(f"Duplicate repo device-type key {key!r}: {seen_files[key]} and {yaml_file}")
+                        self.handle.verbose_log(
+                            f"[yellow]Duplicate repo device-type key {key!r}: "
+                            f"{seen_files[key]} and {yaml_file} — keeping first[/yellow]"
+                        )
+                        continue
                     result[key] = data
                     seen_files[key] = yaml_file
         return result
@@ -535,9 +539,11 @@ class Exporter:
                     if mfr_slug:
                         key = (mfr_slug, data["model"])
                         if key in result:
-                            raise ValueError(
-                                f"Duplicate repo module-type key {key!r}: {seen_files[key]} and {yaml_file}"
+                            self.handle.verbose_log(
+                                f"[yellow]Duplicate repo module-type key {key!r}: "
+                                f"{seen_files[key]} and {yaml_file} — keeping first[/yellow]"
                             )
+                            continue
                         result[key] = data
                         seen_files[key] = yaml_file
         return result
@@ -559,7 +565,11 @@ class Exporter:
                     if mfr_slug:
                         key = (mfr_slug, data["model"])
                         if key in result:
-                            raise ValueError(f"Duplicate repo rack-type key {key!r}: {seen_files[key]} and {yaml_file}")
+                            self.handle.verbose_log(
+                                f"[yellow]Duplicate repo rack-type key {key!r}: "
+                                f"{seen_files[key]} and {yaml_file} — keeping first[/yellow]"
+                            )
+                            continue
                         result[key] = data
                         seen_files[key] = yaml_file
         return result
