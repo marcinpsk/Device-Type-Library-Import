@@ -464,13 +464,23 @@ def test_idempotency() -> None:
         fail(f"Importer (2nd run) exited with code {result.returncode}")
 
     out = result.stdout
-    for pattern, label in [
-        (r"New device types:\s+0", "new device types"),
-        (r"Modified device types:\s+0", "modified device types"),
-    ]:
-        if not re.search(pattern, out):
-            fail(f"Second run: expected 0 {label} but report says otherwise.\n{out}")
-        ok(f"0 {label}")
+
+    # When there are no new/modified types, the importer intentionally
+    # suppresses the "CHANGE DETECTION REPORT" banner (avoids flooding
+    # multi-vendor runs with empty reports). A suppressed banner is therefore
+    # itself proof of idempotency; the per-type zero lines only appear when the
+    # banner is shown. Idempotency is verified against the always-printed
+    # end-of-run summary regardless.
+    if "CHANGE DETECTION REPORT" in out:
+        for pattern, label in [
+            (r"New device types:\s+0", "new device types"),
+            (r"Modified device types:\s+0", "modified device types"),
+        ]:
+            if not re.search(pattern, out):
+                fail(f"Second run: expected 0 {label} but report says otherwise.\n{out}")
+            ok(f"0 {label}")
+    else:
+        ok("change-detection banner suppressed (no device-type changes)")
 
     if "MODULE TYPE CHANGE DETECTION" in out:
         for pattern, label in [
@@ -480,6 +490,17 @@ def test_idempotency() -> None:
             if not re.search(pattern, out):
                 fail(f"Second run: expected 0 {label}.\n{out}")
             ok(f"0 {label}")
+    else:
+        ok("module-type change-detection banner suppressed (no module-type changes)")
+
+    # Always-printed end-of-run summary — the authoritative idempotency check.
+    for pattern, label in [
+        (r"0 device types created", "device types created"),
+        (r"0 device types updated", "device types updated"),
+    ]:
+        if not re.search(pattern, out):
+            fail(f"Second run: expected '{pattern}' but report says otherwise.\n{out}")
+        ok(f"0 {label}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -518,14 +539,16 @@ def test_update_mode() -> None:
         fail(f"eth0 recreated with wrong type: {by_name['eth0']['type']['value']!r}")
     ok("eth0 recreated with correct type '1000base-t'")
 
-    # Verify idempotent after update too
+    # Verify idempotent after update too. As in Scenario G, a no-change run
+    # suppresses the change-detection banner, so assert against the
+    # always-printed end-of-run summary instead.
     result2 = run_importer()
-    if not re.search(r"New device types:\s+0", result2.stdout):
-        fail("After update, third run shows new device types")
-    ok("Post-update run: 0 new device types")
-    if not re.search(r"Modified device types:\s+0", result2.stdout):
-        fail("After update, third run still shows modified device types")
-    ok("Post-update run: 0 modified device types")
+    if not re.search(r"0 device types created", result2.stdout):
+        fail(f"After update, third run shows new device types\n{result2.stdout}")
+    ok("Post-update run: 0 device types created")
+    if not re.search(r"0 device types updated", result2.stdout):
+        fail(f"After update, third run still shows updated device types\n{result2.stdout}")
+    ok("Post-update run: 0 device types updated")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
