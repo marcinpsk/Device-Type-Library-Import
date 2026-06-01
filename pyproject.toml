@@ -70,7 +70,8 @@ fail_under = 96
 [tool.semantic_release]
 version_toml = ["pyproject.toml:project.version"]
 commit_message = "chore(release): v{version}"
-build_command = ""
+build_command = "uv lock"
+assets = ["uv.lock"]
 
 [tool.semantic_release.changelog]
 template_dir = "templates"
