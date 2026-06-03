@@ -55,7 +55,7 @@ max-complexity = 15
 # Measure docstring coverage on first-party source only. The vendored
 # Device-Type-Library lives under repo/, and test functions are exempt from
 # docstrings (mirrors the ruff D102/D103 per-file-ignore for tests/**).
-fail-under = 80
+fail-under = 95
 exclude = ["repo", "tests", "setup.py", "conftest.py"]
 ignore-init-method = true
 ignore-magic = true
@@ -74,6 +74,7 @@ norecursedirs = ["tests/integration"]
 [tool.coverage.run]
 source = ["."]
 omit = ["tests/*", "setup.py", "conftest.py"]
+branch = true
 
 [tool.coverage.report]
 fail_under = 96

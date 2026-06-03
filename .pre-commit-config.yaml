@@ -13,6 +13,13 @@ repos:
         language: system
         types: [python]
         require_serial: true
+      - id: interrogate
+        name: interrogate
+        entry: uv run --native-tls interrogate
+        language: system
+        types: [python]
+        pass_filenames: false
+        always_run: true
       - id: pytest
         name: pytest
         entry: uv run --native-tls pytest --cov --cov-report=term-missing
