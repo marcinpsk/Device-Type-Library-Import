@@ -494,9 +494,11 @@ def test_idempotency() -> None:
         ok("module-type change-detection banner suppressed (no module-type changes)")
 
     # Always-printed end-of-run summary — the authoritative idempotency check.
+    # The (?<!\d) lookbehind anchors the literal zero so "0 device types
+    # created" doesn't spuriously match "10 device types created".
     for pattern, label in [
-        (r"0 device types created", "device types created"),
-        (r"0 device types updated", "device types updated"),
+        (r"(?<!\d)0 device types created", "device types created"),
+        (r"(?<!\d)0 device types updated", "device types updated"),
     ]:
         if not re.search(pattern, out):
             fail(f"Second run: expected '{pattern}' but report says otherwise.\n{out}")
@@ -543,10 +545,10 @@ def test_update_mode() -> None:
     # suppresses the change-detection banner, so assert against the
     # always-printed end-of-run summary instead.
     result2 = run_importer()
-    if not re.search(r"0 device types created", result2.stdout):
+    if not re.search(r"(?<!\d)0 device types created", result2.stdout):
         fail(f"After update, third run shows new device types\n{result2.stdout}")
     ok("Post-update run: 0 device types created")
-    if not re.search(r"0 device types updated", result2.stdout):
+    if not re.search(r"(?<!\d)0 device types updated", result2.stdout):
         fail(f"After update, third run still shows updated device types\n{result2.stdout}")
     ok("Post-update run: 0 device types updated")
 
