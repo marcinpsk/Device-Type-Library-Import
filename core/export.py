@@ -642,6 +642,12 @@ class Exporter:
     def _determine_export_set_for_device_types(
         self, nb_records: list, repo_dt_by_slug: dict, components_by_dt_id: dict
     ) -> List[ExportItem]:
+        """Build the list of device types that need exporting to the repo.
+
+        Includes records absent from the repo, those whose serialized form
+        differs from the repo YAML, and those whose elevation images are
+        missing locally; records the repo already supersedes are skipped.
+        """
         items = []
         for rec in nb_records:
             serialized = serialize_device_type(rec, components_by_dt_id)
@@ -677,6 +683,12 @@ class Exporter:
     def _determine_export_set_for_module_types(
         self, nb_records: list, repo_mt_by_key: dict, components_by_mt_id: dict
     ) -> List[ExportItem]:
+        """Build the list of module types that need exporting to the repo.
+
+        Includes records absent from the repo and those whose serialized form
+        differs from the repo YAML; records the repo already supersedes are
+        skipped.
+        """
         items = []
         for rec in nb_records:
             serialized = serialize_module_type(rec, components_by_mt_id)
@@ -708,6 +720,12 @@ class Exporter:
         return items
 
     def _determine_export_set_for_rack_types(self, nb_records: list, repo_rt_by_key: dict) -> List[ExportItem]:
+        """Build the list of rack types that need exporting to the repo.
+
+        Includes records absent from the repo and those whose serialized form
+        differs from the repo YAML; records the repo already supersedes are
+        skipped.
+        """
         items = []
         for rec in nb_records:
             serialized = serialize_rack_type(rec)
@@ -784,6 +802,12 @@ class Exporter:
         return True  # rack types have no images
 
     def _download_device_type_images(self, item: ExportItem) -> bool:
+        """Download the front/rear elevation images for a device type.
+
+        Saves each available image under ``elevation-images/<Vendor>/`` and
+        returns True only if every image present on the record downloaded
+        successfully.
+        """
         img_dir = self.export_dir / "elevation-images" / item.mfr_name
         ok = True
         for suffix, url_path in (

@@ -21,6 +21,7 @@ class _RestrictedUnpickler(pickle.Unpickler):
     """
 
     def find_class(self, module, name):
+        """Reject any class lookup — DTL pickles must hold only string tuples."""
         raise pickle.UnpicklingError(
             f"DTL pickle safety: loading class '{module}.{name}' is not permitted. "
             "The known-*.pickle files must contain only sets of string tuples."
