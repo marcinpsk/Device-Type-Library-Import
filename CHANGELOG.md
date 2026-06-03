@@ -2,6 +2,35 @@
 
 <!-- version list -->
 
+## v1.6.2 (2026-06-03)
+
+### Bug Fixes
+
+- Integration idempotency suppressed banner (#83, [`95ec314`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/95ec314207c616a51c2ef7fe3615fc83559c8d2f))
+
+
+### Chores
+
+- **ci**: Bump docker/setup-qemu-action in the github-actions group (#82, [`5dc5aa9`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/5dc5aa9571ba50fdfde7fa228d4ce5acdf0b4d38))
+
+
+### Continuous Integration
+
+- Regenerate uv.lock on release and backfill to 1.6.1 (#83, [`95ec314`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/95ec314207c616a51c2ef7fe3615fc83559c8d2f))
+- Enforce docstring coverage and enable branch coverage (#83, [`95ec314`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/95ec314207c616a51c2ef7fe3615fc83559c8d2f))
+
+
+### Testing
+
+- Assert idempotency via end-of-run summary, not suppressed banner (#83, [`95ec314`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/95ec314207c616a51c2ef7fe3615fc83559c8d2f))
+- Anchor idempotency zero-count regexes; enforce docstring coverage (#83, [`95ec314`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/95ec314207c616a51c2ef7fe3615fc83559c8d2f))
+
+
+
+### Contributors
+
+@dependabot[bot], @marcinpsk
+
 ## v1.6.1 (2026-05-27)
 
 ### Bug Fixes
