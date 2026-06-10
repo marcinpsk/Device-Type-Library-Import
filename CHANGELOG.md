@@ -2,6 +2,25 @@
 
 <!-- version list -->
 
+## v1.7.0 (2026-06-10)
+
+### Chores
+
+- **deps**: Bump ruff from 0.15.15 to 0.15.16 in the python-deps group (#86, [`a266408`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/a266408194d1d20cfc796d5367d09bca1afbdcce))
+- **ci**: Bump the github-actions group with 2 updates (#85, [`efb0103`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/efb010384afd9fe46dc3f3f681f74dd7b1e3b3e7))
+- **deps**: Bump ruff from 0.15.14 to 0.15.15 in the python-deps group (#84, [`a615d5b`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/a615d5b9d2b291731c7f18b61d2b5e7aef2b2e83))
+
+
+### Features
+
+- Read dtl json slug indexes, keep pickle fallback (#87, [`5bece85`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/5bece857cad8460a2198d751be9a463e76be5a7b))
+
+
+
+### Contributors
+
+@dependabot[bot], @marcinpsk
+
 ## v1.6.2 (2026-06-03)
 
 ### Bug Fixes
