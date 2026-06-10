@@ -1,5 +1,6 @@
 """Git repository helpers for cloning, updating, and parsing the device-type library."""
 
+import json
 import os
 import pickle
 from glob import glob
@@ -28,22 +29,39 @@ class _RestrictedUnpickler(pickle.Unpickler):
         )
 
 
-_PICKLE_MAX_BYTES = 10 * 1024 * 1024  # 10 MiB — DTL pickles are typically <500 KiB
+_INDEX_MAX_BYTES = 10 * 1024 * 1024  # 10 MiB — DTL index files are typically <1 MiB
 
 
-def _vendor_slugs_from_pickle(
-    pickle_path: str, slugs_lower: list, slug_format, subdir_filter: "Optional[str]" = None
+def _resolve_index_path(base_dir: str, stem: str) -> "Optional[str]":
+    """Return the path to a DTL index file, preferring the JSON form over the legacy pickle.
+
+    Upstream DTL replaced ``tests/known-*.pickle`` with ``tests/known-*.json`` (GHSA-492p-5wp7-2w7c).
+    We prefer ``<stem>.json`` when present and fall back to ``<stem>.pickle`` so users pinned to an
+    older DTL checkout still get the slug fast path.  Returns ``None`` when neither exists.
+    """
+    json_path = os.path.join(base_dir, stem + ".json")
+    if os.path.exists(json_path):
+        return json_path
+    pickle_path = os.path.join(base_dir, stem + ".pickle")
+    if os.path.exists(pickle_path):
+        return pickle_path
+    return None
+
+
+def _vendor_slugs_from_index(
+    index_path: "Optional[str]", slugs_lower: list, slug_format, subdir_filter: "Optional[str]" = None
 ) -> "Optional[set]":
-    """Load a (model_name, vendor_dir) pickle and return the set of vendor slugs matching *slugs_lower*.
+    """Load a (model_name, vendor_dir) index and return the set of vendor slugs matching *slugs_lower*.
 
-    *subdir_filter*, if given, requires the vendor_dir to contain that substring.
-    Returns ``None`` when the pickle is unavailable (missing or unreadable), so callers
+    *index_path* may point at a ``.json`` (current) or ``.pickle`` (legacy) file; the loader is
+    chosen by extension.  *subdir_filter*, if given, requires the vendor_dir to contain that
+    substring.  Returns ``None`` when the index is unavailable (missing or unreadable), so callers
     can distinguish "no matches" (empty set) from "hint unavailable" (None).
     """
-    if not os.path.exists(pickle_path):
+    if index_path is None:
         return None
     try:
-        entries = _safe_pickle_load(pickle_path)
+        entries = _safe_index_load(index_path)
     except Exception:
         return None
     result = set()
@@ -63,30 +81,65 @@ def _safe_abs_path(repo_root: str, relpath: str) -> "Optional[str]":
     return abs_path if abs_path.startswith(os.path.normpath(repo_root) + os.sep) else None
 
 
-def _safe_pickle_load(path: str):
-    """Load a DTL upstream pickle using the restricted unpickler.
+def _validate_index_data(data, source: str):
+    """Validate that *data* is a set/list of (str, str) 2-element pairs.
 
-    Enforces a hard size cap before unpickling and validates the loaded object
-    is a set/list of (str, str) 2-tuples so malformed/oversized pickles cannot
-    cause resource exhaustion.  Returns the loaded set on success or raises
-    ``ValueError`` on shape violations (callers should catch and fall back).
+    Shared by the JSON and pickle loaders.  JSON arrays decode to lists rather than tuples, so
+    both container shapes are accepted.  Raises ``ValueError`` on any shape violation (callers
+    should catch and fall back to the normal glob path).
     """
-    size = os.path.getsize(path)
-    if size > _PICKLE_MAX_BYTES:
-        raise ValueError(f"Pickle file {path!r} is {size} bytes (limit {_PICKLE_MAX_BYTES}); refusing to load.")
-    with open(path, "rb") as fh:
-        data = _RestrictedUnpickler(fh).load()
     if not isinstance(data, (set, list, frozenset)):
-        raise ValueError(f"Unexpected pickle root type {type(data).__name__!r}; expected set/list.")
+        raise ValueError(f"Unexpected {source} root type {type(data).__name__!r}; expected set/list.")
     for item in data:
         if (
-            not isinstance(item, tuple)
+            not isinstance(item, (tuple, list))
             or len(item) != 2
             or not isinstance(item[0], str)
             or not isinstance(item[1], str)
         ):
-            raise ValueError(f"Unexpected item shape in pickle: {item!r}")
+            raise ValueError(f"Unexpected item shape in {source}: {item!r}")
     return data
+
+
+def _check_index_size(path: str):
+    """Enforce the hard size cap before reading an index file, guarding against resource exhaustion."""
+    size = os.path.getsize(path)
+    if size > _INDEX_MAX_BYTES:
+        raise ValueError(f"Index file {path!r} is {size} bytes (limit {_INDEX_MAX_BYTES}); refusing to load.")
+
+
+def _safe_json_load(path: str):
+    """Load a DTL upstream ``known-*.json`` index file.
+
+    The current DTL format is a JSON array of ``[str, str]`` pairs.  Enforces a hard size cap and
+    validates the decoded shape.  JSON carries no code-execution risk, so no restricted loader is
+    needed.  Returns the loaded list on success or raises ``ValueError`` on shape violations.
+    """
+    _check_index_size(path)
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+    return _validate_index_data(data, "JSON index")
+
+
+def _safe_pickle_load(path: str):
+    """Load a legacy DTL ``known-*.pickle`` index using the restricted unpickler.
+
+    Enforces a hard size cap before unpickling and validates the loaded object is a set/list of
+    (str, str) 2-tuples so malformed/oversized pickles cannot cause resource exhaustion.  Returns
+    the loaded set on success or raises ``ValueError`` on shape violations (callers should catch
+    and fall back).
+    """
+    _check_index_size(path)
+    with open(path, "rb") as fh:
+        data = _RestrictedUnpickler(fh).load()
+    return _validate_index_data(data, "pickle")
+
+
+def _safe_index_load(path: str):
+    """Load a DTL slug index, dispatching on file extension (``.json`` current, ``.pickle`` legacy)."""
+    if path.endswith(".json"):
+        return _safe_json_load(path)
+    return _safe_pickle_load(path)
 
 
 def validate_git_url(url):
@@ -484,16 +537,18 @@ class DTLRepo:
         return files, discovered_vendors
 
     def resolve_slug_files(self, slugs):
-        """Use the upstream pickle indexes to resolve YAML file paths for slug/model matches.
+        """Use the upstream slug indexes to resolve YAML file paths for slug/model matches.
 
-        The DTL repo ships three pickle files under ``tests/``:
+        The DTL repo ships three index files under ``tests/``.  Upstream replaced the original
+        ``known-*.pickle`` files with ``known-*.json`` (GHSA-492p-5wp7-2w7c); both carry the same
+        data shape, and we prefer JSON, falling back to pickle for older pinned checkouts:
 
-        * ``known-slugs.pickle`` — set of ``(manufacturer_prefixed_slug, relpath)`` for
+        * ``known-slugs.json`` — list of ``(manufacturer_prefixed_slug, relpath)`` for
           device types.  ``relpath`` is relative to the repo root, e.g.
           ``device-types/Nokia/7750-SR-7s.yaml``.
-        * ``known-modules.pickle`` — set of ``(model_name, vendor_dir)`` for module
+        * ``known-modules.json`` — list of ``(model_name, vendor_dir)`` for module
           types.  Only the vendor directory is stored, not the file name.
-        * ``known-racks.pickle``  — same format as known-modules.
+        * ``known-racks.json``  — same format as known-modules.
 
         Matching uses a **case-insensitive substring** check identical to the runtime
         :meth:`parse_files` filter so that partial slug/model searches work the same way.
@@ -502,24 +557,25 @@ class DTLRepo:
             slugs (list[str]): User-supplied slug/model substrings (``--slugs``).
 
         Returns:
-            dict or None: ``None`` when the device pickle is unavailable (caller falls back
+            dict or None: ``None`` when the device index is unavailable (caller falls back
             to the normal glob path).  Otherwise a dict with the keys:
 
             ``"device_files"``
-                ``{vendor_slug: [abs_path, ...]}`` for devices resolved via pickle.
+                ``{vendor_slug: [abs_path, ...]}`` for devices resolved via the index.
             ``"module_vendors"``
                 ``{vendor_slug}`` — set of vendor slugs that may contain matching module
-                types, or ``None`` when the module pickle was unavailable (caller should
+                types, or ``None`` when the module index was unavailable (caller should
                 fall back to full glob+parse instead of skipping).
             ``"rack_vendors"``
                 ``{vendor_slug}`` — same for rack types; ``None`` means unavailable.
         """
         repo_root = self.get_absolute_path()
-        device_pickle = os.path.join(repo_root, "tests", "known-slugs.pickle")
-        module_pickle = os.path.join(repo_root, "tests", "known-modules.pickle")
-        rack_pickle = os.path.join(repo_root, "tests", "known-racks.pickle")
+        tests_dir = os.path.join(repo_root, "tests")
+        device_index = _resolve_index_path(tests_dir, "known-slugs")
+        module_index = _resolve_index_path(tests_dir, "known-modules")
+        rack_index = _resolve_index_path(tests_dir, "known-racks")
 
-        if not os.path.exists(device_pickle):
+        if device_index is None:
             return None
 
         slugs_lower = [s.casefold() for s in slugs]
@@ -527,7 +583,7 @@ class DTLRepo:
         # --- device types --------------------------------------------------
         device_files = {}  # vendor_slug -> [abs_path]
         try:
-            known_slugs = _safe_pickle_load(device_pickle)
+            known_slugs = _safe_index_load(device_index)
         except Exception:
             return None
 
@@ -545,10 +601,10 @@ class DTLRepo:
             device_files.setdefault(vendor_slug, []).append(abs_path)
 
         # --- module types --------------------------------------------------
-        module_vendors = _vendor_slugs_from_pickle(module_pickle, slugs_lower, self.slug_format)
+        module_vendors = _vendor_slugs_from_index(module_index, slugs_lower, self.slug_format)
 
         # --- rack types ----------------------------------------------------
-        rack_vendors = _vendor_slugs_from_pickle(rack_pickle, slugs_lower, self.slug_format, subdir_filter="rack-types")
+        rack_vendors = _vendor_slugs_from_index(rack_index, slugs_lower, self.slug_format, subdir_filter="rack-types")
 
         return {
             "device_files": device_files,

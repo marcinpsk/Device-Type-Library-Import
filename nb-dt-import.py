@@ -854,20 +854,20 @@ def _validate_argument_combinations(parser, args):
 
 
 def _apply_slug_fast_path(dtl_repo, args, vendors_to_process, handle):
-    """Use upstream pickle indexes to pre-resolve files and narrow the vendor list.
+    """Use upstream slug indexes to pre-resolve files and narrow the vendor list.
 
-    When ``args.slugs`` is set and the DTL pickle files are present, resolves
-    exactly which device-type files match the requested slugs and restricts
-    ``vendors_to_process`` to only those vendors.  Returns a ``(vendors, resolved)``
-    pair where *resolved* is the dict returned by :meth:`DTLRepo.resolve_slug_files`
-    (or ``None`` when the pickle is absent/unavailable).
+    When ``args.slugs`` is set and the DTL index files (``known-*.json``, or legacy
+    ``known-*.pickle``) are present, resolves exactly which device-type files match the
+    requested slugs and restricts ``vendors_to_process`` to only those vendors.  Returns a
+    ``(vendors, resolved)`` pair where *resolved* is the dict returned by
+    :meth:`DTLRepo.resolve_slug_files` (or ``None`` when the index is absent/unavailable).
     """
     if not args.slugs:
         return vendors_to_process, None
 
     slug_resolved = dtl_repo.resolve_slug_files(args.slugs)
     if slug_resolved is None:
-        handle.verbose_log("Slug pickle unavailable; falling back to full file scan.")
+        handle.verbose_log("Slug index unavailable; falling back to full file scan.")
         return vendors_to_process, None
 
     matched_vendor_slugs = (
@@ -876,11 +876,11 @@ def _apply_slug_fast_path(dtl_repo, args, vendors_to_process, handle):
         | (slug_resolved["rack_vendors"] or set())
     )
     if not matched_vendor_slugs:
-        handle.verbose_log("Slug pickle returned no matches; falling back to full file scan.")
+        handle.verbose_log("Slug index returned no matches; falling back to full file scan.")
         return vendors_to_process, None
     narrowed = [v for v in vendors_to_process if v["slug"] in matched_vendor_slugs]
     handle.verbose_log(
-        f"Slug pickle resolved {sum(len(f) for f in slug_resolved['device_files'].values())} "
+        f"Slug index resolved {sum(len(f) for f in slug_resolved['device_files'].values())} "
         f"device file(s) across {len(matched_vendor_slugs)} vendor(s)."
     )
     return narrowed, slug_resolved

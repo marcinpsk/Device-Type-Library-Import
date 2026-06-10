@@ -1,7 +1,15 @@
 import pytest
 from unittest.mock import MagicMock, call, mock_open, patch
 from git import exc as git_exc
-from core.repo import DTLRepo, _safe_pickle_load, validate_git_url, normalize_port_mappings
+from core.repo import (
+    DTLRepo,
+    _resolve_index_path,
+    _safe_index_load,
+    _safe_json_load,
+    _safe_pickle_load,
+    validate_git_url,
+    normalize_port_mappings,
+)
 
 
 class TestValidateGitUrl:
@@ -1512,3 +1520,118 @@ class TestResolveSlugFiles:
         result = repo.resolve_slug_files(["rack"])
 
         assert result["rack_vendors"] == {"apc"}
+
+
+class TestIndexLoaders:
+    """Tests for the format-dispatching index loaders and path resolver."""
+
+    def test_resolve_prefers_json_over_pickle(self, tmp_path):
+        (tmp_path / "known-slugs.json").write_text("[]")
+        (tmp_path / "known-slugs.pickle").write_bytes(b"x")
+        assert _resolve_index_path(str(tmp_path), "known-slugs").endswith("known-slugs.json")
+
+    def test_resolve_falls_back_to_pickle(self, tmp_path):
+        (tmp_path / "known-slugs.pickle").write_bytes(b"x")
+        assert _resolve_index_path(str(tmp_path), "known-slugs").endswith("known-slugs.pickle")
+
+    def test_resolve_returns_none_when_absent(self, tmp_path):
+        assert _resolve_index_path(str(tmp_path), "known-slugs") is None
+
+    def test_safe_json_load_reads_pairs(self, tmp_path):
+        path = tmp_path / "known-slugs.json"
+        path.write_text('[["nokia-7750", "device-types/Nokia/7750.yaml"]]')
+        data = _safe_json_load(str(path))
+        assert data == [["nokia-7750", "device-types/Nokia/7750.yaml"]]
+
+    def test_safe_json_load_rejects_bad_shape(self, tmp_path):
+        path = tmp_path / "known-slugs.json"
+        path.write_text('[["only-one-element"]]')
+        with pytest.raises(ValueError, match="Unexpected item shape"):
+            _safe_json_load(str(path))
+
+    def test_safe_index_load_dispatches_on_extension(self, tmp_path):
+        import pickle
+
+        json_path = tmp_path / "a.json"
+        json_path.write_text('[["x", "y"]]')
+        pickle_path = tmp_path / "a.pickle"
+        pickle_path.write_bytes(pickle.dumps({("p", "q")}))
+        assert _safe_index_load(str(json_path)) == [["x", "y"]]
+        assert _safe_index_load(str(pickle_path)) == {("p", "q")}
+
+
+class TestResolveSlugFilesJson:
+    """Tests for the JSON slug fast path (current upstream format)."""
+
+    def _make_repo(self):
+        return TestResolveSlugFiles._make_repo(self)
+
+    def _write_json(self, tests_dir, stem, entries):
+        import json
+
+        (tests_dir / f"{stem}.json").write_text(json.dumps([list(e) for e in entries]))
+
+    def test_returns_device_files_for_matching_slug(self, tmp_path):
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        self._write_json(tests_dir, "known-slugs", [("nokia-7750-sr-7s", "device-types/Nokia/7750-SR-7s.yaml")])
+        self._write_json(tests_dir, "known-modules", [])
+        self._write_json(tests_dir, "known-racks", [])
+
+        repo = self._make_repo()
+        repo.repo_path = str(tmp_path)
+        repo.cwd = ""
+
+        result = repo.resolve_slug_files(["nokia-7750-sr-7s"])
+
+        assert result is not None
+        expected_path = str(tmp_path / "device-types" / "Nokia" / "7750-SR-7s.yaml")
+        assert expected_path in result["device_files"]["nokia"]
+
+    def test_matching_module_json_adds_vendor_slug(self, tmp_path):
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        self._write_json(tests_dir, "known-slugs", [])
+        self._write_json(tests_dir, "known-modules", [("7750 line card", "module-types/Nokia")])
+        self._write_json(tests_dir, "known-racks", [])
+
+        repo = self._make_repo()
+        repo.repo_path = str(tmp_path)
+        repo.cwd = ""
+
+        result = repo.resolve_slug_files(["7750"])
+
+        assert result["module_vendors"] == {"nokia"}
+
+    def test_json_preferred_over_pickle(self, tmp_path):
+        """When both formats exist, JSON wins — pickle here would yield a different match."""
+        import pickle
+
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        self._write_json(tests_dir, "known-slugs", [("nokia-7750-sr-7s", "device-types/Nokia/7750-SR-7s.yaml")])
+        (tests_dir / "known-slugs.pickle").write_bytes(
+            pickle.dumps({("cisco-catalyst-9200", "device-types/Cisco/Catalyst-9200.yaml")})
+        )
+        self._write_json(tests_dir, "known-modules", [])
+        self._write_json(tests_dir, "known-racks", [])
+
+        repo = self._make_repo()
+        repo.repo_path = str(tmp_path)
+        repo.cwd = ""
+
+        result = repo.resolve_slug_files(["nokia"])
+
+        assert "nokia" in result["device_files"]
+        assert "cisco" not in result["device_files"]
+
+    def test_corrupted_device_json_returns_none(self, tmp_path):
+        tests_dir = tmp_path / "tests"
+        tests_dir.mkdir()
+        (tests_dir / "known-slugs.json").write_text("{not valid json")
+
+        repo = self._make_repo()
+        repo.repo_path = str(tmp_path)
+        repo.cwd = ""
+
+        assert repo.resolve_slug_files(["nokia"]) is None
