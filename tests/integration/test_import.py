@@ -61,21 +61,22 @@ import sys
 from pathlib import Path
 from typing import Any, NoReturn
 
+import pytest
 import requests
 import urllib3
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
-
-# Import after sys.path manipulation so local modules resolve correctly.
-from core.change_detector import DEVICE_TYPE_PROPERTIES  # noqa: E402
-from core.graphql_client import (  # noqa: E402
+from core.change_detector import DEVICE_TYPE_PROPERTIES
+from core.graphql_client import (
     COMPONENT_TEMPLATE_FIELDS,
     NetBoxGraphQLClient,
     _NO_MODULE_TYPE,
 )
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+pytestmark = pytest.mark.integration
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 NETBOX_URL = (os.environ.get("NETBOX_URL") or "").rstrip("/") or None
 NETBOX_TOKEN = os.environ.get("NETBOX_TOKEN")
@@ -95,8 +96,7 @@ session.verify = not IGNORE_SSL
 
 def fail(msg: str) -> NoReturn:
     """Record a failure and exit immediately."""
-    print(f"\n  ✗ FAIL: {msg}", file=sys.stderr)
-    sys.exit(1)
+    pytest.fail(msg)
 
 
 def ok(msg: str) -> None:
