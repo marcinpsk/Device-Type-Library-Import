@@ -70,6 +70,9 @@ testpaths = [
   "tests"
 ]
 norecursedirs = ["tests/integration"]
+markers = [
+  "integration: end-to-end tests that require a live NetBox instance (set NETBOX_URL + NETBOX_TOKEN)",
+]
 
 [tool.coverage.run]
 source = ["."]
