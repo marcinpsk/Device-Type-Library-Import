@@ -156,7 +156,7 @@ jobs:
           NETBOX_TOKEN: ${{ env.NETBOX_TOKEN }}
           REPO_URL: file:///tmp/test-fixtures
           REPO_BRANCH: main
-        run: uv run python tests/integration/test_import.py
+        run: uv run pytest tests/integration/ -m integration -x -v --timeout=600
 
       - name: Print NetBox version on failure
         if: failure()
