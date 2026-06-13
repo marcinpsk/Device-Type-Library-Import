@@ -4,8 +4,11 @@ from unittest.mock import MagicMock, patch
 
 
 @pytest.fixture(autouse=True)
-def reset_graphql_clamping_warned(mock_env_vars):
+def reset_graphql_clamping_warned(mock_env_vars, request):
     """Reset the module-level page-size clamping warning dedup set before each test."""
+    if request.node.get_closest_marker("integration"):
+        yield
+        return
     import core.graphql_client as _gql
 
     _gql._CLAMPING_WARNED.clear()
@@ -14,8 +17,11 @@ def reset_graphql_clamping_warned(mock_env_vars):
 
 
 @pytest.fixture(autouse=True)
-def mock_env_vars():
+def mock_env_vars(request):
     """Set mandatory environment variables to prevent settings.py from exiting."""
+    if request.node.get_closest_marker("integration"):
+        yield
+        return
     with patch.dict(
         os.environ,
         {
@@ -31,8 +37,11 @@ def mock_env_vars():
 
 
 @pytest.fixture(autouse=True)
-def mock_git_repo():
+def mock_git_repo(request):
     """Mock git.Repo to prevent actual git operations during settings import."""
+    if request.node.get_closest_marker("integration"):
+        yield None
+        return
     with patch("core.repo.Repo") as mock_repo:
         mock_remote = MagicMock()
         mock_remote.url = "https://example.com/repo.git"
@@ -49,13 +58,16 @@ def mock_pynetbox():
 
 
 @pytest.fixture(autouse=True)
-def mock_graphql_requests():
+def mock_graphql_requests(request):
     """Mock the HTTP session used by NetBoxGraphQLClient to prevent real calls.
 
     Patches ``requests.Session`` in ``core.graphql_client`` so any client created
     during a test uses a mock session.  Returns empty lists for all GraphQL
     list queries by default.
     """
+    if request.node.get_closest_marker("integration"):
+        yield None
+        return
     with patch("core.graphql_client.requests.Session") as MockSession:
         mock_session = MockSession.return_value
         response = MagicMock()
