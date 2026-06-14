@@ -308,114 +308,93 @@ class TestCloneRepo:
 class TestGetDevices:
     """Tests for DTLRepo.get_devices(): vendor filtering, YAML file discovery, and testing folder exclusion."""
 
-    def _make_repo(self):
+    def _make_repo(self, tmp_path):
+        (tmp_path / "repo").mkdir()
         mock_args = MagicMock()
         mock_args.url = "https://github.com/org/repo.git"
         mock_args.branch = "master"
         mock_handle = MagicMock()
-        with (
-            patch("os.path.isdir", return_value=True),
-            patch("core.repo.Repo") as MockRepo,
-        ):
+        with patch("core.repo.Repo") as MockRepo:
             mock_git_repo = MagicMock()
             mock_git_repo.remotes.origin.url = "https://github.com/org/repo.git"
             ref = MagicMock()
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            repo = DTLRepo(mock_args, str(tmp_path / "repo"), mock_handle)
         return repo
 
-    def test_get_devices_all_vendors(self):
-        repo = self._make_repo()
-        with (
-            patch("os.listdir", return_value=["Cisco", "Juniper"]),
-            patch("core.repo.glob", return_value=[]),
-        ):
-            files, vendors = repo.get_devices("/base/path")
+    def test_get_devices_all_vendors(self, tmp_path):
+        repo = self._make_repo(tmp_path)
+        devices = tmp_path / "devices"
+        devices.mkdir()
+        (devices / "Cisco").mkdir()
+        (devices / "Juniper").mkdir()
+        files, vendors = repo.get_devices(str(devices))
         assert len(vendors) == 2
         assert any(v["name"] == "Cisco" for v in vendors)
 
-    def test_get_devices_filters_vendors(self):
-        repo = self._make_repo()
-        with (
-            patch("os.listdir", return_value=["Cisco", "Juniper"]),
-            patch("core.repo.glob", return_value=[]),
-        ):
-            files, vendors = repo.get_devices("/base/path", vendors=["cisco"])
+    def test_get_devices_filters_vendors(self, tmp_path):
+        repo = self._make_repo(tmp_path)
+        devices = tmp_path / "devices"
+        devices.mkdir()
+        (devices / "Cisco").mkdir()
+        (devices / "Juniper").mkdir()
+        files, vendors = repo.get_devices(str(devices), vendors=["cisco"])
         assert len(vendors) == 1
         assert vendors[0]["name"] == "Cisco"
 
-    def test_get_devices_skips_testing_folder(self):
-        repo = self._make_repo()
-        with (
-            patch("os.listdir", return_value=["Cisco", "testing"]),
-            patch("core.repo.glob", return_value=[]),
-        ):
-            files, vendors = repo.get_devices("/base/path")
+    def test_get_devices_skips_testing_folder(self, tmp_path):
+        repo = self._make_repo(tmp_path)
+        devices = tmp_path / "devices"
+        devices.mkdir()
+        (devices / "Cisco").mkdir()
+        (devices / "testing").mkdir()
+        files, vendors = repo.get_devices(str(devices))
         assert not any(v["name"] == "testing" for v in vendors)
 
 
 class TestDiscoverVendors:
     """Tests for DTLRepo.discover_vendors(): vendor discovery across multiple paths with deduplication."""
 
-    def _make_repo(self):
+    def _make_repo(self, tmp_path):
+        (tmp_path / "repo").mkdir()
         mock_args = MagicMock()
         mock_args.url = "https://github.com/org/repo.git"
         mock_args.branch = "master"
         mock_handle = MagicMock()
-        with (
-            patch("os.path.isdir", return_value=True),
-            patch("core.repo.Repo") as MockRepo,
-        ):
+        with patch("core.repo.Repo") as MockRepo:
             mock_git_repo = MagicMock()
             mock_git_repo.remotes.origin.url = "https://github.com/org/repo.git"
             ref = MagicMock()
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            repo = DTLRepo(mock_args, str(tmp_path / "repo"), mock_handle)
         return repo
 
-    def test_discovers_vendors_from_single_path(self):
+    def test_discovers_vendors_from_single_path(self, tmp_path):
         """Test discovery from a single existing path."""
-        repo = self._make_repo()
-
-        def mock_exists(path):
-            return "devices" in path
-
-        with (
-            patch("os.path.exists", side_effect=mock_exists),
-            patch("os.listdir", return_value=["Cisco", "Juniper"]),
-            patch("os.path.isdir", return_value=True),
-        ):
-            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
+        repo = self._make_repo(tmp_path)
+        devices = tmp_path / "devices"
+        (devices / "Cisco").mkdir(parents=True)
+        (devices / "Juniper").mkdir()
+        vendors = repo.discover_vendors(str(devices), str(tmp_path / "modules"), str(tmp_path / "racks"))
         assert len(vendors) == 2
         assert vendors[0]["name"] == "Cisco"
         assert vendors[0]["slug"] == "cisco"
         assert vendors[1]["name"] == "Juniper"
         assert vendors[1]["slug"] == "juniper"
 
-    def test_discovers_vendors_from_multiple_paths(self):
+    def test_discovers_vendors_from_multiple_paths(self, tmp_path):
         """Test discovery and merging from multiple paths."""
-        repo = self._make_repo()
-
-        def mock_listdir(path):
-            if "devices" in path:
-                return ["Cisco", "Juniper"]
-            elif "modules" in path:
-                return ["Arista", "Cisco"]
-            elif "racks" in path:
-                return ["Dell"]
-            return []
-
-        with (
-            patch("os.path.exists", return_value=True),
-            patch("os.listdir", side_effect=mock_listdir),
-            patch("os.path.isdir", return_value=True),
-        ):
-            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
-
+        repo = self._make_repo(tmp_path)
+        (tmp_path / "devices" / "Cisco").mkdir(parents=True)
+        (tmp_path / "devices" / "Juniper").mkdir()
+        (tmp_path / "modules" / "Arista").mkdir(parents=True)
+        (tmp_path / "modules" / "Cisco").mkdir()
+        (tmp_path / "racks" / "Dell").mkdir(parents=True)
+        vendors = repo.discover_vendors(str(tmp_path / "devices"), str(tmp_path / "modules"), str(tmp_path / "racks"))
         assert len(vendors) == 4
         vendor_names = [v["name"] for v in vendors]
         assert "Cisco" in vendor_names
@@ -423,78 +402,51 @@ class TestDiscoverVendors:
         assert "Arista" in vendor_names
         assert "Dell" in vendor_names
 
-    def test_deduplicates_vendors_across_paths(self):
+    def test_deduplicates_vendors_across_paths(self, tmp_path):
         """Test that vendors appearing in multiple paths are deduplicated."""
-        repo = self._make_repo()
-
-        def mock_listdir(path):
-            # Cisco appears in all three paths
-            if "devices" in path:
-                return ["Cisco", "Juniper"]
-            elif "modules" in path:
-                return ["Cisco", "Arista"]
-            elif "racks" in path:
-                return ["Cisco"]
-            return []
-
-        with (
-            patch("os.path.exists", return_value=True),
-            patch("os.listdir", side_effect=mock_listdir),
-            patch("os.path.isdir", return_value=True),
-        ):
-            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
-
-        # Cisco should appear only once despite being in all three paths
+        repo = self._make_repo(tmp_path)
+        (tmp_path / "devices" / "Cisco").mkdir(parents=True)
+        (tmp_path / "devices" / "Juniper").mkdir()
+        (tmp_path / "modules" / "Cisco").mkdir(parents=True)
+        (tmp_path / "modules" / "Arista").mkdir()
+        (tmp_path / "racks" / "Cisco").mkdir(parents=True)
+        vendors = repo.discover_vendors(str(tmp_path / "devices"), str(tmp_path / "modules"), str(tmp_path / "racks"))
         cisco_vendors = [v for v in vendors if v["slug"] == "cisco"]
         assert len(cisco_vendors) == 1
         assert len(vendors) == 3  # Cisco, Juniper, Arista
 
-    def test_skips_testing_folder(self):
+    def test_skips_testing_folder(self, tmp_path):
         """Test that 'testing' folder (case-insensitive) is excluded."""
-        repo = self._make_repo()
-        with (
-            patch("os.path.exists", return_value=True),
-            patch("os.listdir", return_value=["Cisco", "testing", "Testing", "TESTING"]),
-            patch("os.path.isdir", return_value=True),
-        ):
-            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
-
+        repo = self._make_repo(tmp_path)
+        devices = tmp_path / "devices"
+        (devices / "Cisco").mkdir(parents=True)
+        (devices / "testing").mkdir()
+        (devices / "Testing").mkdir()
+        (devices / "TESTING").mkdir()
+        vendors = repo.discover_vendors(str(devices), str(tmp_path / "modules"), str(tmp_path / "racks"))
         assert len(vendors) == 1
         assert vendors[0]["name"] == "Cisco"
         assert not any(v["name"].lower() == "testing" for v in vendors)
 
-    def test_handles_nonexistent_paths(self):
+    def test_handles_nonexistent_paths(self, tmp_path):
         """Test graceful handling of non-existent paths."""
-        repo = self._make_repo()
-
-        def mock_exists(path):
-            return "devices" in path  # Only devices path exists
-
-        def mock_listdir(path):
-            if "devices" in path:
-                return ["Cisco"]
-            return []
-
-        with (
-            patch("os.path.exists", side_effect=mock_exists),
-            patch("os.listdir", side_effect=mock_listdir),
-            patch("os.path.isdir", return_value=True),
-        ):
-            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
-
+        repo = self._make_repo(tmp_path)
+        devices = tmp_path / "devices"
+        (devices / "Cisco").mkdir(parents=True)
+        # modules and racks paths are never created → os.path.exists returns False
+        vendors = repo.discover_vendors(str(devices), str(tmp_path / "modules"), str(tmp_path / "racks"))
         assert len(vendors) == 1
         assert vendors[0]["name"] == "Cisco"
 
-    def test_handles_all_nonexistent_paths(self):
+    def test_handles_all_nonexistent_paths(self, tmp_path):
         """Test that all non-existent paths returns empty list."""
-        repo = self._make_repo()
-        with patch("os.path.exists", return_value=False):
-            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
+        repo = self._make_repo(tmp_path)
+        vendors = repo.discover_vendors(str(tmp_path / "devices"), str(tmp_path / "modules"), str(tmp_path / "racks"))
         assert vendors == []
 
-    def test_handles_os_errors_gracefully(self):
+    def test_handles_os_errors_gracefully(self, tmp_path):
         """Test graceful handling of OS errors when listing directories."""
-        repo = self._make_repo()
+        repo = self._make_repo(tmp_path)
 
         def mock_listdir(path):
             if "devices" in path:
@@ -508,59 +460,46 @@ class TestDiscoverVendors:
             patch("os.listdir", side_effect=mock_listdir),
             patch("os.path.isdir", return_value=True),
         ):
-            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
+            vendors = repo.discover_vendors(
+                str(tmp_path / "devices"), str(tmp_path / "modules"), str(tmp_path / "racks")
+            )
 
         assert len(vendors) == 1
         assert vendors[0]["name"] == "Cisco"
 
-    def test_skips_non_directory_entries(self):
+    def test_skips_non_directory_entries(self, tmp_path):
         """Test that files (non-directories) are skipped."""
-        repo = self._make_repo()
-
-        def mock_isdir(path):
-            # Only Cisco is a directory, README.md is a file
-            return "Cisco" in path
-
-        with (
-            patch("os.path.exists", return_value=True),
-            patch("os.listdir", return_value=["Cisco", "README.md"]),
-            patch("os.path.isdir", side_effect=mock_isdir),
-        ):
-            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
-
+        repo = self._make_repo(tmp_path)
+        devices = tmp_path / "devices"
+        (devices / "Cisco").mkdir(parents=True)
+        (devices / "README.md").write_text("readme")  # file, not directory
+        vendors = repo.discover_vendors(str(devices), str(tmp_path / "modules"), str(tmp_path / "racks"))
         assert len(vendors) == 1
         assert vendors[0]["name"] == "Cisco"
 
-    def test_returns_sorted_by_slug(self):
+    def test_returns_sorted_by_slug(self, tmp_path):
         """Test that vendors are returned sorted by slug."""
-        repo = self._make_repo()
-        with (
-            patch("os.path.exists", return_value=True),
-            patch("os.listdir", return_value=["Zebra", "Arista", "Cisco", "Dell"]),
-            patch("os.path.isdir", return_value=True),
-        ):
-            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
-
+        repo = self._make_repo(tmp_path)
+        devices = tmp_path / "devices"
+        for name in ["Zebra", "Arista", "Cisco", "Dell"]:
+            (devices / name).mkdir(parents=True)
+        vendors = repo.discover_vendors(str(devices), str(tmp_path / "modules"), str(tmp_path / "racks"))
         slugs = [v["slug"] for v in vendors]
         assert slugs == sorted(slugs)
         assert slugs == ["arista", "cisco", "dell", "zebra"]
 
-    def test_uses_slug_format_correctly(self):
+    def test_uses_slug_format_correctly(self, tmp_path):
         """Test that slug_format is applied correctly to vendor names."""
-        repo = self._make_repo()
-        with (
-            patch("os.path.exists", return_value=True),
-            patch("os.listdir", return_value=["Extreme Networks", "HPE-Aruba"]),
-            patch("os.path.isdir", return_value=True),
-        ):
-            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
-
+        repo = self._make_repo(tmp_path)
+        devices = tmp_path / "devices"
+        (devices / "Extreme Networks").mkdir(parents=True)
+        (devices / "HPE-Aruba").mkdir()
+        vendors = repo.discover_vendors(str(devices), str(tmp_path / "modules"), str(tmp_path / "racks"))
         assert len(vendors) == 2
-        # slug_format lowercases and replaces non-word chars with hyphens
         assert any(v["slug"] == "extreme-networks" for v in vendors)
         assert any(v["slug"] == "hpe-aruba" for v in vendors)
 
-    def test_vendor_name_selection_is_deterministic_for_same_slug(self):
+    def test_vendor_name_selection_is_deterministic_for_same_slug(self, tmp_path):
         """Vendor name must be deterministic when multiple folders map to same slug.
 
         When two folder names produce the same slug, the alphabetically first
@@ -569,19 +508,11 @@ class TestDiscoverVendors:
         Before the fix, os.listdir() was non-deterministic, so "Nokia" vs "nokia"
         folders could produce different vendor names across runs.
         """
-        repo = self._make_repo()
-
-        # Simulate os.listdir returning folders in reverse-alphabetical order
-        def mock_listdir_rev(_path):
-            return ["nokia", "Nokia"]  # lowercase first → would win without sorting
-
-        with (
-            patch("os.path.exists", return_value=True),
-            patch("os.listdir", side_effect=mock_listdir_rev),
-            patch("os.path.isdir", return_value=True),
-        ):
-            vendors = repo.discover_vendors("/devices", "/modules", "/racks")
-
+        repo = self._make_repo(tmp_path)
+        devices = tmp_path / "devices"
+        (devices / "Nokia").mkdir(parents=True)
+        (devices / "nokia").mkdir()
+        vendors = repo.discover_vendors(str(devices), str(tmp_path / "modules"), str(tmp_path / "racks"))
         # sorted("Nokia", "nokia") → "Nokia" < "nokia" (uppercase sorts first in ASCII)
         assert len(vendors) == 1
         assert vendors[0]["name"] == "Nokia"  # alphabetically first
