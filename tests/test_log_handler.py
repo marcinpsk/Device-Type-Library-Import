@@ -137,10 +137,8 @@ class TestLogDevicePortsCreated:
         handle = LogHandler(SimpleNamespace(verbose=False))
         ports = []
         for i in range(2):
-            p = MagicMock()
-            p.name = f"port{i}"
-            p.device_type = MagicMock(id=1)
-            p.id = i
+            # No `type` attr → exercises the `hasattr(port, 'type')` else-branch.
+            p = SimpleNamespace(name=f"port{i}", device_type=SimpleNamespace(id=1), id=i)
             ports.append(p)
         result = handle.log_device_ports_created(ports, "Interface")
         assert result == 2
@@ -151,11 +149,7 @@ class TestLogDevicePortsCreated:
 
     def test_verbose_logs_each_port(self):
         handle = LogHandler(SimpleNamespace(verbose=True))
-        port = MagicMock()
-        port.name = "eth0"
-        port.type = "virtual"
-        port.device_type = MagicMock(id=5)
-        port.id = 10
+        port = SimpleNamespace(name="eth0", type="virtual", device_type=SimpleNamespace(id=5), id=10)
         with patch.object(handle, "_emit") as mock_emit:
             handle.log_device_ports_created([port], "Interface")
         assert mock_emit.called
@@ -166,10 +160,8 @@ class TestLogModulePortsCreated:
 
     def test_returns_count(self):
         handle = LogHandler(SimpleNamespace(verbose=False))
-        port = MagicMock()
-        port.name = "port"
-        port.module_type = MagicMock(id=1)
-        port.id = 1
+        # No `type` attr → exercises the `hasattr(port, 'type')` else-branch.
+        port = SimpleNamespace(name="port", module_type=SimpleNamespace(id=1), id=1)
         result = handle.log_module_ports_created([port], "Interface")
         assert result == 1
 
@@ -179,11 +171,7 @@ class TestLogModulePortsCreated:
 
     def test_verbose_logs_each_port(self):
         handle = LogHandler(SimpleNamespace(verbose=True))
-        port = MagicMock()
-        port.name = "xe-0/0/0"
-        port.type = "10gbase-x-sfpp"
-        port.module_type = MagicMock(id=3)
-        port.id = 7
+        port = SimpleNamespace(name="xe-0/0/0", type="10gbase-x-sfpp", module_type=SimpleNamespace(id=3), id=7)
         with patch.object(handle, "_emit") as mock_emit:
             handle.log_module_ports_created([port], "Interface")
         assert mock_emit.called

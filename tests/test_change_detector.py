@@ -316,8 +316,7 @@ class TestCompareImageProperties:
     def test_missing_front_image_detected(self):
         """YAML=true, NetBox=None → should report a missing image."""
         yaml_data = {"front_image": True}
-        netbox_dt = MagicMock()
-        netbox_dt.front_image = None
+        netbox_dt = DotDict({"front_image": None})
 
         changes = ChangeDetector._compare_image_properties(yaml_data, netbox_dt)
 
@@ -329,8 +328,7 @@ class TestCompareImageProperties:
     def test_missing_rear_image_detected(self):
         """YAML=true, NetBox=None → should report a missing image."""
         yaml_data = {"rear_image": True}
-        netbox_dt = MagicMock()
-        netbox_dt.rear_image = None
+        netbox_dt = DotDict({"rear_image": None})
 
         changes = ChangeDetector._compare_image_properties(yaml_data, netbox_dt)
 
@@ -342,9 +340,7 @@ class TestCompareImageProperties:
     def test_both_images_missing(self):
         """Both images defined in YAML but missing in NetBox."""
         yaml_data = {"front_image": True, "rear_image": True}
-        netbox_dt = MagicMock()
-        netbox_dt.front_image = None
-        netbox_dt.rear_image = None
+        netbox_dt = DotDict({"front_image": None, "rear_image": None})
 
         changes = ChangeDetector._compare_image_properties(yaml_data, netbox_dt)
 
@@ -355,8 +351,7 @@ class TestCompareImageProperties:
     def test_existing_image_not_flagged(self):
         """YAML=true, NetBox=URL → no change reported."""
         yaml_data = {"front_image": True}
-        netbox_dt = MagicMock()
-        netbox_dt.front_image = "http://netbox/media/devicetypes/front.jpg"
+        netbox_dt = DotDict({"front_image": "http://netbox/media/devicetypes/front.jpg"})
 
         changes = ChangeDetector._compare_image_properties(yaml_data, netbox_dt)
 
@@ -365,8 +360,7 @@ class TestCompareImageProperties:
     def test_yaml_false_no_change(self):
         """YAML=false → no change reported regardless of NetBox state."""
         yaml_data = {"front_image": False}
-        netbox_dt = MagicMock()
-        netbox_dt.front_image = None
+        netbox_dt = DotDict({"front_image": None})
 
         changes = ChangeDetector._compare_image_properties(yaml_data, netbox_dt)
 
@@ -375,9 +369,7 @@ class TestCompareImageProperties:
     def test_yaml_omitted_no_change(self):
         """Image key omitted from YAML → no change reported."""
         yaml_data = {"model": "Test"}
-        netbox_dt = MagicMock()
-        netbox_dt.front_image = None
-        netbox_dt.rear_image = None
+        netbox_dt = DotDict({"front_image": None, "rear_image": None})
 
         changes = ChangeDetector._compare_image_properties(yaml_data, netbox_dt)
 
@@ -386,8 +378,7 @@ class TestCompareImageProperties:
     def test_empty_string_treated_as_missing(self):
         """NetBox returns empty string instead of None → still flagged as missing."""
         yaml_data = {"front_image": True}
-        netbox_dt = MagicMock()
-        netbox_dt.front_image = ""
+        netbox_dt = DotDict({"front_image": ""})
 
         changes = ChangeDetector._compare_image_properties(yaml_data, netbox_dt)
 

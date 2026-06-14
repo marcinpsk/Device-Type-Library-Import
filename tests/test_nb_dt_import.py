@@ -560,6 +560,8 @@ class TestMain:
             call = MockNetBox.return_value.create_device_types.call_args
             assert call.args[0] == dt
             assert call.kwargs["only_new"] is True
+
+    def test_default_mode_no_device_types(self, nb_dt_import):
         """Default mode with no discovered vendors completes without error."""
         with (
             patch.object(sys, "argv", ["nb-dt-import.py"]),

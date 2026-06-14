@@ -11,9 +11,10 @@ caught early — ideally in weekly CI against NetBox ``main``.
 associated data in NetBox; every subsequent test (``test_front_port_multiposition``,
 ``test_module_types``, ``test_graphql_schema``, ``test_idempotency``,
 ``test_update_mode``) depends on that initial import having completed successfully.
-If an early test fails, ``sys.exit(1)`` stops the suite immediately so later tests
-do not run against incomplete state.  Re-running individual tests requires a fully
-provisioned NetBox environment (i.e. with the test fixtures already imported).
+Run the suite with ``pytest -x`` so an early failure stops it immediately and
+later tests do not run against incomplete state.  Re-running individual tests
+requires a fully provisioned NetBox environment (i.e. with the test fixtures
+already imported).
 
 Test scenarios
 --------------
@@ -49,7 +50,7 @@ Usage::
     export NETBOX_TOKEN=<token>
     export REPO_URL=file:///tmp/test-fixtures   # local git repo built from tests/fixtures/
     export REPO_BRANCH=main
-    uv run python tests/integration/test_import.py
+    uv run pytest tests/integration/ -m integration -x -v
 """
 
 from __future__ import annotations
@@ -551,32 +552,3 @@ def test_update_mode() -> None:
     if not re.search(r"(?<!\d)0 device types updated", result2.stdout):
         fail(f"After update, third run still shows updated device types\n{result2.stdout}")
     ok("Post-update run: 0 device types updated")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Main
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-def main() -> None:
-    if not NETBOX_URL or not NETBOX_TOKEN:
-        print(
-            "ERROR: NETBOX_URL and NETBOX_TOKEN environment variables are required.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    print(f"NetBox URL : {NETBOX_URL}")
-    print(f"Repo root  : {REPO_ROOT}")
-
-    test_first_import()
-    test_front_port_multiposition()
-    test_module_types()
-    test_graphql_schema()
-    test_idempotency()
-    test_update_mode()
-
-    print("\n=== All integration tests passed ✓ ===\n")
-
-
-if __name__ == "__main__":
-    main()
