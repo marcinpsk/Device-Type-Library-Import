@@ -11,9 +11,10 @@ caught early — ideally in weekly CI against NetBox ``main``.
 associated data in NetBox; every subsequent test (``test_front_port_multiposition``,
 ``test_module_types``, ``test_graphql_schema``, ``test_idempotency``,
 ``test_update_mode``) depends on that initial import having completed successfully.
-If an early test fails, ``sys.exit(1)`` stops the suite immediately so later tests
-do not run against incomplete state.  Re-running individual tests requires a fully
-provisioned NetBox environment (i.e. with the test fixtures already imported).
+Run the suite with ``pytest -x`` so an early failure stops it immediately and
+later tests do not run against incomplete state.  Re-running individual tests
+requires a fully provisioned NetBox environment (i.e. with the test fixtures
+already imported).
 
 Test scenarios
 --------------
@@ -49,7 +50,7 @@ Usage::
     export NETBOX_TOKEN=<token>
     export REPO_URL=file:///tmp/test-fixtures   # local git repo built from tests/fixtures/
     export REPO_BRANCH=main
-    uv run python tests/integration/test_import.py
+    uv run pytest tests/integration/ -m integration -x -v
 """
 
 from __future__ import annotations
@@ -61,21 +62,22 @@ import sys
 from pathlib import Path
 from typing import Any, NoReturn
 
+import pytest
 import requests
 import urllib3
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO_ROOT))
-
-# Import after sys.path manipulation so local modules resolve correctly.
-from core.change_detector import DEVICE_TYPE_PROPERTIES  # noqa: E402
-from core.graphql_client import (  # noqa: E402
+from core.change_detector import DEVICE_TYPE_PROPERTIES
+from core.graphql_client import (
     COMPONENT_TEMPLATE_FIELDS,
     NetBoxGraphQLClient,
     _NO_MODULE_TYPE,
 )
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+pytestmark = pytest.mark.integration
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 NETBOX_URL = (os.environ.get("NETBOX_URL") or "").rstrip("/") or None
 NETBOX_TOKEN = os.environ.get("NETBOX_TOKEN")
@@ -95,8 +97,7 @@ session.verify = not IGNORE_SSL
 
 def fail(msg: str) -> NoReturn:
     """Record a failure and exit immediately."""
-    print(f"\n  ✗ FAIL: {msg}", file=sys.stderr)
-    sys.exit(1)
+    pytest.fail(msg)
 
 
 def ok(msg: str) -> None:
@@ -551,32 +552,3 @@ def test_update_mode() -> None:
     if not re.search(r"(?<!\d)0 device types updated", result2.stdout):
         fail(f"After update, third run still shows updated device types\n{result2.stdout}")
     ok("Post-update run: 0 device types updated")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Main
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-def main() -> None:
-    if not NETBOX_URL or not NETBOX_TOKEN:
-        print(
-            "ERROR: NETBOX_URL and NETBOX_TOKEN environment variables are required.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-    print(f"NetBox URL : {NETBOX_URL}")
-    print(f"Repo root  : {REPO_ROOT}")
-
-    test_first_import()
-    test_front_port_multiposition()
-    test_module_types()
-    test_graphql_schema()
-    test_idempotency()
-    test_update_mode()
-
-    print("\n=== All integration tests passed ✓ ===\n")
-
-
-if __name__ == "__main__":
-    main()

@@ -21,6 +21,18 @@ from core.export import (
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
 
+class _Stub:
+    """Lightweight data stub: only has attributes for explicitly-set kwargs.
+
+    Unlike MagicMock, accessing an absent attribute raises AttributeError, so
+    "field absent → don't emit it" branches in the exporter are exercised correctly.
+    """
+
+    def __init__(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+
 def _make_settings(tmp_path):
     s = MagicMock()
     s.NETBOX_URL = "http://localhost:8000/"
@@ -38,10 +50,7 @@ def _make_handle():
 
 
 def _make_mfr(name="Nokia", slug="nokia"):
-    m = MagicMock()
-    m.name = name
-    m.slug = slug
-    return m
+    return _Stub(name=name, slug=slug)
 
 
 def _make_dt(
@@ -61,24 +70,24 @@ def _make_dt(
     front_image=None,
     rear_image=None,
 ):
-    r = MagicMock()
-    r.id = id
-    r.model = model
-    r.slug = slug
-    r.last_updated = last_updated
-    r.u_height = u_height
-    r.is_full_depth = is_full_depth
-    r.part_number = part_number
-    r.airflow = airflow
-    r.weight = weight
-    r.weight_unit = weight_unit
-    r.description = description
-    r.comments = comments
-    r.subdevice_role = subdevice_role
-    r.front_image = front_image
-    r.rear_image = rear_image
-    r.manufacturer = _make_mfr()
-    return r
+    return _Stub(
+        id=id,
+        model=model,
+        slug=slug,
+        last_updated=last_updated,
+        u_height=u_height,
+        is_full_depth=is_full_depth,
+        part_number=part_number,
+        airflow=airflow,
+        weight=weight,
+        weight_unit=weight_unit,
+        description=description,
+        comments=comments,
+        subdevice_role=subdevice_role,
+        front_image=front_image,
+        rear_image=rear_image,
+        manufacturer=_make_mfr(),
+    )
 
 
 def _make_mt(
@@ -92,18 +101,18 @@ def _make_mt(
     description="",
     comments="",
 ):
-    r = MagicMock()
-    r.id = id
-    r.model = model
-    r.last_updated = last_updated
-    r.part_number = part_number
-    r.airflow = airflow
-    r.weight = weight
-    r.weight_unit = weight_unit
-    r.description = description
-    r.comments = comments
-    r.manufacturer = _make_mfr()
-    return r
+    return _Stub(
+        id=id,
+        model=model,
+        last_updated=last_updated,
+        part_number=part_number,
+        airflow=airflow,
+        weight=weight,
+        weight_unit=weight_unit,
+        description=description,
+        comments=comments,
+        manufacturer=_make_mfr(),
+    )
 
 
 def _make_rt(
@@ -127,28 +136,28 @@ def _make_rt(
     desc_units=False,
     comments="",
 ):
-    r = MagicMock()
-    r.id = id
-    r.model = model
-    r.slug = slug
-    r.last_updated = last_updated
-    r.form_factor = form_factor
-    r.description = description
-    r.width = width
-    r.u_height = u_height
-    r.starting_unit = starting_unit
-    r.outer_width = outer_width
-    r.outer_height = outer_height
-    r.outer_depth = outer_depth
-    r.outer_unit = outer_unit
-    r.mounting_depth = mounting_depth
-    r.weight = weight
-    r.max_weight = max_weight
-    r.weight_unit = weight_unit
-    r.desc_units = desc_units
-    r.comments = comments
-    r.manufacturer = _make_mfr()
-    return r
+    return _Stub(
+        id=id,
+        model=model,
+        slug=slug,
+        last_updated=last_updated,
+        form_factor=form_factor,
+        description=description,
+        width=width,
+        u_height=u_height,
+        starting_unit=starting_unit,
+        outer_width=outer_width,
+        outer_height=outer_height,
+        outer_depth=outer_depth,
+        outer_unit=outer_unit,
+        mounting_depth=mounting_depth,
+        weight=weight,
+        max_weight=max_weight,
+        weight_unit=weight_unit,
+        desc_units=desc_units,
+        comments=comments,
+        manufacturer=_make_mfr(),
+    )
 
 
 # ── Tests ─────────────────────────────────────────────────────────────────────

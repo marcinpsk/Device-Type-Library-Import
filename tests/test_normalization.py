@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock
+from types import SimpleNamespace
 
 from core.normalization import normalize_values, values_equal
 
@@ -7,8 +7,7 @@ class TestNormalizeValues:
     """Tests for normalize_values."""
 
     def test_netbox_choice_object_reads_value(self):
-        choice = MagicMock()
-        choice.value = "1000base-t"
+        choice = SimpleNamespace(value="1000base-t")
         y, n = normalize_values("1000base-t", choice)
         assert n == "1000base-t"
 
@@ -134,8 +133,7 @@ class TestValuesEqual:
         assert values_equal(1, "1.5") is False
 
     def test_netbox_choice_object(self):
-        choice = MagicMock()
-        choice.value = "kg"
+        choice = SimpleNamespace(value="kg")
         assert values_equal("kg", choice)
         choice.value = "lb"
         assert not values_equal("kg", choice)

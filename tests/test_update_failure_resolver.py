@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -58,10 +59,8 @@ def test_classifier_unhandled_for_unparseable_payload():
 
 def test_classifier_recognises_subdevice_role_error_dict_safe_path():
     """Dict payload + zero dependent devices + blocking templates -> SUBDEVICE_ROLE_FLIP, actionable."""
-    t1 = MagicMock()
-    t1.name = "bay-1"
-    t2 = MagicMock()
-    t2.name = "bay-2"
+    t1 = SimpleNamespace(name="bay-1")
+    t2 = SimpleNamespace(name="bay-2")
     nb = _make_netbox(templates=[t1, t2], devices=[], device_count=0)
 
     res = classify_device_type_update_failure(
@@ -81,8 +80,7 @@ def test_classifier_recognises_subdevice_role_error_dict_safe_path():
 
 def test_classifier_accepts_json_string_payload():
     """Pynetbox sometimes returns the body as a JSON string; classifier must handle it."""
-    t = MagicMock()
-    t.name = "t"
+    t = SimpleNamespace(name="t")
     nb = _make_netbox(templates=[t], devices=[], device_count=0)
     res = classify_device_type_update_failure(
         SUBDEVICE_ROLE_ERROR_JSON,
@@ -95,11 +93,9 @@ def test_classifier_accepts_json_string_payload():
 
 def test_classifier_blocks_auto_resolve_when_dependent_devices_exist():
     """Live devices reference the type -> MANUAL_REQUIRED, no remediation."""
-    d1 = MagicMock()
-    d1.name = "router-1"
-    d2 = MagicMock()
-    d2.name = "router-2"
-    nb = _make_netbox(devices=[d1, d2], device_count=2, templates=[MagicMock()])
+    d1 = SimpleNamespace(name="router-1")
+    d2 = SimpleNamespace(name="router-2")
+    nb = _make_netbox(devices=[d1, d2], device_count=2, templates=[SimpleNamespace(name="bay")])
 
     res = classify_device_type_update_failure(
         SUBDEVICE_ROLE_ERROR_DICT,
@@ -138,7 +134,7 @@ def test_classifier_returns_inspection_hint_when_no_blocking_templates():
 
 def test_classifier_blocks_auto_resolve_when_yaml_still_lists_device_bays():
     """YAML still declares device-bays -> auto-deleting them would loop; MANUAL_REQUIRED."""
-    nb = _make_netbox(templates=[MagicMock()], devices=[], device_count=0)
+    nb = _make_netbox(templates=[SimpleNamespace(name="bay")], devices=[], device_count=0)
     res = classify_device_type_update_failure(
         SUBDEVICE_ROLE_ERROR_DICT,
         netbox=nb,
@@ -152,7 +148,7 @@ def test_classifier_blocks_auto_resolve_when_yaml_still_lists_device_bays():
 def test_classifier_dependent_count_unknown_blocks_resolve():
     """If the count query raises, classifier must treat the type as unsafe (MANUAL_REQUIRED)."""
     nb = MagicMock()
-    nb.dcim.device_bay_templates.filter.return_value = [MagicMock()]
+    nb.dcim.device_bay_templates.filter.return_value = [SimpleNamespace(name="bay")]
     nb.dcim.devices.filter.side_effect = RuntimeError("API down")
 
     res = classify_device_type_update_failure(
@@ -185,7 +181,7 @@ def test_classifier_remediation_step_calls_template_delete():
 
 def test_classifier_handles_bytes_payload():
     """RequestError content can be bytes; classifier must decode before parsing."""
-    nb = _make_netbox(templates=[MagicMock()], devices=[], device_count=0)
+    nb = _make_netbox(templates=[SimpleNamespace(name="bay")], devices=[], device_count=0)
     res = classify_device_type_update_failure(
         SUBDEVICE_ROLE_ERROR_JSON.encode("utf-8"),
         netbox=nb,
@@ -220,7 +216,7 @@ def test_extract_error_payload_returns_original_bytes_on_decode_failure():
 )
 def test_classifier_marker_matching_is_strict(payload, expected_kind):
     """Classifier matches only when both required markers are present in the message."""
-    nb = _make_netbox(templates=[MagicMock()], devices=[], device_count=0)
+    nb = _make_netbox(templates=[SimpleNamespace(name="bay")], devices=[], device_count=0)
     res = classify_device_type_update_failure(
         payload,
         netbox=nb,
@@ -232,7 +228,7 @@ def test_classifier_marker_matching_is_strict(payload, expected_kind):
 
 def test_classifier_recognises_subdevice_role_error_string_marker():
     """Plain-string payload containing both markers must classify as SUBDEVICE_ROLE_FLIP."""
-    nb = _make_netbox(templates=[MagicMock()], devices=[], device_count=0)
+    nb = _make_netbox(templates=[SimpleNamespace(name="bay")], devices=[], device_count=0)
     payload = (
         "Must delete all device bay templates associated with this device before declassifying it as a parent device."
     )
@@ -252,7 +248,7 @@ def test_classifier_handles_non_string_msg_in_subdevice_role_list():
         def __iter__(self):
             raise TypeError("not iterable as expected")
 
-    nb = _make_netbox(templates=[MagicMock()], devices=[], device_count=0)
+    nb = _make_netbox(templates=[SimpleNamespace(name="bay")], devices=[], device_count=0)
     res = classify_device_type_update_failure(
         {"subdevice_role": _BadObj()},
         netbox=nb,
@@ -288,10 +284,8 @@ def test_classifier_handles_template_query_failure():
 
 def test_classifier_count_query_used_when_filter_returns_full_page():
     """When filter returns 5 records (page cap), classifier must call .count() for the real total."""
-    devs = [MagicMock() for i in range(5)]
-    for i, d in enumerate(devs):
-        d.name = f"router-{i}"
-    nb = _make_netbox(devices=devs, device_count=137, templates=[MagicMock()])
+    devs = [SimpleNamespace(name=f"router-{i}") for i in range(5)]
+    nb = _make_netbox(devices=devs, device_count=137, templates=[SimpleNamespace(name="bay")])
     res = classify_device_type_update_failure(
         SUBDEVICE_ROLE_ERROR_DICT,
         netbox=nb,
@@ -305,11 +299,9 @@ def test_classifier_count_query_used_when_filter_returns_full_page():
 
 def test_classifier_count_fallback_when_count_query_fails():
     """If .count() raises, classifier falls back to len(filter_results)."""
-    devs = [MagicMock() for _ in range(5)]
-    for i, d in enumerate(devs):
-        d.name = f"router-{i}"
+    devs = [SimpleNamespace(name=f"router-{i}") for i in range(5)]
     nb = MagicMock()
-    nb.dcim.device_bay_templates.filter.return_value = [MagicMock()]
+    nb.dcim.device_bay_templates.filter.return_value = [SimpleNamespace(name="bay")]
     nb.dcim.devices.filter.return_value = devs
     nb.dcim.devices.count.side_effect = RuntimeError("boom")
     res = classify_device_type_update_failure(

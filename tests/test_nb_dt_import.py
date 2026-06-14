@@ -557,6 +557,9 @@ class TestMain:
             nb_dt_import.main()
 
             MockNetBox.return_value.create_device_types.assert_called_once()
+            call = MockNetBox.return_value.create_device_types.call_args
+            assert call.args[0] == dt
+            assert call.kwargs["only_new"] is True
 
     def test_default_mode_no_device_types(self, nb_dt_import):
         """Default mode with no discovered vendors completes without error."""
@@ -594,6 +597,9 @@ class TestMain:
             nb_dt_import.main()
 
             MockNetBox.return_value.create_device_types.assert_called_once()
+            call = MockNetBox.return_value.create_device_types.call_args
+            assert call.args[0] == dt
+            assert call.kwargs["only_new"] is True
 
     def test_update_mode_no_changes(self, nb_dt_import):
         """--update with no changes logs 'No device type changes to process'."""
@@ -832,6 +838,7 @@ class TestMain:
             nb_dt_import.main()
 
             mock_nb.create_module_types.assert_called_once()
+            assert mock_nb.create_module_types.call_args.args[0] == [module_type]
 
     def test_modules_update_mode_logs_change_detection_section(self, nb_dt_import):
         """--update with modules=True logs the MODULE TYPE CHANGE DETECTION header."""
@@ -950,6 +957,7 @@ class TestProcessRackTypes:
         nb_dt_import._process_rack_types(self._make_args(), netbox, handle, None, [rack_type])
 
         netbox.create_rack_types.assert_called_once()
+        assert netbox.create_rack_types.call_args.args[0] == [rack_type]
 
     def test_existing_rack_type_shows_as_existing(self, nb_dt_import):
         """A rack type already in NetBox is counted as existing, not new."""
@@ -1819,8 +1827,15 @@ class TestMainAdditionalCoverage:
         netbox.device_types.stop_component_preload.assert_called_once_with("job-1", progress=progress)
         netbox.create_manufacturers.assert_called_once_with([{"slug": "cisco", "name": "Cisco"}])
         mock_process_device_types.assert_called_once()
+        assert mock_process_device_types.call_args.args[4] == [
+            {"manufacturer": {"slug": "cisco"}, "model": "X", "slug": "x"}
+        ]
         mock_process_module_types.assert_called_once()
+        assert mock_process_module_types.call_args.args[4] == [
+            {"manufacturer": {"slug": "cisco"}, "model": "M", "slug": "m"}
+        ]
         mock_process_rack_types.assert_called_once()
+        assert mock_process_rack_types.call_args.args[4] == []  # cisco not in rack_vendors → empty
         assert progress.advance.call_args_list == [((7,),), ((7,),)]
         mock_finalize.assert_called_once_with(progress, {})
         assert any(call.args[0] == ["resolved.yaml"] for call in dtl_repo.parse_files.call_args_list)

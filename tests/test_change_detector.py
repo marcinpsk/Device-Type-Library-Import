@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from core.graphql_client import DotDict
 from core.change_detector import (
     ChangeDetector,
     ChangeReport,
@@ -68,15 +69,13 @@ class TestCompareDeviceTypeProperties:
 
     def test_no_changes_when_values_match(self):
         detector = self._make_detector()
-        netbox_dt = MagicMock()
-        netbox_dt.u_height = 2
+        netbox_dt = DotDict({"u_height": 2})
         changes = detector._compare_device_type_properties({"u_height": 2}, netbox_dt)
         assert changes == []
 
     def test_change_detected(self):
         detector = self._make_detector()
-        netbox_dt = MagicMock()
-        netbox_dt.u_height = 1
+        netbox_dt = DotDict({"u_height": 1})
         changes = detector._compare_device_type_properties({"u_height": 2}, netbox_dt)
         assert len(changes) == 1
         assert changes[0].property_name == "u_height"
@@ -85,17 +84,14 @@ class TestCompareDeviceTypeProperties:
 
     def test_omitted_property_not_compared(self):
         detector = self._make_detector()
-        netbox_dt = MagicMock()
-        netbox_dt.u_height = 99
+        netbox_dt = DotDict({"u_height": 99})
         # u_height not in yaml_data → should not be compared
         changes = detector._compare_device_type_properties({"model": "X"}, netbox_dt)
         assert changes == []
 
     def test_multiple_changes(self):
         detector = self._make_detector()
-        netbox_dt = MagicMock()
-        netbox_dt.u_height = 1
-        netbox_dt.is_full_depth = False
+        netbox_dt = DotDict({"u_height": 1, "is_full_depth": False})
         changes = detector._compare_device_type_properties({"u_height": 2, "is_full_depth": True}, netbox_dt)
         assert len(changes) == 2
 
@@ -117,8 +113,7 @@ class TestCompareComponents:
         assert any(c.component_name == "eth0" and c.change_type == ChangeType.COMPONENT_ADDED for c in changes)
 
     def test_component_removed_when_missing_in_yaml(self):
-        existing_comp = MagicMock()
-        existing_comp.name = "eth99"
+        existing_comp = DotDict({"name": "eth99"})
         detector = self._make_detector()
         detector.device_types.cached_components = {"interface_templates": {("device", 1): {"eth99": existing_comp}}}
         yaml_data = {"interfaces": []}  # key present but empty → removal detected
@@ -126,7 +121,7 @@ class TestCompareComponents:
         assert any(c.component_name == "eth99" and c.change_type == ChangeType.COMPONENT_REMOVED for c in changes)
 
     def test_no_removal_when_key_absent(self):
-        existing_comp = MagicMock()
+        existing_comp = DotDict({})
         detector = self._make_detector()
         detector.device_types.cached_components = {"interface_templates": {("device", 1): {"eth99": existing_comp}}}
         yaml_data = {}  # 'interfaces' key absent → YAML doesn't manage this type
@@ -135,8 +130,7 @@ class TestCompareComponents:
 
     def test_removal_when_key_absent_with_remove_unmanaged_types(self):
         """remove_unmanaged_types=True flags removals even when the YAML omits the section entirely."""
-        existing_comp = MagicMock()
-        existing_comp.name = "eth99"
+        existing_comp = DotDict({"name": "eth99"})
         dt_instance = MagicMock()
         dt_instance.cached_components = {"interface_templates": {("device", 1): {"eth99": existing_comp}}}
         detector = ChangeDetector(dt_instance, MagicMock(), remove_unmanaged_types=True)
@@ -145,8 +139,7 @@ class TestCompareComponents:
         assert any(c.component_name == "eth99" and c.change_type == ChangeType.COMPONENT_REMOVED for c in changes)
 
     def test_component_changed_when_property_differs(self):
-        existing_comp = MagicMock()
-        existing_comp.type = "virtual"
+        existing_comp = DotDict({"type": "virtual"})
         detector = self._make_detector()
         detector.device_types.cached_components = {"interface_templates": {("device", 1): {"eth0": existing_comp}}}
         yaml_data = {"interfaces": [{"name": "eth0", "type": "1000base-t"}]}
@@ -170,22 +163,20 @@ class TestCompareComponentProperties:
 
     def test_name_property_skipped(self):
         detector = self._make_detector()
-        netbox_comp = MagicMock()
+        netbox_comp = DotDict({})
         changes = detector._compare_component_properties({"name": "eth0"}, netbox_comp, ["name"])
         assert changes == []
 
     def test_change_detected(self):
         detector = self._make_detector()
-        netbox_comp = MagicMock()
-        netbox_comp.type = "virtual"
+        netbox_comp = DotDict({"type": "virtual"})
         changes = detector._compare_component_properties({"type": "1000base-t"}, netbox_comp, ["name", "type"])
         assert len(changes) == 1
         assert changes[0].property_name == "type"
 
     def test_omitted_prop_not_compared(self):
         detector = self._make_detector()
-        netbox_comp = MagicMock()
-        netbox_comp.type = "virtual"
+        netbox_comp = DotDict({"type": "virtual"})
         changes = detector._compare_component_properties({}, netbox_comp, ["name", "type"])
         assert changes == []
 
@@ -209,8 +200,7 @@ class TestDetectChanges:
         assert report.new_device_types[0].model == "X"
 
     def test_existing_unchanged_increments_count(self):
-        existing = MagicMock()
-        existing.id = 1
+        existing = DotDict({"id": 1})
         detector = self._make_detector_with_cache(
             existing_by_model={("cisco", "X"): existing},
             cached_components={},
@@ -221,9 +211,7 @@ class TestDetectChanges:
         assert len(report.modified_device_types) == 0
 
     def test_existing_with_change_goes_to_modified(self):
-        existing = MagicMock()
-        existing.id = 1
-        existing.u_height = 1
+        existing = DotDict({"id": 1, "u_height": 1})
         detector = self._make_detector_with_cache(
             existing_by_model={("cisco", "X"): existing},
             cached_components={},
@@ -240,8 +228,7 @@ class TestDetectChanges:
         assert len(report.modified_device_types) == 1
 
     def test_slug_fallback_lookup(self):
-        existing = MagicMock()
-        existing.id = 1
+        existing = DotDict({"id": 1})
         detector = self._make_detector_with_cache(
             existing_by_model={},
             existing_by_slug={("cisco", "x"): existing},
@@ -329,8 +316,7 @@ class TestCompareImageProperties:
     def test_missing_front_image_detected(self):
         """YAML=true, NetBox=None → should report a missing image."""
         yaml_data = {"front_image": True}
-        netbox_dt = MagicMock()
-        netbox_dt.front_image = None
+        netbox_dt = DotDict({"front_image": None})
 
         changes = ChangeDetector._compare_image_properties(yaml_data, netbox_dt)
 
@@ -342,8 +328,7 @@ class TestCompareImageProperties:
     def test_missing_rear_image_detected(self):
         """YAML=true, NetBox=None → should report a missing image."""
         yaml_data = {"rear_image": True}
-        netbox_dt = MagicMock()
-        netbox_dt.rear_image = None
+        netbox_dt = DotDict({"rear_image": None})
 
         changes = ChangeDetector._compare_image_properties(yaml_data, netbox_dt)
 
@@ -355,9 +340,7 @@ class TestCompareImageProperties:
     def test_both_images_missing(self):
         """Both images defined in YAML but missing in NetBox."""
         yaml_data = {"front_image": True, "rear_image": True}
-        netbox_dt = MagicMock()
-        netbox_dt.front_image = None
-        netbox_dt.rear_image = None
+        netbox_dt = DotDict({"front_image": None, "rear_image": None})
 
         changes = ChangeDetector._compare_image_properties(yaml_data, netbox_dt)
 
@@ -368,8 +351,7 @@ class TestCompareImageProperties:
     def test_existing_image_not_flagged(self):
         """YAML=true, NetBox=URL → no change reported."""
         yaml_data = {"front_image": True}
-        netbox_dt = MagicMock()
-        netbox_dt.front_image = "http://netbox/media/devicetypes/front.jpg"
+        netbox_dt = DotDict({"front_image": "http://netbox/media/devicetypes/front.jpg"})
 
         changes = ChangeDetector._compare_image_properties(yaml_data, netbox_dt)
 
@@ -378,8 +360,7 @@ class TestCompareImageProperties:
     def test_yaml_false_no_change(self):
         """YAML=false → no change reported regardless of NetBox state."""
         yaml_data = {"front_image": False}
-        netbox_dt = MagicMock()
-        netbox_dt.front_image = None
+        netbox_dt = DotDict({"front_image": None})
 
         changes = ChangeDetector._compare_image_properties(yaml_data, netbox_dt)
 
@@ -388,9 +369,7 @@ class TestCompareImageProperties:
     def test_yaml_omitted_no_change(self):
         """Image key omitted from YAML → no change reported."""
         yaml_data = {"model": "Test"}
-        netbox_dt = MagicMock()
-        netbox_dt.front_image = None
-        netbox_dt.rear_image = None
+        netbox_dt = DotDict({"front_image": None, "rear_image": None})
 
         changes = ChangeDetector._compare_image_properties(yaml_data, netbox_dt)
 
@@ -399,8 +378,7 @@ class TestCompareImageProperties:
     def test_empty_string_treated_as_missing(self):
         """NetBox returns empty string instead of None → still flagged as missing."""
         yaml_data = {"front_image": True}
-        netbox_dt = MagicMock()
-        netbox_dt.front_image = ""
+        netbox_dt = DotDict({"front_image": ""})
 
         changes = ChangeDetector._compare_image_properties(yaml_data, netbox_dt)
 
