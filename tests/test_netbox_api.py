@@ -8336,3 +8336,24 @@ class TestImageUploadErrorDetail:
         logged = " ".join(str(c.args[0]) for c in mock_settings.handle.log.call_args_list)
         assert "truncated" in logged
         assert len(logged) < 1000
+
+    def test_control_characters_in_body_are_escaped(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path
+    ):
+        """A response body cannot inject line breaks that forge additional log records."""
+        dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
+        img = tmp_path / "front.jpg"
+        img.write_bytes(b"fake")
+        mock_settings.handle.log.reset_mock()
+
+        forged = '{"detail":"boom"}\r\n[12:34:56] Device Type Created: FORGED - 999\x1b[31m'
+        with _netbox_returning(400, forged) as url:
+            dt.upload_images(url, "token", {"front_image": str(img)}, 1)
+
+        logged = " ".join(str(c.args[0]) for c in mock_settings.handle.log.call_args_list)
+        assert "\n" not in logged
+        assert "\r" not in logged
+        assert "\x1b" not in logged
+        # The text is still reported, just neutralised.
+        assert "\\r\\n" in logged
+        assert "FORGED" in logged

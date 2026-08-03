@@ -45,6 +45,11 @@ def _build_auth_header(token):
 # returns a full HTML traceback page, which would otherwise flood the log.
 _MAX_ERROR_BODY_CHARS = 500
 
+# Server-controlled text is escaped before logging: LogHandler.log emits one timestamped
+# record per call, so an embedded newline would let a response forge additional records.
+_LOG_ESCAPES = {c: f"\\x{c:02x}" for c in [*range(0x20), 0x7F]}
+_LOG_ESCAPES.update({ord("\n"): "\\n", ord("\r"): "\\r", ord("\t"): "\\t"})
+
 
 def _format_request_error(exc) -> str:
     """Return *exc* as text, with NetBox's response body appended when there is one.
@@ -53,10 +58,13 @@ def _format_request_error(exc) -> str:
     NetBox reports the actual cause (e.g. ``{"front_image": ["Upload a valid image..."]}``
     for an image above its pixel cap).  Without the body an operator sees nothing but
     ``400 Client Error: Bad Request``.
+
+    The body is server-controlled, so control characters are escaped before truncation.
     """
     body = (getattr(getattr(exc, "response", None), "text", "") or "").strip()
     if not body:
         return str(exc)
+    body = body.translate(_LOG_ESCAPES)
     if len(body) > _MAX_ERROR_BODY_CHARS:
         body = f"{body[:_MAX_ERROR_BODY_CHARS]}… (truncated)"
     return f"{exc} — NetBox returned: {body}"
