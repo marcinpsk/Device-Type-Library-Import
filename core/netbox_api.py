@@ -41,6 +41,35 @@ def _build_auth_header(token):
     return f"{scheme} {token}"
 
 
+# Cap on the NetBox response body appended to an error log: a 500 raised with DEBUG enabled
+# returns a full HTML traceback page, which would otherwise flood the log.
+_MAX_ERROR_BODY_CHARS = 500
+
+# Server-controlled text is escaped before logging: LogHandler.log emits one timestamped
+# record per call, so an embedded newline would let a response forge additional records.
+_LOG_ESCAPES = {c: f"\\x{c:02x}" for c in [*range(0x20), 0x7F]}
+_LOG_ESCAPES.update({ord("\n"): "\\n", ord("\r"): "\\r", ord("\t"): "\\t"})
+
+
+def _format_request_error(exc) -> str:
+    """Return *exc* as text, with NetBox's response body appended when there is one.
+
+    ``requests.HTTPError`` stringifies to only the status line, discarding the body where
+    NetBox reports the actual cause (e.g. ``{"front_image": ["Upload a valid image..."]}``
+    for an image above its pixel cap).  Without the body an operator sees nothing but
+    ``400 Client Error: Bad Request``.
+
+    The body is server-controlled, so control characters are escaped before truncation.
+    """
+    body = (getattr(getattr(exc, "response", None), "text", "") or "").strip()
+    if not body:
+        return str(exc)
+    body = body.translate(_LOG_ESCAPES)
+    if len(body) > _MAX_ERROR_BODY_CHARS:
+        body = f"{body[:_MAX_ERROR_BODY_CHARS]}… (truncated)"
+    return f"{exc} — NetBox returned: {body}"
+
+
 def _fmt_connection_error(url: str, exc: Exception) -> str:
     """Return a human-friendly message for a connection-level network error.
 
@@ -240,7 +269,7 @@ def _delete_image_attachment(base_url: str, token: str, att_id: int, ignore_ssl:
         response.raise_for_status()
         return True
     except requests.RequestException as e:
-        handle.log(f"Error deleting image attachment {att_id}: {e}")
+        handle.log(f"Error deleting image attachment {att_id}: {_format_request_error(e)}")
         return False
 
 
@@ -3800,7 +3829,7 @@ class DeviceTypes:
             if self._image_progress:
                 self._image_progress(len(images))
         except requests.RequestException as e:
-            self.handle.log(f"Error uploading images for device type {device_type}: {e}")
+            self.handle.log(f"Error uploading images for device type {device_type}: {_format_request_error(e)}")
         except OSError as e:
             self.handle.log(f"Error reading image file for device type {device_type}: {e}")
         finally:
@@ -3855,7 +3884,9 @@ class DeviceTypes:
                     self._image_progress(1)
                 return True
         except requests.RequestException as e:
-            self.handle.log(f"Error uploading image attachment for {object_type} {object_id}: {e}")
+            self.handle.log(
+                f"Error uploading image attachment for {object_type} {object_id}: {_format_request_error(e)}"
+            )
             return False
         except OSError as e:
             self.handle.log(f"Error reading image file {image_path}: {e}")

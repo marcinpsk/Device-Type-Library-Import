@@ -1,9 +1,14 @@
 import queue
+import threading
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
 import pytest
 from unittest.mock import MagicMock, patch
 from core.netbox_api import (
     NetBox,
     DeviceTypes,
+    _delete_image_attachment,
     _FrontPortRecordWithMappings,
 )
 from helpers import paginate_dispatch
@@ -8188,3 +8193,167 @@ class TestRemainingCoverageBranches:
 
         assert progress.update.call_args_list[0].args == (1,)
         assert progress.update.call_args_list[0].kwargs == {"completed": 2}
+
+
+# ---------------------------------------------------------------------------
+# Image-upload failures must surface NetBox's HTTP status and response body.
+# Exercised against a real local HTTP server so requests, raise_for_status and
+# response parsing all run for real; only NetBox itself is substituted.
+# ---------------------------------------------------------------------------
+
+
+class _CannedHandler(BaseHTTPRequestHandler):
+    """Replies to every request with the status/body configured on the server."""
+
+    def _reply(self):
+        self.send_response(self.server.canned_status)
+        self.send_header("Content-Type", "application/json")
+        self.end_headers()
+        self.wfile.write(self.server.canned_body.encode())
+
+    do_PATCH = _reply
+    do_POST = _reply
+    do_DELETE = _reply
+
+    def log_message(self, *args):
+        pass
+
+
+@contextmanager
+def _netbox_returning(status, body):
+    """Run a local HTTP server that answers every request with *status* and *body*."""
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _CannedHandler)
+    server.canned_status = status
+    server.canned_body = body
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_address[1]}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+
+# The real 400 NetBox >= 4.6.5 returns for an image above its 25 MP cap.
+_OVERSIZE_BODY = (
+    '{"front_image":["Upload a valid image. The file you uploaded was either not an image or a corrupted image."]}'
+)
+
+
+class TestImageUploadErrorDetail:
+    """Failed uploads must log NetBox's status code and response body, not just str(exc)."""
+
+    def test_upload_images_logs_status_and_response_body(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path
+    ):
+        """A 400 from NetBox surfaces the field-level reason it returned."""
+        dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
+        img = tmp_path / "front.jpg"
+        img.write_bytes(b"not-really-a-jpeg")
+        mock_settings.handle.log.reset_mock()
+
+        with _netbox_returning(400, _OVERSIZE_BODY) as url:
+            dt.upload_images(url, "token", {"front_image": str(img)}, 42)
+
+        logged = " ".join(str(c.args[0]) for c in mock_settings.handle.log.call_args_list)
+        assert "400" in logged
+        assert "not an image or a corrupted image" in logged
+
+    def test_upload_images_logs_body_for_server_error(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path
+    ):
+        """A 500 surfaces the body too — this is the case issue #102 could not diagnose."""
+        dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
+        img = tmp_path / "front.jpg"
+        img.write_bytes(b"fake")
+        mock_settings.handle.log.reset_mock()
+
+        with _netbox_returning(500, "PermissionError: [Errno 13] Permission denied: '/opt/netbox/netbox/media'") as url:
+            dt.upload_images(url, "token", {"front_image": str(img)}, 30)
+
+        logged = " ".join(str(c.args[0]) for c in mock_settings.handle.log.call_args_list)
+        assert "500" in logged
+        assert "Permission denied" in logged
+
+    def test_upload_image_attachment_logs_status_and_response_body(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path
+    ):
+        """The image-attachment path (module types) reports the same detail."""
+        dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
+        img = tmp_path / "module.png"
+        img.write_bytes(b"fake")
+        mock_settings.handle.log.reset_mock()
+
+        with _netbox_returning(400, '{"image":["Upload a valid image."]}') as url:
+            ok = dt.upload_image_attachment(url, "token", str(img), "dcim.moduletype", 7)
+
+        assert ok is False
+        logged = " ".join(str(c.args[0]) for c in mock_settings.handle.log.call_args_list)
+        assert "400" in logged
+        assert "Upload a valid image." in logged
+
+    def test_upload_images_success_is_unaffected(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path
+    ):
+        """A 200 still counts the upload and logs nothing at error level."""
+        counter = {"images": 0}
+        dt = make_device_types(nb_api=mock_pynetbox.api.return_value, counter=counter)
+        img = tmp_path / "front.jpg"
+        img.write_bytes(b"fake")
+        mock_settings.handle.log.reset_mock()
+
+        with _netbox_returning(200, "{}") as url:
+            dt.upload_images(url, "token", {"front_image": str(img)}, 1)
+
+        assert counter["images"] == 1
+        assert not mock_settings.handle.log.called
+
+    def test_delete_image_attachment_logs_response_body(self):
+        """Attachment deletion reports NetBox's reason rather than a bare status line."""
+        handle = MagicMock()
+
+        with _netbox_returning(409, '{"detail":"Attachment is in use."}') as url:
+            ok = _delete_image_attachment(url, "token", 5, False, handle)
+
+        assert ok is False
+        logged = " ".join(str(c.args[0]) for c in handle.log.call_args_list)
+        assert "409" in logged
+        assert "Attachment is in use." in logged
+
+    def test_long_error_body_is_truncated(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path
+    ):
+        """A DEBUG-mode HTML traceback page is capped instead of flooding the log."""
+        dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
+        img = tmp_path / "front.jpg"
+        img.write_bytes(b"fake")
+        mock_settings.handle.log.reset_mock()
+
+        with _netbox_returning(500, "<html>" + ("x" * 5000) + "</html>") as url:
+            dt.upload_images(url, "token", {"front_image": str(img)}, 1)
+
+        logged = " ".join(str(c.args[0]) for c in mock_settings.handle.log.call_args_list)
+        assert "truncated" in logged
+        assert len(logged) < 1000
+
+    def test_control_characters_in_body_are_escaped(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path
+    ):
+        """A response body cannot inject line breaks that forge additional log records."""
+        dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
+        img = tmp_path / "front.jpg"
+        img.write_bytes(b"fake")
+        mock_settings.handle.log.reset_mock()
+
+        forged = '{"detail":"boom"}\r\n[12:34:56] Device Type Created: FORGED - 999\x1b[31m'
+        with _netbox_returning(400, forged) as url:
+            dt.upload_images(url, "token", {"front_image": str(img)}, 1)
+
+        logged = " ".join(str(c.args[0]) for c in mock_settings.handle.log.call_args_list)
+        assert "\n" not in logged
+        assert "\r" not in logged
+        assert "\x1b" not in logged
+        # The text is still reported, just neutralised.
+        assert "\\r\\n" in logged
+        assert "FORGED" in logged
