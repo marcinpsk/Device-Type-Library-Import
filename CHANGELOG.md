@@ -2,6 +2,54 @@
 
 <!-- version list -->
 
+## v1.7.1 (2026-08-03)
+
+### Bug Fixes
+
+- Include netbox status and response body in image upload errors (#103, [`3aa7bc3`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/3aa7bc3a3528e04e8bd44f60f77af366b22163b9))
+- Include netbox status and response body in image upload errors (#103, [`3aa7bc3`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/3aa7bc3a3528e04e8bd44f60f77af366b22163b9))
+- Escape control characters in logged netbox response bodies (#103, [`3aa7bc3`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/3aa7bc3a3528e04e8bd44f60f77af366b22163b9))
+
+
+### Chores
+
+- **ci**: Bump docker/login-action in the github-actions group (#101, [`b9a837e`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/b9a837e4d29104d431926e080df949a631337988))
+- **deps**: Bump the python-deps group with 3 updates (#100, [`aea638f`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/aea638f93623d8501c0857b9ce4ef52bd927f128))
+- **ci**: Bump the github-actions group with 4 updates (#99, [`f3acc46`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/f3acc46faeb16dcd7422d071dc8a1b3fe206b492))
+- Add codeowners to auto-request @marcinpsk on prs ([`83d78da`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/83d78da8894b3f8ff49e54264152022be9c05607))
+- **deps**: Bump the python-deps group with 2 updates (#98, [`35695f8`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/35695f825398039d72cad7f4f409568a8fc72da9))
+- **deps**: Bump the python-deps group with 2 updates (#97, [`8b24715`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8b247156a98d1fb85447bdd013f8461e1b65cc6c))
+- **ci**: Bump astral-sh/setup-uv in the github-actions group (#96, [`7e5b2fb`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/7e5b2fb00d401b4c496e41a6fbea74759d4a20ad))
+- **ci**: Bump the github-actions group with 6 updates (#95, [`39bd65e`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/39bd65e74f54befd71cabb2129ace134c606f8e5))
+- **deps**: Bump ruff from 0.15.18 to 0.15.20 in the python-deps group (#94, [`b37ea64`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/b37ea64927ccd79d329af5b051f04b21dbe1db68))
+- **ci**: Bump actions/setup-python in the github-actions group (#93, [`a6fe23b`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/a6fe23b8c40e216bd7e1be0fa1db72f899800946))
+- **deps**: Bump the python-deps group with 3 updates (#92, [`55b5e9e`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/55b5e9eaba9e9e42fb55bc768e3628875158b8e8))
+- **ci**: Bump actions/checkout in the github-actions group (#91, [`17b6a14`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/17b6a140789a26ec18c06e7f5611978236005061))
+- **deps**: Bump the python-deps group with 2 updates (#89, [`64fd58d`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/64fd58d8df78c8c9fca71843e77df988d175bd3d))
+
+
+### Continuous Integration
+
+- Run weekly netbox-main test with login_required=true (#90, [`ef9e0e9`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/ef9e0e9375d30ad60f0785f936fe6630175165ac))
+- Run integration tests via pytest instead of direct python invocation (#88, [`71bb410`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/71bb4106203f06da1e79b8132a9f549982ebb998))
+
+
+### Testing
+
+- Harden test suite — real objects over mocks, integration as pytest (#88, [`71bb410`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/71bb4106203f06da1e79b8132a9f549982ebb998))
+- Register integration pytest mark (#88, [`71bb410`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/71bb4106203f06da1e79b8132a9f549982ebb998))
+- Guard autouse fixtures against integration-marked tests (#88, [`71bb410`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/71bb4106203f06da1e79b8132a9f549982ebb998))
+- Add integration conftest with collection-time skip guard (#88, [`71bb410`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/71bb4106203f06da1e79b8132a9f549982ebb998))
+- Convert integration test to proper pytest module (#88, [`71bb410`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/71bb4106203f06da1e79b8132a9f549982ebb998))
+- Replace magicmock data stubs with real objects across 4 test files (#88, [`71bb410`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/71bb4106203f06da1e79b8132a9f549982ebb998))
+- Restore lost test, convert data-stub mocks to real objects (#88, [`71bb410`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/71bb4106203f06da1e79b8132a9f549982ebb998))
+
+
+
+### Contributors
+
+@dependabot[bot], @marcinpsk
+
 ## v1.7.0 (2026-06-10)
 
 ### Chores
