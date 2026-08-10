@@ -294,7 +294,13 @@ class NetBoxGraphQLClient:
                 raise GraphQLError(f"Invalid JSON response from NetBox GraphQL endpoint: {exc}") from exc
 
             if "errors" in body:
-                messages = "; ".join(e.get("message", str(e)) for e in body["errors"])
+                errors = body["errors"]
+                messages = "; ".join(e.get("message", str(e)) for e in errors)
+                # An execution error carries the response path of the field whose resolver
+                # failed, and arrives with partial data. The schema was fine, so it must not
+                # look like an unsupported field to callers that downgrade their query.
+                if any(isinstance(e, dict) and "path" in e for e in errors):
+                    raise GraphQLError(messages)
                 raise GraphQLSchemaError(messages)
 
             return body.get("data", {})
@@ -623,10 +629,10 @@ class NetBoxGraphQLClient:
         """
         try:
             items = self.query_all(query, list_key="image_attachment_list")
-        except GraphQLError as e:
-            if isinstance(e, GraphQLCountMismatchError):
-                raise
-            # Fallback: fetch all attachments and filter in Python
+        except GraphQLSchemaError:
+            # Older NetBox rejects the ContentTypeFilter syntax: fetch all attachments and
+            # filter in Python. Only a schema rejection may trigger this, since the fallback
+            # scans every attachment in the install.
             fallback_query = """
             query($pagination: OffsetPaginationInput) {
               image_attachment_list(pagination: $pagination) {
@@ -684,9 +690,8 @@ class NetBoxGraphQLClient:
         """
         try:
             items = self.query_all(query, list_key="image_attachment_list")
-        except GraphQLError as e:
-            if isinstance(e, GraphQLCountMismatchError):
-                raise
+        except GraphQLSchemaError:
+            # Same fallback as get_module_type_images, restricted to schema rejections.
             fallback_query = """
             query($pagination: OffsetPaginationInput) {
               image_attachment_list(pagination: $pagination) {

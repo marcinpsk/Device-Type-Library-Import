@@ -891,11 +891,13 @@ class TestGetModuleTypeImageDetails:
         assert result[43]["detail"] == {"att_id": 3, "url": "http://example.com/detail.jpg"}
 
     def test_fallback_on_graphql_error(self, mocker):
-        """When filtered query fails, falls back to fetch-all + Python filter by object_type."""
-        from core.graphql_client import GraphQLError
+        """When NetBox rejects the filter syntax, falls back to fetch-all + Python filter by object_type."""
+        from core.graphql_client import GraphQLSchemaError
 
         client = self._make_client()
-        error = GraphQLError("Field 'filters' not found")
+        # A rejected filter argument reaches this path as GraphQLSchemaError; a transport
+        # failure stays a plain GraphQLError and must not reach the fallback.
+        error = GraphQLSchemaError("Field 'filters' not found")
 
         fallback_items = [
             {
@@ -2382,6 +2384,26 @@ class TestComponentFallbackClassification:
 
         assert set(attempts) == {"T1"}, f"transport failure triggered a schema fallback: {attempts}"
 
+    def test_resolver_failure_does_not_fall_back_to_older_field_tiers(self):
+        """An execution error carries a path and partial data; the schema is fine, so do not downgrade."""
+        from core.graphql_client import GraphQLError, GraphQLSchemaError
+
+        resolver_failure = (
+            '{"data": {"front_port_template_list": [{"name": "FP1", "mappings": null}]}, '
+            '"errors": [{"message": "Resolver failed", '
+            '"path": ["front_port_template_list", 0, "mappings"]}]}'
+        )
+        url, server, attempts = self._serve({"T1": resolver_failure, "T2": self.EMPTY_PAGE})
+        try:
+            client = NetBoxGraphQLClient(url, "token", page_size=10)
+            with pytest.raises(GraphQLError) as excinfo:
+                client.get_component_templates("front_port_templates")
+        finally:
+            server.shutdown()
+
+        assert set(attempts) == {"T1"}, f"resolver failure triggered a schema fallback: {attempts}"
+        assert not isinstance(excinfo.value, GraphQLSchemaError)
+
     def test_schema_error_still_falls_back_to_the_older_field_tier(self):
         url, server, attempts = self._serve({"T1": self.SCHEMA_ERROR, "T2": self.EMPTY_PAGE})
         try:
@@ -2392,3 +2414,76 @@ class TestComponentFallbackClassification:
 
         assert result == []
         assert "T1" in attempts and "T2" in attempts
+
+
+class TestImageAttachmentFallbackClassification:
+    """The image-attachment filter fallback must react to schema errors, not to transport failures."""
+
+    FILTERED_MARKER = "filters:"
+    EMPTY_PAGE = '{"data": {"image_attachment_list": []}}'
+    SCHEMA_ERROR = '{"errors": [{"message": "Unknown argument \'filters\' on field \'image_attachment_list\'."}]}'
+
+    @pytest.fixture(autouse=True)
+    def mock_graphql_requests(self):
+        """Override the global session mock so these tests drive a real HTTP server."""
+        yield None
+
+    @classmethod
+    def _serve(cls, filtered_body, unfiltered_body):
+        """Serve the filtered and unfiltered attachment queries, recording which arrived.
+
+        A body of None means "close the connection without responding".
+        """
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        attempts = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+                kind = "filtered" if cls.FILTERED_MARKER in raw else "unfiltered"
+                attempts.append(kind)
+                body = filtered_body if kind == "filtered" else unfiltered_body
+                if body is None:
+                    self.close_connection = True
+                    return
+                payload = body.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                """Silence the default stderr access log."""
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return f"http://127.0.0.1:{server.server_port}", server, attempts
+
+    @pytest.mark.parametrize("method", ["get_module_type_images", "get_module_type_image_details"])
+    def test_transport_failure_does_not_trigger_the_unfiltered_fallback(self, method):
+        """Falling back on a dropped connection replaces one filtered query with a whole-table scan."""
+        from core.graphql_client import GraphQLError
+
+        url, server, attempts = self._serve(None, self.EMPTY_PAGE)
+        try:
+            client = NetBoxGraphQLClient(url, "token", page_size=10)
+            with pytest.raises(GraphQLError):
+                getattr(client, method)()
+        finally:
+            server.shutdown()
+
+        assert set(attempts) == {"filtered"}, f"transport failure triggered the unfiltered fallback: {attempts}"
+
+    @pytest.mark.parametrize("method", ["get_module_type_images", "get_module_type_image_details"])
+    def test_schema_error_still_triggers_the_unfiltered_fallback(self, method):
+        url, server, attempts = self._serve(self.SCHEMA_ERROR, self.EMPTY_PAGE)
+        try:
+            client = NetBoxGraphQLClient(url, "token", page_size=10)
+            getattr(client, method)()
+        finally:
+            server.shutdown()
+
+        assert "filtered" in attempts and "unfiltered" in attempts
