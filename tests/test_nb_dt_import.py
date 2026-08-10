@@ -1670,6 +1670,18 @@ class TestMainAdditionalCoverage:
         MockRepo.assert_not_called()
         MockNetBox.assert_not_called()
 
+    def test_main_clears_environment_slugs_before_running_the_export(self, nb_dt_import, monkeypatch):
+        """The export must receive no slug filter, and must say it dropped the environment value."""
+        monkeypatch.setattr(nb_dt_import.settings, "SLUGS", ["env-slug"])
+        with (
+            patch.object(sys, "argv", ["nb-dt-import.py", "--export-diff"]),
+            patch("nb_dt_import._run_export_diff") as mock_run_export,
+        ):
+            nb_dt_import.main()
+
+        args = mock_run_export.call_args.args[2]
+        assert args.slugs == []
+
     def test_main_uses_slug_fast_path_device_files(self, nb_dt_import):
         mock_repo = _make_mock_repo()
         mock_repo.discover_vendors.return_value = [{"name": "Cisco", "slug": "cisco"}]

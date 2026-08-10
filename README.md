@@ -66,6 +66,15 @@ The image is public; no `docker login` is needed to pull it.
 Pin a version tag for scheduled or automated runs so an upstream change cannot alter the
 behavior of a job that already works.
 
+None of these tags is immutable: the image workflow also runs when a release is edited, which
+rebuilds and re-pushes the same version tag. Pin the digest when a run must never change:
+
+```shell
+docker buildx imagetools inspect ghcr.io/marcinpsk/device-type-library-import:1.7.1
+docker run --rm --env-file .env \
+  ghcr.io/marcinpsk/device-type-library-import@sha256:b27ee7c0…
+```
+
 ### Quick start
 
 Write your NetBox URL and API token (the token needs **write rights**) into a `.env` file:
