@@ -2198,3 +2198,102 @@ class TestErrorHierarchy:
 
         with pytest.raises(GraphQLError):
             raise GraphQLCountMismatchError("page cap exceeded")
+
+
+class TestHTTPErrorReporting:
+    """HTTP failures are reported against a real server, so the response body is real too."""
+
+    @pytest.fixture(autouse=True)
+    def mock_graphql_requests(self):
+        """Override the global session mock so these tests drive a real HTTP server."""
+        yield None
+
+    @staticmethod
+    def _serve(responses):
+        """Run a local HTTP server that replies with each (status, body) in *responses*.
+
+        The final entry repeats once the list is exhausted.  Returns (url, server, calls)
+        where *calls* is a mutable list recording how many requests arrived.
+        """
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        calls = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                index = min(len(calls), len(responses) - 1)
+                calls.append(index)
+                status, body = responses[index]
+                payload = body.encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                """Silence the default stderr access log."""
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return f"http://127.0.0.1:{server.server_port}", server, calls
+
+    def _client(self, url):
+        return NetBoxGraphQLClient(url, "token", page_size=10)
+
+    def test_server_error_reports_the_response_body(self):
+        from core.graphql_client import GraphQLError
+
+        url, server, _ = self._serve([(500, "IntegrityError at /graphql/: connection lost")])
+        try:
+            client = self._client(url)
+            with pytest.raises(GraphQLError) as excinfo:
+                client.query("{ manufacturer_list { id } }", _retries=0)
+        finally:
+            server.shutdown()
+
+        assert "IntegrityError at /graphql/: connection lost" in str(excinfo.value)
+
+    def test_server_error_body_is_truncated(self):
+        from core.graphql_client import GraphQLError
+
+        url, server, _ = self._serve([(500, "E" * 5000)])
+        try:
+            client = self._client(url)
+            with pytest.raises(GraphQLError) as excinfo:
+                client.query("{ manufacturer_list { id } }", _retries=0)
+        finally:
+            server.shutdown()
+
+        message = str(excinfo.value)
+        assert "truncated" in message
+        assert len(message) < 2000
+
+    def test_transient_server_error_is_retried(self):
+        """A NetBox 500 during a database restart must not abort a long run."""
+        url, server, calls = self._serve(
+            [(500, "database is starting up"), (200, '{"data": {"manufacturer_list": []}}')]
+        )
+        try:
+            client = self._client(url)
+            result = client.query("{ manufacturer_list { id } }")
+        finally:
+            server.shutdown()
+
+        assert result == {"manufacturer_list": []}
+        assert len(calls) == 2
+
+    def test_persistent_server_error_still_reports_the_body(self):
+        from core.graphql_client import GraphQLError
+
+        url, server, calls = self._serve([(500, "ProgrammingError: relation does not exist")])
+        try:
+            client = self._client(url)
+            with pytest.raises(GraphQLError) as excinfo:
+                client.query("{ manufacturer_list { id } }", _retries=1)
+        finally:
+            server.shutdown()
+
+        assert "ProgrammingError: relation does not exist" in str(excinfo.value)
+        assert len(calls) == 2

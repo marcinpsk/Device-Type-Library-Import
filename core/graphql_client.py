@@ -143,6 +143,29 @@ COMPONENT_TEMPLATE_FIELDS = {
 # in the query to correctly cache module bays owned by module types.
 _NO_MODULE_TYPE = {"device_bay_templates"}
 
+# NetBox returns the real cause (a database error, a plugin traceback) in the response body,
+# so it is worth reporting. Django error pages can be large, hence the cap.
+_MAX_ERROR_BODY_CHARS = 1000
+
+# 500 is included because NetBox returns it while its database is restarting or out of
+# connections, which is transient during a long paginated run.
+_RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+
+
+def _response_body_detail(response):
+    """Return the response body as a suffix for an error message, truncated and stripped."""
+    if response is None:
+        return ""
+    try:
+        body = response.text.strip()
+    except Exception:  # pragma: no cover - a body that cannot be decoded is not worth failing on
+        return ""
+    if not body:
+        return ""
+    if len(body) > _MAX_ERROR_BODY_CHARS:
+        body = f"{body[:_MAX_ERROR_BODY_CHARS]}… (truncated)"
+    return f"\nResponse body: {body}"
+
 
 class NetBoxGraphQLClient:
     """Client for querying NetBox via its GraphQL API.
@@ -237,18 +260,20 @@ class NetBoxGraphQLClient:
                 body = response.json()
             except requests.exceptions.HTTPError as exc:
                 status = exc.response.status_code if exc.response is not None else None
+                detail = _response_body_detail(exc.response)
                 if status == 403:
                     raise GraphQLError(
                         f"403 Forbidden from {self.graphql_url}\n"
                         "Hint: Verify that your API token has the required permissions "
                         "and that GraphQL is enabled in the NetBox configuration."
+                        f"{detail}"
                     ) from exc
-                if status in {429, 502, 503, 504} and attempt < _retries:
+                if status in _RETRYABLE_STATUSES and attempt < _retries:
                     backoff = 2**attempt
                     time.sleep(backoff)
                     continue
-                # Non-transient HTTP errors are not retried.
-                raise GraphQLError(str(exc)) from exc
+                # Non-transient HTTP errors, and retryable ones that ran out of attempts.
+                raise GraphQLError(f"{exc}{detail}") from exc
             except requests.RequestException as exc:
                 if attempt < _retries:
                     backoff = 2**attempt
