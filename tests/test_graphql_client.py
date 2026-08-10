@@ -2313,3 +2313,82 @@ class TestHTTPErrorReporting:
 
         assert "ProgrammingError: relation does not exist" in str(excinfo.value)
         assert len(calls) == 2
+
+
+class TestComponentFallbackClassification:
+    """The front_port_templates tier fallback must react to schema errors, not to transport failures."""
+
+    EMPTY_PAGE = '{"data": {"front_port_template_list": []}}'
+    SCHEMA_ERROR = '{"errors": [{"message": "Cannot query field \'mappings\' on type \'FrontPortTemplateType\'."}]}'
+
+    @pytest.fixture(autouse=True)
+    def mock_graphql_requests(self):
+        """Override the global session mock so these tests drive a real HTTP server."""
+        yield None
+
+    @staticmethod
+    def _serve(reply_for_tier):
+        """Serve front-port queries, dispatching on which field tier the query uses.
+
+        *reply_for_tier* maps "T1"/"T2"/"T3" to a body string, or to None meaning
+        "close the connection without responding" (a transport failure).  Returns
+        (url, server, attempts) where *attempts* records the tier of each request.
+        """
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        attempts = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+                if "mappings {" in raw:
+                    tier = "T1"
+                elif "rear_port_position" in raw:
+                    tier = "T2"
+                else:
+                    tier = "T3"
+                attempts.append(tier)
+
+                body = reply_for_tier.get(tier)
+                if body is None:
+                    self.close_connection = True
+                    return
+                payload = body.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                """Silence the default stderr access log."""
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return f"http://127.0.0.1:{server.server_port}", server, attempts
+
+    def test_transport_failure_does_not_fall_back_to_older_field_tiers(self):
+        """A dropped connection means "try again", not "this NetBox lacks mappings"."""
+        from core.graphql_client import GraphQLError
+
+        url, server, attempts = self._serve({"T1": None, "T2": self.EMPTY_PAGE, "T3": self.EMPTY_PAGE})
+        try:
+            client = NetBoxGraphQLClient(url, "token", page_size=10)
+            with pytest.raises(GraphQLError):
+                client.get_component_templates("front_port_templates")
+        finally:
+            server.shutdown()
+
+        assert set(attempts) == {"T1"}, f"transport failure triggered a schema fallback: {attempts}"
+
+    def test_schema_error_still_falls_back_to_the_older_field_tier(self):
+        url, server, attempts = self._serve({"T1": self.SCHEMA_ERROR, "T2": self.EMPTY_PAGE})
+        try:
+            client = NetBoxGraphQLClient(url, "token", page_size=10)
+            result = client.get_component_templates("front_port_templates")
+        finally:
+            server.shutdown()
+
+        assert result == []
+        assert "T1" in attempts and "T2" in attempts

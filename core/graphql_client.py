@@ -29,6 +29,16 @@ class GraphQLCountMismatchError(GraphQLError):
     """
 
 
+class GraphQLSchemaError(GraphQLError):
+    """Raised when NetBox answers 200 but rejects the query itself.
+
+    Only the server's schema can produce this, so it is the one failure that tells
+    a caller a field is unsupported.  Transport failures must stay a plain
+    :class:`GraphQLError`: they say nothing about the schema and retrying is the
+    right response.
+    """
+
+
 class DotDict(dict):
     """Dict subclass that supports attribute access, matching pynetbox Record patterns.
 
@@ -285,7 +295,7 @@ class NetBoxGraphQLClient:
 
             if "errors" in body:
                 messages = "; ".join(e.get("message", str(e)) for e in body["errors"])
-                raise GraphQLError(messages)
+                raise GraphQLSchemaError(messages)
 
             return body.get("data", {})
 
@@ -776,15 +786,16 @@ class NetBoxGraphQLClient:
         #   Tier 1: mappings { ... }       (NetBox 4.5+)
         #   Tier 2: rear_port_position     (<4.5 direct scalar field)
         #   Tier 3: neither                (future: field removed entirely)
+        # Only a schema rejection means the tier is unsupported. Transport failures
+        # propagate: falling back on those queries an older tier against a server that
+        # supports the newer one, silently dropping the mappings data.
         original_exc = last_exc = None
         for variant in field_variants:
             try:
                 return self.query_all(
                     _build_query(variant), list_key=list_key, on_page=on_page, variables=extra_variables
                 )
-            except GraphQLError as exc:
-                if isinstance(exc, GraphQLCountMismatchError):
-                    raise
+            except GraphQLSchemaError as exc:
                 last_exc = exc
                 if original_exc is None:
                     original_exc = exc
