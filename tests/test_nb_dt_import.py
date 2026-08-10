@@ -1624,6 +1624,7 @@ class TestDirectHelpers:
             "--force-resolve-conflicts is an import-only flag and cannot be used with --export-diff"
         )
 
+    def test_run_export_diff_wires_up_exporter(self, nb_dt_import):
         """_run_export_diff wires up Exporter with progress panel and console."""
         handle = MagicMock()
         progress = MagicMock()
