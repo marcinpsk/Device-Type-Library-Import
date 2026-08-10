@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, call, mock_open, patch
-from git import Repo as GitRepo, exc as git_exc
+from git import Actor, Repo as GitRepo, exc as git_exc
 from core.repo import (
     DTLRepo,
     _resolve_index_path,
@@ -135,15 +135,23 @@ class TestDTLRepoRealGit:
         """Override the global autouse git mock so these tests exercise real git."""
         yield None
 
-    @staticmethod
-    def _make_source_repo(path):
+    # Pinned so the fixture never depends on ambient git config or on getpass.getuser().
+    ACTOR = Actor("DTL test", "dtl-test@example.invalid")
+
+    @classmethod
+    def _commit(cls, repo, path, message):
+        """Stage *path* in *repo* and commit it under the fixed test identity."""
+        repo.index.add([path])
+        repo.index.commit(message, author=cls.ACTOR, committer=cls.ACTOR)
+
+    @classmethod
+    def _make_source_repo(cls, path):
         """Create a real git repository at *path* holding one device-type file."""
         source = GitRepo.init(path, initial_branch="master")
         devices = path / "device-types" / "TestVendor"
         devices.mkdir(parents=True)
         (devices / "device.yaml").write_text("manufacturer: TestVendor\nmodel: Test\n")
-        source.index.add(["device-types/TestVendor/device.yaml"])
-        source.index.commit("initial")
+        cls._commit(source, "device-types/TestVendor/device.yaml", "initial")
         return source
 
     def _init_dtl(self, source, target):
@@ -181,8 +189,7 @@ class TestDTLRepoRealGit:
 
         new_file = source / "device-types" / "TestVendor" / "second.yaml"
         new_file.write_text("manufacturer: TestVendor\nmodel: Second\n")
-        source_repo.index.add(["device-types/TestVendor/second.yaml"])
-        source_repo.index.commit("second device")
+        self._commit(source_repo, "device-types/TestVendor/second.yaml", "second device")
 
         _, mock_handle = self._init_dtl(source, target)
 
