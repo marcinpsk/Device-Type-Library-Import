@@ -1,5 +1,9 @@
 """Tests for the NetBox GraphQL client module (TDD - tests written first)."""
 
+import ast
+import pathlib
+import textwrap
+
 import pytest
 from unittest.mock import MagicMock
 import requests
@@ -2328,6 +2332,14 @@ class TestComponentFallbackClassification:
         """Override the global session mock so these tests drive a real HTTP server."""
         yield None
 
+    @pytest.fixture(autouse=True)
+    def no_retry_backoff(self):
+        """Drop the 1+2+4s production back-off; the retry count and error type are unchanged."""
+        from unittest.mock import patch
+
+        with patch("core.graphql_client.time.sleep"):
+            yield
+
     @staticmethod
     def _serve(reply_for_tier):
         """Serve front-port queries, dispatching on which field tier the query uses.
@@ -2428,6 +2440,14 @@ class TestImageAttachmentFallbackClassification:
         """Override the global session mock so these tests drive a real HTTP server."""
         yield None
 
+    @pytest.fixture(autouse=True)
+    def no_retry_backoff(self):
+        """Drop the 1+2+4s production back-off; the retry count and error type are unchanged."""
+        from unittest.mock import patch
+
+        with patch("core.graphql_client.time.sleep"):
+            yield
+
     @classmethod
     def _serve(cls, filtered_body, unfiltered_body):
         """Serve the filtered and unfiltered attachment queries, recording which arrived.
@@ -2492,25 +2512,69 @@ class TestImageAttachmentFallbackClassification:
 class TestErrorHandlingStandards:
     """Guard the defect class where a broad catch turns a failure into a silent downgrade."""
 
+    BASE_ERROR = "GraphQLError"
+
+    @classmethod
+    def _local_names_for_base_error(cls, tree):
+        """Return every local name bound to the base error, following import aliases."""
+        names = {cls.BASE_ERROR}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                names.update(a.asname for a in node.names if a.name == cls.BASE_ERROR and a.asname)
+        return names
+
+    @classmethod
+    def _catches_base_error(cls, handler, names):
+        """Report whether *handler* catches the base error, aliased or module-qualified."""
+        caught = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+        return any(
+            (isinstance(c, ast.Name) and c.id in names) or (isinstance(c, ast.Attribute) and c.attr == cls.BASE_ERROR)
+            for c in caught
+        )
+
+    @classmethod
+    def _handlers(cls, tree):
+        """Yield (handler, names) for every except clause that names an exception type."""
+        names = cls._local_names_for_base_error(tree)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ExceptHandler) and node.type is not None:
+                yield node, names
+
+    def test_the_guard_sees_aliased_and_qualified_catches(self):
+        """An import alias or a module-qualified name must not defeat the two guards below."""
+        source = textwrap.dedent(
+            """
+            from core.graphql_client import GraphQLError as GQLError
+            from core import graphql_client
+
+            try:
+                a()
+            except GQLError:
+                pass
+            try:
+                b()
+            except graphql_client.GraphQLError:
+                pass
+            try:
+                c()
+            except graphql_client.GraphQLSchemaError:
+                pass
+            """
+        )
+        tree = ast.parse(source)
+        assert [self._catches_base_error(h, n) for h, n in self._handlers(tree)] == [True, True, False]
+
     def test_client_never_catches_the_base_graphql_error(self):
         """Three separate fallbacks caught GraphQLError and downgraded the query on any failure.
 
         Only GraphQLSchemaError says the server rejected the query. The base class also
         covers transport and execution failures, where downgrading returns incomplete data.
         """
-        import ast
-        import pathlib
-
         import core.graphql_client
 
         source = pathlib.Path(core.graphql_client.__file__).read_text(encoding="utf-8")
-        offenders = []
-        for node in ast.walk(ast.parse(source)):
-            if not isinstance(node, ast.ExceptHandler) or node.type is None:
-                continue
-            caught = node.type.elts if isinstance(node.type, ast.Tuple) else [node.type]
-            if any(isinstance(c, ast.Name) and c.id == "GraphQLError" for c in caught):
-                offenders.append(node.lineno)
+        tree = ast.parse(source)
+        offenders = [h.lineno for h, names in self._handlers(tree) if self._catches_base_error(h, names)]
 
         assert not offenders, (
             f"core/graphql_client.py catches GraphQLError at line(s) {offenders}. "
@@ -2526,9 +2590,6 @@ class TestErrorHandlingStandards:
         netbox_api skipped the cache truncation guard whenever the vendor id fetch failed,
         so a dropped connection turned into an unguarded import.
         """
-        import ast
-        import pathlib
-
         import core.netbox_api
 
         def _terminates(handler):
@@ -2544,13 +2605,10 @@ class TestErrorHandlingStandards:
             )
 
         source = pathlib.Path(core.netbox_api.__file__).read_text(encoding="utf-8")
-        offenders = []
-        for node in ast.walk(ast.parse(source)):
-            if not isinstance(node, ast.ExceptHandler) or node.type is None:
-                continue
-            caught = node.type.elts if isinstance(node.type, ast.Tuple) else [node.type]
-            if any(isinstance(c, ast.Name) and c.id == "GraphQLError" for c in caught) and not _terminates(node):
-                offenders.append(node.lineno)
+        tree = ast.parse(source)
+        offenders = [
+            h.lineno for h, names in self._handlers(tree) if self._catches_base_error(h, names) and not _terminates(h)
+        ]
 
         assert not offenders, (
             f"core/netbox_api.py catches GraphQLError and continues at line(s) {offenders}. "

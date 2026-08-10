@@ -8421,6 +8421,10 @@ class TestPreloadIntegrityGuard:
         finally:
             server.shutdown()
 
+        logged = " ".join(str(call) for call in handle.log.call_args_list)
+        assert "integrity check skipped" not in logged
+        assert device_types._global_preload_done is False
+
     def test_schema_rejection_skips_the_guard_with_a_warning(self):
         """A server that cannot answer the query shape may skip the check, and says so."""
         import json as _json
