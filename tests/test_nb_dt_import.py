@@ -1145,6 +1145,19 @@ class TestPerVendorLoop:
 
         mock_nb.load_vendor.assert_not_called()
 
+    def test_slugs_from_the_environment_still_filter_an_import(self, nb_dt_import, monkeypatch):
+        """The --slugs sentinel default must not drop the SLUGS environment default for imports."""
+        monkeypatch.setattr(nb_dt_import.settings, "SLUGS", ["env-slug"])
+        mock_nb = _make_mock_netbox()
+        mock_repo = _make_mock_repo()
+        mock_repo.discover_vendors.return_value = [{"name": "APC", "slug": "apc"}]
+        mock_repo.get_devices.return_value = (["file.yaml"], [])
+        mock_repo.parse_files.return_value = []
+
+        self._run_main(["nb-dt-import.py"], mock_repo, mock_nb, nb_dt_import)
+
+        assert mock_repo.parse_files.call_args.kwargs["slugs"] == ["env-slug"]
+
     def test_vendor_with_matching_slug_is_processed(self, nb_dt_import):
         """Vendor whose slug matches parsed files does call load_vendor."""
         mock_nb = _make_mock_netbox()
@@ -1436,6 +1449,44 @@ class TestExportDiffFlags:
         )
         assert result.returncode == 2
         assert "--export-diff" in result.stderr
+
+    def test_export_diff_runs_with_slugs_set_in_the_environment(self):
+        """SLUGS in the environment is an import default, not an explicit --slugs, so export runs."""
+        import os
+        import subprocess
+
+        # Blank the NetBox variables so the run stops at the env check and reaches no server.
+        env = {
+            **os.environ,
+            "SLUGS": "ap4431",
+            "REPO_URL": "https://example.com/devicetype-library.git",
+            "NETBOX_URL": "",
+            "NETBOX_TOKEN": "",
+        }
+        result = subprocess.run(
+            ["uv", "run", "--native-tls", "nb-dt-import.py", "--export-diff"],
+            capture_output=True,
+            text=True,
+            cwd=_PROJECT_ROOT,
+            env=env,
+        )
+        assert "--slugs is an import-only flag" not in result.stderr
+        # Reaching the env-var check proves argument validation let the run through.
+        assert 'Environment variable "NETBOX_URL" is not set' in result.stderr
+        assert "Ignoring SLUGS from the environment" in result.stdout
+
+    def test_export_diff_still_rejects_an_explicit_slugs_flag(self):
+        """Passing --slugs on the command line stays an error, environment default or not."""
+        import subprocess
+
+        result = subprocess.run(
+            ["uv", "run", "--native-tls", "nb-dt-import.py", "--export-diff", "--slugs", "ap4431"],
+            capture_output=True,
+            text=True,
+            cwd=_PROJECT_ROOT,
+        )
+        assert result.returncode == 2
+        assert "--slugs is an import-only flag" in result.stderr
 
 
 class TestDirectHelpers:

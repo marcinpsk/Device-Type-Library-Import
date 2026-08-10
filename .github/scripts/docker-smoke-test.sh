@@ -40,9 +40,17 @@ done
 [ "$(docker run --rm "$IMAGE" python -c 'print("python-ok")')" = "python-ok" ] ||
     fail "python command passthrough is broken"
 
-# A volume mounted at /app/repo inherits this ownership; root here means the importer
-# cannot clone into it.
-[ "$(docker run --rm "$IMAGE" stat -c '%U' /app/repo)" = "appuser" ] || fail "/app/repo is not owned by appuser"
+# A fresh named volume inherits the image directory's ownership. Root there is what stopped
+# the importer cloning, so assert against a real mount rather than the image filesystem.
+volume="nb-dt-import-smoke-$$"
+docker volume create "$volume" >/dev/null
+trap 'docker volume rm -f "$volume" >/dev/null 2>&1 || true' EXIT
+mount="type=volume,source=$volume,target=/app/repo"
+
+[ "$(docker run --rm --mount "$mount" "$IMAGE" stat -c '%U' /app/repo)" = "appuser" ] ||
+    fail "a volume mounted at /app/repo is not owned by appuser"
+[ "$(docker run --rm --mount "$mount" "$IMAGE" sh -c 'touch /app/repo/.smoke && echo writable')" = "writable" ] ||
+    fail "appuser cannot write into a volume mounted at /app/repo"
 [ "$(docker run --rm "$IMAGE" id -un)" = "appuser" ] || fail "the container does not run as appuser"
 
 echo "smoke test passed"

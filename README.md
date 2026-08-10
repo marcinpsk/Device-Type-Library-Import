@@ -94,15 +94,20 @@ docker run --rm --env-file .env \
   ghcr.io/marcinpsk/device-type-library-import:latest
 ```
 
-A host directory works too, but create it yourself first. Docker creates a missing bind-mount
-source as `root`, and the container runs as UID 1000 (`appuser`), which then cannot write to it:
+A host directory works too, but create it yourself first and give UID 1000 (`appuser`, the user
+the container runs as) write access. Docker creates a missing bind-mount source as `root`, and
+`mkdir` on a host account that is not UID 1000 has the same effect:
 
 ```shell
 mkdir -p repo
+sudo chown 1000:1000 repo   # skip if your host account is already UID 1000
 docker run --rm --env-file .env \
   -v "$PWD/repo:/app/repo" \
   ghcr.io/marcinpsk/device-type-library-import:latest
 ```
+
+To keep the files owned by your host account instead, run the container as your own user with
+`--user "$(id -u):$(id -g)"`.
 
 ### Passing arguments
 
@@ -114,7 +119,8 @@ docker run --rm --env-file .env ghcr.io/marcinpsk/device-type-library-import:lat
 ```
 
 Alternatively, set `VENDORS` (comma-separated) and `SLUGS` (space-separated) in your environment
-file and pass no arguments at all.
+file and pass no arguments at all. `SLUGS` applies to imports only; [export runs](#export-mode)
+report that they ignore it.
 
 An argument that does not start with `-` runs as a command instead, so the image stays
 usable for debugging:
@@ -428,6 +434,7 @@ directory to keep the output, creating it first for the same reason as the libra
 
 ```shell
 mkdir -p extra
+sudo chown 1000:1000 extra   # skip if your host account is already UID 1000
 docker run --rm --env-file .env -v "$PWD/extra:/app/extra" \
   ghcr.io/marcinpsk/device-type-library-import:latest --export-diff
 ```
@@ -436,6 +443,10 @@ Because it is an export, the import-only flags are rejected rather than ignored:
 `--update`, `--only-new`, `--remove-components`, `--remove-unmanaged-types`, `--slugs`,
 `--verify-images`, and `--force-resolve-conflicts` all exit with an error. `--vendors` still
 works, and narrows the export to those manufacturers.
+
+`SLUGS` in the environment is a default for imports, not an explicit flag, so an export reports
+that it is ignoring the value and continues. The same environment file therefore works for both
+modes.
 
 We're happy about any pull requests!
 
