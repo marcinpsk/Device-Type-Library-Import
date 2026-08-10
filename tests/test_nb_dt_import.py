@@ -1,5 +1,6 @@
 import importlib.util
 import os
+import re
 import runpy
 import sys
 from pathlib import Path
@@ -1877,3 +1878,42 @@ class TestMainAdditionalCoverage:
 
         netbox.device_types.stop_component_preload.assert_called_once_with("job-2", progress=progress)
         mock_finalize.assert_called_once_with(progress, {})
+
+
+class TestReadmeArgumentCoverage:
+    """The README arguments table and the argparse parser must not drift apart."""
+
+    README_HEADING = "#### All Arguments"
+
+    @classmethod
+    def _documented_flags(cls):
+        """Return the ``--flags`` in the Argument column of the README's All Arguments table."""
+        readme = Path(__file__).resolve().parents[1] / "README.md"
+        lines = readme.read_text(encoding="utf-8").splitlines()
+        starts = [i for i, line in enumerate(lines) if line.strip() == cls.README_HEADING]
+        assert starts, f"README.md has no '{cls.README_HEADING}' heading; update README_HEADING"
+        start = starts[0]
+        end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("#")), len(lines))
+        rows = [line for line in lines[start:end] if line.lstrip().startswith("|")]
+        # First cell only: descriptions cross-reference other flags and would mask a missing row.
+        first_cells = [row.strip().strip("|").split("|")[0] for row in rows]
+        return set(re.findall(r"`(--[\w-]+)`", "\n".join(first_cells)))
+
+    @staticmethod
+    def _parser_flags(nb_dt_import):
+        """Return the long options the real parser defines; argparse exposes no public accessor."""
+        parser = nb_dt_import._build_argument_parser()
+        return {
+            option
+            for action in parser._actions
+            for option in action.option_strings
+            if option.startswith("--") and option != "--help"
+        }
+
+    def test_every_parser_flag_is_documented(self, nb_dt_import):
+        missing = self._parser_flags(nb_dt_import) - self._documented_flags()
+        assert not missing, f"CLI flags missing from the README arguments table: {sorted(missing)}"
+
+    def test_table_documents_no_removed_flags(self, nb_dt_import):
+        stale = self._documented_flags() - self._parser_flags(nb_dt_import)
+        assert not stale, f"README arguments table documents flags the parser no longer defines: {sorted(stale)}"
