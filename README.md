@@ -143,8 +143,15 @@ The container needs network access to `NETBOX_URL`:
 - **NetBox on another host**: nothing to do, the default bridge network can reach it.
 - **NetBox in Docker on the same host**: attach the container to the same Docker network
   (`--network netbox_default`) and use the NetBox service name in `NETBOX_URL`.
-- **NetBox on the host itself**: use `--network host`, or point `NETBOX_URL` at
-  `http://host.docker.internal:8000` and add `--add-host host.docker.internal:host-gateway`.
+- **NetBox on the host itself**: `--network host` is the simplest option on Linux. It also
+  works when NetBox listens only on `127.0.0.1`.
+
+  `host.docker.internal` works too, but needs care on Linux. Docker Desktop on macOS and
+  Windows provides the name automatically; on Linux it does not exist unless you add
+  `--add-host host.docker.internal:host-gateway`, and it then resolves to the bridge gateway
+  address, not to loopback. NetBox must therefore listen on an address the bridge can reach.
+  A server bound only to `127.0.0.1`, including a Compose port published as
+  `127.0.0.1:8000:8000`, refuses the connection.
 
 ### Notes
 
