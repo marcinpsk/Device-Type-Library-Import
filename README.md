@@ -41,6 +41,7 @@ There are two ways to run this tool. Both use the same code and accept the same
 - [Component removal](#component-removal-use-with-caution)
 - [Conflict resolution](#conflict-resolution-use-with-caution)
 - [Image verification](#image-verification---verify-images)
+- [Export mode](#export-mode)
 
 ## Run with Docker
 
@@ -277,6 +278,9 @@ uv run nb-dt-import.py --vendors "Palo Alto" --slugs 440
 | `--remove-unmanaged-types` | off | Also delete components whose entire YAML section is missing (e.g. NetBox has interfaces but YAML defines none). Requires `--remove-components`. **Aggressive.** |
 | `--force-resolve-conflicts` | off | Automatically resolve NetBox constraint failures during `--update`. **Destructive.** See below. |
 | `--verify-images` | off | Verify images recorded in NetBox are physically present on the server. Uses an HTTP presence check per image and a local SHA-256 cache to detect local file changes (does not hash the remote file). Re-uploads any image that is missing on the server or whose local file has changed. Useful after recreating a devcontainer or updating local image files. **Makes one HTTP request per image.** |
+| `--export-diff` | off | Export device, module, and rack types that NetBox holds but the local repo does not, or that differ, as DTL-compatible YAML plus images. Does **not** run the import pipeline. See [Export mode](#export-mode). |
+| `--export-diff-dir` | `extra/` | Directory the export writes to. Only meaningful with `--export-diff`. |
+| `--force-export-overwrite` | off | Overwrite files in the export directory that differ from what would be generated from NetBox. Without it, changed files are skipped with a warning. Only meaningful with `--export-diff`. |
 
 #### Update Mode
 
@@ -387,6 +391,26 @@ uv run nb-dt-import.py --vendors nokia --verify-images
   still knows about images, but the files are gone
 - After replacing a local image file with a higher-quality version and wanting NetBox to pick
   it up
+
+#### Export Mode
+
+`--export-diff` runs in the opposite direction to every other mode: instead of importing the
+repo into NetBox, it writes out the device, module, and rack types that NetBox holds but the
+local repo does not, or that differ from it, as DTL-compatible YAML plus images. It does not
+run the import pipeline at all, so nothing in NetBox is modified.
+
+```shell
+uv run nb-dt-import.py --export-diff
+uv run nb-dt-import.py --export-diff --vendors nokia --export-diff-dir extra/
+```
+
+Files that already exist and differ are skipped with a warning. Add
+`--force-export-overwrite` to replace them.
+
+Because it is an export, the import-only flags are rejected rather than ignored:
+`--update`, `--only-new`, `--remove-components`, `--remove-unmanaged-types`, `--slugs`,
+`--verify-images`, and `--force-resolve-conflicts` all exit with an error. `--vendors` still
+works, and narrows the export to those manufacturers.
 
 We're happy about any pull requests!
 
