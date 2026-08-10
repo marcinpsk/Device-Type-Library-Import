@@ -2487,3 +2487,35 @@ class TestImageAttachmentFallbackClassification:
             server.shutdown()
 
         assert "filtered" in attempts and "unfiltered" in attempts
+
+
+class TestErrorHandlingStandards:
+    """Guard the defect class where a broad catch turns a failure into a silent downgrade."""
+
+    def test_client_never_catches_the_base_graphql_error(self):
+        """Three separate fallbacks caught GraphQLError and downgraded the query on any failure.
+
+        Only GraphQLSchemaError says the server rejected the query. The base class also
+        covers transport and execution failures, where downgrading returns incomplete data.
+        """
+        import ast
+        import pathlib
+
+        import core.graphql_client
+
+        source = pathlib.Path(core.graphql_client.__file__).read_text(encoding="utf-8")
+        offenders = []
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.ExceptHandler) or node.type is None:
+                continue
+            caught = node.type.elts if isinstance(node.type, ast.Tuple) else [node.type]
+            if any(isinstance(c, ast.Name) and c.id == "GraphQLError" for c in caught):
+                offenders.append(node.lineno)
+
+        assert not offenders, (
+            f"core/graphql_client.py catches GraphQLError at line(s) {offenders}. "
+            "Catch GraphQLSchemaError to react to a rejected query, or let the error "
+            "propagate to the retry. Catching the base class also swallows transport and "
+            "execution failures, which silently downgrades the query and returns "
+            "incomplete data."
+        )
