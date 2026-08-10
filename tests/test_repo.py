@@ -130,13 +130,13 @@ class TestDTLRepoInit:
 class TestDTLRepoRealGit:
     """Clone/pull branching driven against a real local Git repository (no git mocks)."""
 
+    # Pinned so the fixture never depends on ambient git config or on getpass.getuser().
+    ACTOR = Actor("DTL test", "dtl-test@example.invalid")
+
     @pytest.fixture(autouse=True)
     def mock_git_repo(self):
         """Override the global autouse git mock so these tests exercise real git."""
         yield None
-
-    # Pinned so the fixture never depends on ambient git config or on getpass.getuser().
-    ACTOR = Actor("DTL test", "dtl-test@example.invalid")
 
     @classmethod
     def _commit(cls, repo, path, message):
@@ -155,13 +155,13 @@ class TestDTLRepoRealGit:
         return source
 
     def _init_dtl(self, source, target):
-        """Build a DTLRepo pointing at the *source* repository and the *target* path."""
+        """Run DTLRepo against *source* and *target*; return its exception handler for assertions."""
         mock_args = MagicMock()
         mock_args.url = f"file://{source}"
         mock_args.branch = "master"
         mock_handle = MagicMock()
-        dtl = DTLRepo(mock_args, str(target), mock_handle)
-        return dtl, mock_handle
+        DTLRepo(mock_args, str(target), mock_handle)
+        return mock_handle
 
     def test_clones_into_existing_empty_directory(self, tmp_path):
         """A mounted-but-empty target (Docker volume on first run) must be cloned into, not pulled."""
@@ -172,13 +172,14 @@ class TestDTLRepoRealGit:
         target = tmp_path / "repo"
         target.mkdir()
 
-        _, mock_handle = self._init_dtl(source, target)
+        mock_handle = self._init_dtl(source, target)
 
         mock_handle.exception.assert_not_called()
         assert (target / ".git").is_dir()
         assert (target / "device-types" / "TestVendor" / "device.yaml").is_file()
 
     def test_pulls_when_target_is_an_existing_clone(self, tmp_path):
+        """A second run over an existing clone must fetch new upstream commits."""
         source = tmp_path / "source"
         source.mkdir()
         source_repo = self._make_source_repo(source)
@@ -191,7 +192,7 @@ class TestDTLRepoRealGit:
         new_file.write_text("manufacturer: TestVendor\nmodel: Second\n")
         self._commit(source_repo, "device-types/TestVendor/second.yaml", "second device")
 
-        _, mock_handle = self._init_dtl(source, target)
+        mock_handle = self._init_dtl(source, target)
 
         mock_handle.exception.assert_not_called()
         assert (target / "device-types" / "TestVendor" / "second.yaml").is_file()
