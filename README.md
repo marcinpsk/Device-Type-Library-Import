@@ -94,10 +94,11 @@ docker run --rm --env-file .env \
   ghcr.io/marcinpsk/device-type-library-import:latest
 ```
 
-A host directory works too, but it must be readable and writable by UID 1000 (the `appuser`
-account the container runs as):
+A host directory works too, but create it yourself first. Docker creates a missing bind-mount
+source as `root`, and the container runs as UID 1000 (`appuser`), which then cannot write to it:
 
 ```shell
+mkdir -p repo
 docker run --rm --env-file .env \
   -v "$PWD/repo:/app/repo" \
   ghcr.io/marcinpsk/device-type-library-import:latest
@@ -105,16 +106,30 @@ docker run --rm --env-file .env \
 
 ### Passing arguments
 
-The default command is `python -u nb-dt-import.py`. The image sets no entrypoint, so repeat the
-full command to add [arguments](#arguments):
+Append [arguments](#arguments) to the image name:
 
 ```shell
 docker run --rm --env-file .env ghcr.io/marcinpsk/device-type-library-import:latest \
-  python -u nb-dt-import.py --vendors apc,juniper --update
+  --vendors apc,juniper --update
 ```
 
 Alternatively, set `VENDORS` (comma-separated) and `SLUGS` (space-separated) in your environment
-file and keep the default command.
+file and pass no arguments at all.
+
+An argument that does not start with `-` runs as a command instead, so the image stays
+usable for debugging:
+
+```shell
+docker run --rm -it ghcr.io/marcinpsk/device-type-library-import:latest bash
+```
+
+Older images had no entrypoint, so the only way to pass a flag was to repeat the whole
+command. That form still works:
+
+```shell
+docker run --rm --env-file .env ghcr.io/marcinpsk/device-type-library-import:latest \
+  python -u nb-dt-import.py --vendors apc
+```
 
 ### Docker Compose
 
@@ -125,7 +140,7 @@ services:
     env_file: .env
     volumes:
       - dtl-library:/app/repo
-    command: ["python", "-u", "nb-dt-import.py", "--update"]
+    command: ["--update"]
 
 volumes:
   dtl-library:
@@ -406,6 +421,16 @@ uv run nb-dt-import.py --export-diff --vendors nokia --export-diff-dir extra/
 
 Files that already exist and differ are skipped with a warning. Add
 `--force-export-overwrite` to replace them.
+
+The export directory is relative to the working directory, which is `/app` in the container.
+A `docker run --rm` therefore writes to `/app/extra` and discards it on exit. Mount a host
+directory to keep the output, creating it first for the same reason as the library volume:
+
+```shell
+mkdir -p extra
+docker run --rm --env-file .env -v "$PWD/extra:/app/extra" \
+  ghcr.io/marcinpsk/device-type-library-import:latest --export-diff
+```
 
 Because it is an export, the import-only flags are rejected rather than ignored:
 `--update`, `--only-new`, `--remove-components`, `--remove-unmanaged-types`, `--slugs`,
