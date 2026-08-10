@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, call, mock_open, patch
-from git import exc as git_exc
+from git import Repo as GitRepo, exc as git_exc
 from core.repo import (
     DTLRepo,
     _resolve_index_path,
@@ -125,6 +125,69 @@ class TestDTLRepoInit:
             "ftp://bad.url",
             "URL must use HTTPS, SSH, or file protocol",
         )
+
+
+class TestDTLRepoRealGit:
+    """Clone/pull branching driven against a real local Git repository (no git mocks)."""
+
+    @pytest.fixture(autouse=True)
+    def mock_git_repo(self):
+        """Override the global autouse git mock so these tests exercise real git."""
+        yield None
+
+    @staticmethod
+    def _make_source_repo(path):
+        """Create a real git repository at *path* holding one device-type file."""
+        source = GitRepo.init(path, initial_branch="master")
+        devices = path / "device-types" / "TestVendor"
+        devices.mkdir(parents=True)
+        (devices / "device.yaml").write_text("manufacturer: TestVendor\nmodel: Test\n")
+        source.index.add(["device-types/TestVendor/device.yaml"])
+        source.index.commit("initial")
+        return source
+
+    def _init_dtl(self, source, target):
+        """Build a DTLRepo pointing at the *source* repository and the *target* path."""
+        mock_args = MagicMock()
+        mock_args.url = f"file://{source}"
+        mock_args.branch = "master"
+        mock_handle = MagicMock()
+        dtl = DTLRepo(mock_args, str(target), mock_handle)
+        return dtl, mock_handle
+
+    def test_clones_into_existing_empty_directory(self, tmp_path):
+        """A mounted-but-empty target (Docker volume on first run) must be cloned into, not pulled."""
+        source = tmp_path / "source"
+        source.mkdir()
+        self._make_source_repo(source)
+
+        target = tmp_path / "repo"
+        target.mkdir()
+
+        _, mock_handle = self._init_dtl(source, target)
+
+        mock_handle.exception.assert_not_called()
+        assert (target / ".git").is_dir()
+        assert (target / "device-types" / "TestVendor" / "device.yaml").is_file()
+
+    def test_pulls_when_target_is_an_existing_clone(self, tmp_path):
+        source = tmp_path / "source"
+        source.mkdir()
+        source_repo = self._make_source_repo(source)
+
+        target = tmp_path / "repo"
+        target.mkdir()
+        self._init_dtl(source, target)
+
+        new_file = source / "device-types" / "TestVendor" / "second.yaml"
+        new_file.write_text("manufacturer: TestVendor\nmodel: Second\n")
+        source_repo.index.add(["device-types/TestVendor/second.yaml"])
+        source_repo.index.commit("second device")
+
+        _, mock_handle = self._init_dtl(source, target)
+
+        mock_handle.exception.assert_not_called()
+        assert (target / "device-types" / "TestVendor" / "second.yaml").is_file()
 
 
 class TestDTLRepoPathMethods:

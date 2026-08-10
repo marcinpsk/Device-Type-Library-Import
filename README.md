@@ -4,13 +4,167 @@
 [![NetBox main](https://github.com/marcinpsk/Device-Type-Library-Import/actions/workflows/test-netbox-main.yaml/badge.svg)](https://github.com/marcinpsk/Device-Type-Library-Import/actions/workflows/test-netbox-main.yaml)
 [![NetBox](https://img.shields.io/badge/NetBox-3.2%2B_through_4.5%2B-blue)](https://netbox.dev)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org)
+[![Container image](https://img.shields.io/badge/ghcr.io-device--type--library--import-2496ED?logo=docker&logoColor=white)](https://github.com/marcinpsk/Device-Type-Library-Import/pkgs/container/device-type-library-import)
 
 This library is intended to be your friend and help you import all the device-types defined within
 the [NetBox Device Type Library Repository](https://github.com/netbox-community/devicetype-library).
 
 > **Tested working with NetBox 3.2+ through 4.5+** (weekly CI run against NetBox `main`)
 
----
+## Description
+
+This script will clone a copy of the `netbox-community/devicetype-library` repository to your
+machine to allow it to import the device types you would like without copy and pasting them
+into the NetBox UI.
+
+## How to run it
+
+There are two ways to run this tool. Both use the same code and accept the same
+[environment variables](#environment-variables) and [arguments](#arguments).
+
+| Option | Use it when | Start here |
+| --- | --- | --- |
+| 🐳 **Docker image** — `ghcr.io/marcinpsk/device-type-library-import` | You want a one-off or scheduled import with no local Python setup | [Run with Docker](#run-with-docker) |
+| 📦 **Git clone** — `uv sync` | You are developing, contributing, or want to run from source | [Run from a clone](#run-from-a-clone) |
+
+> ℹ️ **There is no PyPI package.** This tool is not published to PyPI, so `pip install nb-dt-import`
+> (or any similar name) will not get you this project. Use the container image or clone the
+> repository.
+
+### Contents
+
+- [Run with Docker](#run-with-docker)
+- [Run from a clone](#run-from-a-clone)
+- [Environment variables](#environment-variables)
+- [Arguments](#arguments)
+- [Update mode](#update-mode)
+- [Component removal](#component-removal-use-with-caution)
+- [Conflict resolution](#conflict-resolution-use-with-caution)
+- [Image verification](#image-verification---verify-images)
+
+## Run with Docker
+
+Images are published to the GitHub Container Registry for `linux/amd64` and `linux/arm64`:
+
+```shell
+docker pull ghcr.io/marcinpsk/device-type-library-import:latest
+```
+
+The image is public; no `docker login` is needed to pull it.
+
+### Tags
+
+| Tag | Points at |
+| --- | --- |
+| `latest` | Newest build of the `main` branch |
+| `main` | Same as `latest` |
+| `1.7.1` | An exact release |
+| `1.7` | Newest patch release in the `1.7` series |
+| `1` | Newest release in the `1.x` series |
+
+Pin a version tag for scheduled or automated runs so an upstream change cannot alter the
+behavior of a job that already works.
+
+### Quick start
+
+Write your NetBox URL and API token (the token needs **write rights**) into a `.env` file:
+
+```shell
+NETBOX_URL=https://netbox.example.org
+NETBOX_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+See [Environment variables](#environment-variables) for everything else you can set, or copy
+[`.env.example`](.env.example) from this repository as a starting point.
+
+Then run the import:
+
+```shell
+docker run --rm --env-file .env ghcr.io/marcinpsk/device-type-library-import:latest
+```
+
+Without a volume the device-type library is cloned into the container and thrown away when the
+container exits. Mount a volume at `/app/repo` to keep the clone between runs, so later runs
+only fetch new commits:
+
+```shell
+docker run --rm --env-file .env \
+  -v dtl-library:/app/repo \
+  ghcr.io/marcinpsk/device-type-library-import:latest
+```
+
+A host directory works too, but it must be readable and writable by UID 1000 (the `appuser`
+account the container runs as):
+
+```shell
+docker run --rm --env-file .env \
+  -v "$PWD/repo:/app/repo" \
+  ghcr.io/marcinpsk/device-type-library-import:latest
+```
+
+### Passing arguments
+
+The default command is `python -u nb-dt-import.py`. The image sets no entrypoint, so repeat the
+full command to add [arguments](#arguments):
+
+```shell
+docker run --rm --env-file .env ghcr.io/marcinpsk/device-type-library-import:latest \
+  python -u nb-dt-import.py --vendors apc,juniper --update
+```
+
+Alternatively, set `VENDORS` (comma-separated) and `SLUGS` (space-separated) in your environment
+file and keep the default command.
+
+### Docker Compose
+
+```yaml
+services:
+  nb-dt-import:
+    image: ghcr.io/marcinpsk/device-type-library-import:latest
+    env_file: .env
+    volumes:
+      - dtl-library:/app/repo
+    command: ["python", "-u", "nb-dt-import.py", "--update"]
+
+volumes:
+  dtl-library:
+```
+
+Run it as a one-off job:
+
+```shell
+docker compose run --rm nb-dt-import
+```
+
+### Reaching your NetBox instance
+
+The container needs network access to `NETBOX_URL`:
+
+- **NetBox on another host**: nothing to do, the default bridge network can reach it.
+- **NetBox in Docker on the same host**: attach the container to the same Docker network
+  (`--network netbox_default`) and use the NetBox service name in `NETBOX_URL`.
+- **NetBox on the host itself**: use `--network host`, or point `NETBOX_URL` at
+  `http://host.docker.internal:8000` and add `--add-host host.docker.internal:host-gateway`.
+
+### Notes
+
+- `--env-file` is parsed by Docker, not by `python-dotenv`. Quotes are **not** stripped, so write
+  `NETBOX_TOKEN=abc123` and not `NETBOX_TOKEN="abc123"`.
+- Private or self-signed NetBox certificates: mount your CA bundle into the container and set
+  `REQUESTS_CA_BUNDLE` to its path, for example
+  `-v /etc/ssl/certs/my-ca.pem:/ca.pem:ro -e REQUESTS_CA_BUNDLE=/ca.pem`.
+- [`--verify-images`](#image-verification---verify-images) keeps a hash cache in
+  `/home/appuser/.cache/nb-dt-import`. Mount a volume there if you want the cache to survive
+  between runs.
+
+### Building the image yourself
+
+```shell
+docker build -t nb-dt-import .
+docker run --rm --env-file .env nb-dt-import
+```
+
+## Run from a clone
 
 > ⚠️ **direnv users** — This repo ships a `.envrc.example` file.  If you use
 > [direnv](https://direnv.net/), **review the file before enabling it**:
@@ -23,14 +177,6 @@ the [NetBox Device Type Library Repository](https://github.com/netbox-community/
 >
 > The file exclusively loads variables from `.env` into your shell and runs
 > `uv sync` to keep dependencies up to date.  Your `.envrc` is git-ignored.
-
-## Description
-
-This script will clone a copy of the `netbox-community/devicetype-library` repository to your
-machine to allow it to import the device types you would like without copy and pasting them
-into the NetBox UI.
-
-## Getting Started
 
 1. Install dependencies with `uv`:
 
@@ -67,6 +213,8 @@ and device, creating anything that is missing from NetBox while skipping entries
 | `REPO_URL` | | community library | Git URL of the device-type library to clone |
 | `REPO_BRANCH` | | `master` | Branch to check out |
 | `REPO_PATH` | | `./repo` | Local path where the library is cloned. Accepts absolute or relative paths. |
+| `VENDORS` | | all | Comma-separated vendors to import (same effect as `--vendors`) |
+| `SLUGS` | | all | Space-separated device-type slug substrings (same effect as `--slugs`) |
 | `IGNORE_SSL_ERRORS` | | `False` | Set `True` to skip TLS verification (dev only) |
 | `GRAPHQL_PAGE_SIZE` | | `5000` | Items per GraphQL page |
 | `PRELOAD_THREADS` | | `8` | Threads for concurrent component preloading |

@@ -29,6 +29,9 @@ COPY *.py ./
 
 COPY core/ core/
 
+# Pre-create the library clone target so a volume mounted there inherits appuser ownership
+RUN mkdir -p /app/repo
+
 RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
