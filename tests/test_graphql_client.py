@@ -2519,3 +2519,42 @@ class TestErrorHandlingStandards:
             "execution failures, which silently downgrades the query and returns "
             "incomplete data."
         )
+
+    def test_consumers_never_continue_after_catching_the_base_graphql_error(self):
+        """A consumer may catch GraphQLError to fail loudly, never to carry on.
+
+        netbox_api skipped the cache truncation guard whenever the vendor id fetch failed,
+        so a dropped connection turned into an unguarded import.
+        """
+        import ast
+        import pathlib
+
+        import core.netbox_api
+
+        def _terminates(handler):
+            """Report whether the handler cannot fall through to the code after it."""
+            last = handler.body[-1]
+            if isinstance(last, ast.Raise):
+                return True
+            call = last.value if isinstance(last, ast.Expr) else None
+            return (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Name)
+                and call.func.id in {"system_exit", "exit"}
+            )
+
+        source = pathlib.Path(core.netbox_api.__file__).read_text(encoding="utf-8")
+        offenders = []
+        for node in ast.walk(ast.parse(source)):
+            if not isinstance(node, ast.ExceptHandler) or node.type is None:
+                continue
+            caught = node.type.elts if isinstance(node.type, ast.Tuple) else [node.type]
+            if any(isinstance(c, ast.Name) and c.id == "GraphQLError" for c in caught) and not _terminates(node):
+                offenders.append(node.lineno)
+
+        assert not offenders, (
+            f"core/netbox_api.py catches GraphQLError and continues at line(s) {offenders}. "
+            "A failed request is not evidence about the data: catch GraphQLSchemaError to "
+            "react to a rejected query shape, or let the error propagate. Continuing turns a "
+            "transport failure into a disabled correctness guard."
+        )

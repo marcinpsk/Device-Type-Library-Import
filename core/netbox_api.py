@@ -25,7 +25,12 @@ from core.compat import (
     module_type_filter_kwargs,
 )
 from core.formatting import log_property_diffs
-from core.graphql_client import GraphQLCountMismatchError, GraphQLError, NetBoxGraphQLClient
+from core.graphql_client import (
+    GraphQLCountMismatchError,
+    GraphQLError,
+    GraphQLSchemaError,
+    NetBoxGraphQLClient,
+)
 from core.normalization import values_equal
 from core.outcomes import EntityKind, Outcome, OutcomeRegistry
 from core.schema_reader import load_properties_for_type
@@ -2413,13 +2418,12 @@ class DeviceTypes:
                 vendor_dt_ids = {record.id for record in self.existing_device_types.values()}
                 vendor_mt_data = self.graphql.get_module_types(manufacturer_slugs=[manufacturer_slug])
                 vendor_mt_ids = {record.id for models in vendor_mt_data.values() for record in models.values()}
-            except Exception as exc:
+            except GraphQLSchemaError as exc:
+                # Only a rejected query shape may skip the guard; a failed request must not.
                 self.handle.log(f"WARNING: Component cache integrity check skipped: {exc}")
             else:
                 self._verify_component_cache_integrity(vendor_dt_ids, vendor_mt_ids)
-                # Count check is intentionally outside the warning try/except above:
-                # a mismatch means GraphQL silently truncated results and the import
-                # must not proceed with incomplete data.
+                # A mismatch means GraphQL truncated results, so let it propagate.
                 self._check_component_counts_against_rest(vendor_dt_ids, vendor_mt_ids)
 
         self._global_preload_done = True
