@@ -2268,7 +2268,23 @@ class TestHTTPErrorReporting:
 
         message = str(excinfo.value)
         assert "truncated" in message
-        assert len(message) < 2000
+        assert "E" * 1000 in message
+        assert "E" * 1001 not in message
+
+    def test_forbidden_error_reports_both_the_hint_and_the_body(self):
+        from core.graphql_client import GraphQLError
+
+        url, server, _ = self._serve([(403, "GraphQL access is disabled")])
+        try:
+            client = self._client(url)
+            with pytest.raises(GraphQLError) as excinfo:
+                client.query("{ manufacturer_list { id } }", _retries=0)
+        finally:
+            server.shutdown()
+
+        message = str(excinfo.value)
+        assert "Verify that your API token has the required permissions" in message
+        assert "GraphQL access is disabled" in message
 
     def test_transient_server_error_is_retried(self):
         """A NetBox 500 during a database restart must not abort a long run."""
