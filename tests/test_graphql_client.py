@@ -2540,6 +2540,53 @@ class TestErrorHandlingStandards:
             if isinstance(node, ast.ExceptHandler) and node.type is not None:
                 yield node, names
 
+    @staticmethod
+    def _terminates(handler):
+        """Report whether the handler cannot fall through to the code after it."""
+        last = handler.body[-1]
+        if isinstance(last, (ast.Raise, ast.Return)):
+            return True
+        call = last.value if isinstance(last, ast.Expr) else None
+        if not isinstance(call, ast.Call):
+            return False
+        # Bare `system_exit(...)`/`exit(...)`, or a qualified `sys.exit(...)`/`os._exit(...)`.
+        if isinstance(call.func, ast.Name):
+            return call.func.id in {"system_exit", "exit", "quit"}
+        return isinstance(call.func, ast.Attribute) and call.func.attr in {"exit", "_exit"}
+
+    def test_the_guard_sees_every_terminating_handler(self):
+        """A handler that raises, returns or exits does not fall through, however it is spelled."""
+        source = textwrap.dedent(
+            """
+            try:
+                a()
+            except E:
+                raise
+            try:
+                b()
+            except E:
+                return None
+            try:
+                c()
+            except E:
+                system_exit("boom")
+            try:
+                d()
+            except E:
+                sys.exit(1)
+            try:
+                e()
+            except E:
+                os._exit(1)
+            try:
+                f()
+            except E:
+                log("carrying on")
+            """
+        )
+        handlers = [n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.ExceptHandler)]
+        assert [self._terminates(h) for h in handlers] == [True, True, True, True, True, False]
+
     def test_the_guard_sees_aliased_and_qualified_catches(self):
         """An import alias or a module-qualified name must not defeat the two guards below."""
         source = textwrap.dedent(
@@ -2592,22 +2639,12 @@ class TestErrorHandlingStandards:
         """
         import core.netbox_api
 
-        def _terminates(handler):
-            """Report whether the handler cannot fall through to the code after it."""
-            last = handler.body[-1]
-            if isinstance(last, ast.Raise):
-                return True
-            call = last.value if isinstance(last, ast.Expr) else None
-            return (
-                isinstance(call, ast.Call)
-                and isinstance(call.func, ast.Name)
-                and call.func.id in {"system_exit", "exit"}
-            )
-
         source = pathlib.Path(core.netbox_api.__file__).read_text(encoding="utf-8")
         tree = ast.parse(source)
         offenders = [
-            h.lineno for h, names in self._handlers(tree) if self._catches_base_error(h, names) and not _terminates(h)
+            h.lineno
+            for h, names in self._handlers(tree)
+            if self._catches_base_error(h, names) and not self._terminates(h)
         ]
 
         assert not offenders, (
