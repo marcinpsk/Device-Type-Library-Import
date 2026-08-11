@@ -10,10 +10,12 @@ on:
     branches:
       - 'master'
       - 'main'
+  # develop is absent from push above on purpose: a push build publishes a :develop tag.
   pull_request:
     branches:
       - 'master'
       - 'main'
+      - 'develop'
   workflow_dispatch:
   release:
     types: [published, edited]
