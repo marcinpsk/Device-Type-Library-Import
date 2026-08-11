@@ -1,4 +1,10 @@
 repos:
+  # Keep in step with the pinned zizmor in [dependency-groups].dev.
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.29.0
+    hooks:
+      - id: zizmor
+
   - repo: local
     hooks:
       - id: ruff-check

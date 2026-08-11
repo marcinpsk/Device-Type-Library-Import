@@ -3,7 +3,6 @@ name: ci
 
 permissions:
   contents: read
-  packages: write
 
 on:
   push:
@@ -29,6 +28,8 @@ jobs:
       -
         name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       -
         name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
@@ -48,13 +49,20 @@ jobs:
   build-and-push-images:
     needs: smoke-test
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       -
         name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       -
         name: Set lowercase repo name
-        run: echo "REPO_LOWER=$(echo '${{ github.event.repository.name }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: echo "REPO_LOWER=$(echo "$REPO_NAME" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
       -
         name: Docker meta
         id: meta
