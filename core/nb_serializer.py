@@ -7,45 +7,10 @@ comparison against existing repo YAML files.
 import warnings
 from typing import Any
 
-# Maps YAML component key → NetBox endpoint name.
-# Order defines the output key order in the serialized YAML.
-COMPONENT_ENDPOINTS = [
-    ("interfaces", "interface_templates"),
-    ("power-ports", "power_port_templates"),
-    ("console-ports", "console_port_templates"),
-    ("power-outlets", "power_outlet_templates"),
-    ("console-server-ports", "console_server_port_templates"),
-    ("rear-ports", "rear_port_templates"),
-    ("front-ports", "front_port_templates"),
-    ("device-bays", "device_bay_templates"),
-    ("module-bays", "module_bay_templates"),
-]
+from core.component_registry import BY_ENDPOINT, COMPONENT_TYPES
 
-# The DTL endpoint names (for use with get_component_templates())
-COMPONENT_ENDPOINT_NAMES = [ep_name for _, ep_name in COMPONENT_ENDPOINTS]
-
-# Field lists per component type (same fields as graphql_client.COMPONENT_TEMPLATE_FIELDS,
-# minus "id" and parent fields).
-_IFACE_FIELDS = ["name", "type", "label", "description", "mgmt_only", "enabled", "poe_mode", "poe_type", "rf_role"]
-_POWER_PORT_FIELDS = ["name", "type", "label", "description", "maximum_draw", "allocated_draw"]
-_CONSOLE_FIELDS = ["name", "type", "label", "description"]
-_POWER_OUTLET_FIELDS = ["name", "type", "label", "description", "feed_leg"]
-_REAR_PORT_FIELDS = ["name", "type", "label", "description", "positions", "color"]
-_FRONT_PORT_FIELDS = ["name", "type", "label", "description", "color"]  # rear_port handled separately
-_DEVICE_BAY_FIELDS = ["name", "label", "description"]
-_MODULE_BAY_FIELDS = ["name", "position", "label", "description"]
-
-_COMPONENT_FIELDS = {
-    "interface_templates": _IFACE_FIELDS,
-    "power_port_templates": _POWER_PORT_FIELDS,
-    "console_port_templates": _CONSOLE_FIELDS,
-    "console_server_port_templates": _CONSOLE_FIELDS,
-    "power_outlet_templates": _POWER_OUTLET_FIELDS,
-    "rear_port_templates": _REAR_PORT_FIELDS,
-    "front_port_templates": _FRONT_PORT_FIELDS,
-    "device_bay_templates": _DEVICE_BAY_FIELDS,
-    "module_bay_templates": _MODULE_BAY_FIELDS,
-}
+# Row order sets the component key order of the serialized YAML.
+COMPONENT_ENDPOINT_NAMES = [component.endpoint for component in COMPONENT_TYPES]
 
 # Values that are defaults — omit from output to keep YAML clean.
 _OMIT_IF_EQUAL = {
@@ -162,7 +127,7 @@ def _serialize_component(record: Any, fields: list) -> dict:
 
 def _serialize_front_port(record: Any) -> dict:
     """Serialize a front port template, including rear_port mapping."""
-    result = _serialize_component(record, _FRONT_PORT_FIELDS)
+    result = _serialize_component(record, BY_ENDPOINT["front_port_templates"].fields)
     mappings = getattr(record, "mappings", None) or []
     if mappings:
         if len(mappings) > 1:
@@ -201,17 +166,17 @@ def _serialize_component_list(endpoint_name: str, records: list) -> list:
         if endpoint_name == "front_port_templates":
             out.append(_serialize_front_port(record))
         else:
-            out.append(_serialize_component(record, _COMPONENT_FIELDS[endpoint_name]))
+            out.append(_serialize_component(record, BY_ENDPOINT[endpoint_name].fields))
     return out
 
 
 def _add_components(result: dict, type_id: int, components_by_id: dict) -> None:
     """Append serialized component lists to *result* for a given type id."""
     type_components = components_by_id.get(type_id, {})
-    for yaml_key, endpoint_name in COMPONENT_ENDPOINTS:
-        records = type_components.get(endpoint_name, [])
+    for component in COMPONENT_TYPES:
+        records = type_components.get(component.endpoint, [])
         if records:
-            result[yaml_key] = _serialize_component_list(endpoint_name, records)
+            result[component.yaml_key] = _serialize_component_list(component.endpoint, records)
 
 
 def serialize_device_type(nb_record: Any, components_by_dt_id: dict) -> dict:

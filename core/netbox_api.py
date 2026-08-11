@@ -15,7 +15,15 @@ import glob
 from pathlib import Path
 
 from core.change_detector import ChangeDetector, ChangeType
-from core.component_cache import ENDPOINT_CACHE_MAP, ComponentCache
+from core.component_cache import ComponentCache
+from core.component_registry import (
+    BY_YAML_KEY,
+    COMPONENT_TYPES,
+    LINK_BRIDGE,
+    LINK_POWER_PORT,
+    LINK_REAR_PORTS,
+    MODULE_TYPE_COMPONENTS,
+)
 from core.formatting import log_property_diffs
 from core.graphql_client import GraphQLError, NetBoxGraphQLClient
 from core.normalization import values_equal
@@ -1049,24 +1057,13 @@ class NetBox:
             src_file (str): Filesystem path to the YAML source file (for front-port context).
             saved_images (dict): Mapping of image kind to local file path for upload.
         """
-        if "interfaces" in device_type:
-            self.device_types.create_interfaces(device_type["interfaces"], dt_id)
-        if "power-ports" in device_type:
-            self.device_types.create_power_ports(device_type["power-ports"], dt_id)
-        if "console-ports" in device_type:
-            self.device_types.create_console_ports(device_type["console-ports"], dt_id)
-        if "power-outlets" in device_type:
-            self.device_types.create_power_outlets(device_type["power-outlets"], dt_id)
-        if "console-server-ports" in device_type:
-            self.device_types.create_console_server_ports(device_type["console-server-ports"], dt_id)
-        if "rear-ports" in device_type:
-            self.device_types.create_rear_ports(device_type["rear-ports"], dt_id)
-        if "front-ports" in device_type:
-            self.device_types.create_front_ports(device_type["front-ports"], dt_id, context=src_file)
-        if "device-bays" in device_type:
-            self.device_types.create_device_bays(device_type["device-bays"], dt_id)
-        if self.modules and "module-bays" in device_type:
-            self.device_types.create_module_bays(device_type["module-bays"], dt_id)
+        for component in COMPONENT_TYPES:
+            yaml_key = component.yaml_key
+            if yaml_key not in device_type:
+                continue
+            if yaml_key == "module-bays" and not self.modules:
+                continue
+            self.device_types.create_components(yaml_key, device_type[yaml_key], dt_id, context=src_file)
         if saved_images:
             self.device_types.upload_images(self.url, self.token, saved_images, dt_id)
             _store_image_hashes(self._image_hash_cache, saved_images)
@@ -1329,9 +1326,11 @@ class NetBox:
             components = module_type.get(component_key)
             if not components:
                 continue
-            endpoint_attr, cache_name = ENDPOINT_CACHE_MAP[component_key]
-            endpoint = getattr(self.netbox.dcim, endpoint_attr)
-            existing_components = self.device_types.components.get(cache_name, "module", existing_module.id, endpoint)
+            endpoint_name = BY_YAML_KEY[component_key].endpoint
+            endpoint = getattr(self.netbox.dcim, endpoint_name)
+            existing_components = self.device_types.components.get(
+                endpoint_name, "module", existing_module.id, endpoint
+            )
             requested_names = {c.get("name") for c in components if c.get("name")}
             if any(name not in existing_components for name in requested_names):
                 return True
@@ -1509,18 +1508,12 @@ class NetBox:
             module_type_id (int): ID of the newly created module type in NetBox.
             src_file (str): Source file path for error context.
         """
-        component_map = {
-            "interfaces": self.device_types.create_module_interfaces,
-            "power-ports": self.device_types.create_module_power_ports,
-            "console-ports": self.device_types.create_module_console_ports,
-            "power-outlets": self.device_types.create_module_power_outlets,
-            "console-server-ports": self.device_types.create_module_console_server_ports,
-            "rear-ports": self.device_types.create_module_rear_ports,
-            "front-ports": self.device_types.create_module_front_ports,
-        }
-        for key, create_fn in component_map.items():
-            if key in curr_mt:
-                create_fn(curr_mt[key], module_type_id, context=src_file)
+        for component in MODULE_TYPE_COMPONENTS:
+            yaml_key = component.yaml_key
+            if yaml_key in curr_mt:
+                self.device_types.create_components(
+                    yaml_key, curr_mt[yaml_key], module_type_id, parent_type="module", context=src_file
+                )
 
     def _apply_module_type_component_updates(
         self, curr_mt, module_type_res, properties_updated, remove_components, patch_ok=True
@@ -2123,14 +2116,12 @@ class DeviceTypes:
 
     def _create_generic(
         self,
+        component,
         items,
         parent_id,
-        endpoint,
-        component_name,
         parent_type="device",
         post_process=None,
         context=None,
-        cache_name=None,
     ):
         """Create component templates in NetBox, skipping those that already exist.
 
@@ -2139,15 +2130,17 @@ class DeviceTypes:
         then calls ``endpoint.create()`` and updates counters. On error, logs each failed item.
 
         Args:
+            component (ComponentType): Registry row naming the endpoint, cache and label.
             items (list[dict]): Component definitions to create; each must have a "name" key.
             parent_id (int): ID of the parent device or module type.
-            endpoint: pynetbox endpoint proxy for create/filter calls.
-            component_name (str): Human-readable component type for log messages.
             parent_type (str): ``"device"`` or ``"module"``; determines parent key and counter key.
             post_process (callable | None): Optional ``(items, parent_id)`` callback run before creation.
             context (str | None): Optional context string appended to error log messages.
-            cache_name (str | None): Cache entry invalidated after creation, or None to skip.
         """
+        endpoint = getattr(self.netbox.dcim, component.endpoint)
+        component_name = component.create_label(parent_type)
+        cache_name = component.endpoint
+
         # Look up existing components via cache or API fallback
         existing = self.components.get(cache_name, parent_type, parent_id, endpoint)
 
@@ -2170,8 +2163,7 @@ class DeviceTypes:
                     count = self.handle.log_module_ports_created(created, component_name)
                     self.counter.update({"components_added": count})
 
-                if cache_name:
-                    self.components.invalidate(cache_name, parent_type, parent_id)
+                self.components.invalidate(cache_name, parent_type, parent_id)
             except pynetbox.RequestError as excep:
                 context_str = f" (Context: {context})" if context else ""
                 if isinstance(excep.error, list):
@@ -2301,15 +2293,12 @@ class DeviceTypes:
             device_type_id: NetBox ID of the parent device or module type.
             parent_type (str): ``"device"`` or ``"module"``.
         """
-        mapping = ENDPOINT_CACHE_MAP.get(comp_type)
-        if not mapping:
+        component = BY_YAML_KEY.get(comp_type)
+        if component is None:
             return
-        endpoint_attr, cache_name = mapping
-        endpoint = getattr(self.netbox.dcim, endpoint_attr, None)
-        if not endpoint:
-            return
+        endpoint = getattr(self.netbox.dcim, component.endpoint)
 
-        existing = self.components.get(cache_name, parent_type, device_type_id, endpoint)
+        existing = self.components.get(component.endpoint, parent_type, device_type_id, endpoint)
 
         updates = []
         for change in changes:
@@ -2352,14 +2341,13 @@ class DeviceTypes:
             self.counter.update({"components_updated": success_count})
             self.handle.verbose_log(f"Updated {success_count} {comp_type}")
 
-            self.components.invalidate(cache_name, parent_type, device_type_id)
+            self.components.invalidate(component.endpoint, parent_type, device_type_id)
 
     def _apply_additions_for_type(self, comp_type, changes, yaml_data, device_type_id, parent_type):
         """Create new component templates of a single type based on detected additions.
 
-        Resolves the YAML key for *comp_type* (including alias fallback), finds the
-        specific components to add from *yaml_data*, and delegates creation to the
-        appropriate endpoint helper.
+        Finds the components to add in *yaml_data* and hands them to
+        :meth:`create_components`, which resolves any name references.
 
         Args:
             comp_type (str): YAML component key (e.g. ``"interfaces"``).
@@ -2368,48 +2356,17 @@ class DeviceTypes:
             device_type_id: NetBox ID of the parent device or module type.
             parent_type (str): ``"device"`` or ``"module"``.
         """
-        yaml_key = None
-        if comp_type in yaml_data:
-            yaml_key = comp_type
-        if yaml_key is None:
+        if comp_type not in yaml_data or comp_type not in BY_YAML_KEY:
             return
 
-        mapping = ENDPOINT_CACHE_MAP.get(comp_type)
-        if not mapping:
-            return
-        endpoint_attr, cache_name = mapping
-        endpoint = getattr(self.netbox.dcim, endpoint_attr, None)
-        if not endpoint:
-            return
-
-        # Find the new components in the YAML data
-        yaml_components = yaml_data.get(yaml_key) or []
+        yaml_components = yaml_data.get(comp_type) or []
         new_component_names = {change.component_name for change in changes}
         components_to_add = [c for c in yaml_components if c.get("name") in new_component_names]
 
         if not components_to_add:
             return
 
-        # Front ports require special link_rear_ports post-processing (including M2M on 4.5+).
-        # Delegate to the dedicated create methods instead of calling _create_generic directly.
-        if comp_type == "front-ports":
-            if parent_type == "device":
-                self.create_front_ports(components_to_add, device_type_id)
-            else:
-                self.create_module_front_ports(components_to_add, device_type_id)
-            return
-
-        # Format component name for logging (e.g. "power_port_templates" -> "Power Port")
-        component_name = endpoint_attr.replace("_templates", "").replace("_", " ").title()
-
-        self._create_generic(
-            components_to_add,
-            device_type_id,
-            endpoint,
-            component_name,
-            parent_type=parent_type,
-            cache_name=cache_name,
-        )
+        self.create_components(comp_type, components_to_add, device_type_id, parent_type=parent_type)
 
     def update_components(self, yaml_data, device_type_id, component_changes, parent_type="device"):
         """Update existing components and add new components based on detected changes.
@@ -2459,15 +2416,12 @@ class DeviceTypes:
 
         # Process removals for each component type
         for comp_type, changes in removals_by_type.items():
-            mapping = ENDPOINT_CACHE_MAP.get(comp_type)
-            if not mapping:
+            component = BY_YAML_KEY.get(comp_type)
+            if component is None:
                 continue
-            endpoint_attr, cache_name = mapping
-            endpoint = getattr(self.netbox.dcim, endpoint_attr, None)
-            if not endpoint:
-                continue
+            endpoint = getattr(self.netbox.dcim, component.endpoint)
 
-            existing = self.components.get(cache_name, parent_type, device_type_id, endpoint)
+            existing = self.components.get(component.endpoint, parent_type, device_type_id, endpoint)
 
             ids_to_delete = []
             for change in changes:
@@ -2493,99 +2447,26 @@ class DeviceTypes:
                 self.counter.update({"components_removed": success_count})
                 self.handle.log(f"Removed {success_count} {comp_type}")
 
-                self.components.invalidate(cache_name, parent_type, device_type_id)
+                self.components.invalidate(component.endpoint, parent_type, device_type_id)
 
-    def create_interfaces(self, interfaces, device_type, context=None):
-        """Create interface templates for a device type, handling bridge references.
+    def _build_link_power_port(self, parent_type, label, context=None):
+        """Return a ``post_process`` callable that resolves power-port name references.
 
-        Strips ``bridge`` entries before creation and re-applies them after by resolving
-        bridge interface names to their NetBox IDs.
-
-        Args:
-            interfaces (list[dict]): Interface template definitions; may include a "bridge" key.
-            device_type (int): ID of the parent device type.
-            context (str | None): Optional context string for log messages.
-        """
-        bridged_interfaces = {}
-        # Pre-process to separate bridge config
-        for x in interfaces:
-            if "bridge" in x:
-                bridged_interfaces[x["name"]] = x["bridge"]
-                del x["bridge"]
-
-        self._create_generic(
-            interfaces,
-            device_type,
-            self.netbox.dcim.interface_templates,
-            "Interface",
-            context=context,
-            cache_name="interface_templates",
-        )
-
-        if bridged_interfaces:
-            all_interfaces = self.components.get(
-                "interface_templates",
-                "device",
-                device_type,
-                self.netbox.dcim.interface_templates,
-            )
-
-            to_update = []
-            for name, bridge_name in bridged_interfaces.items():
-                if name in all_interfaces and bridge_name in all_interfaces:
-                    iface = all_interfaces[name]
-                    bridge = all_interfaces[bridge_name]
-                    to_update.append({"id": iface.id, "bridge": bridge.id})
-                else:
-                    self.handle.log(f"Error bridging {name} to {bridge_name}: Interface not found (Context: {context})")
-
-            if to_update:
-                try:
-                    _retry_on_connection_error(self.netbox.dcim.interface_templates.update, to_update)
-                    self.handle.verbose_log(f"Bridged {len(to_update)} interfaces.")
-                except pynetbox.RequestError as e:
-                    self.handle.log(f"Error bridging interfaces: {e} (Context: {context})")
-                except _RETRYABLE_EXCEPTIONS as e:
-                    self.handle.log(
-                        f"Connection error bridging interfaces after {_MAX_RETRIES} retries: {e} (Context: {context})"
-                    )
-
-    def create_power_ports(self, power_ports, device_type, context=None):
-        """Create power port templates for a device type."""
-        self._create_generic(
-            power_ports,
-            device_type,
-            self.netbox.dcim.power_port_templates,
-            "Power Port",
-            context=context,
-            cache_name="power_port_templates",
-        )
-
-    def create_console_ports(self, console_ports, device_type, context=None):
-        """Create console port templates for a device type."""
-        self._create_generic(
-            console_ports,
-            device_type,
-            self.netbox.dcim.console_port_templates,
-            "Console Port",
-            context=context,
-            cache_name="console_port_templates",
-        )
-
-    def create_power_outlets(self, power_outlets, device_type, context=None):
-        """Create power outlet templates for a device type, resolving power-port name references.
+        Power outlets name their feeding power port; NetBox wants its id.  Outlets whose
+        power port cannot be resolved are dropped from the batch with a log entry, so one
+        bad reference does not fail the whole create call.
 
         Args:
-            power_outlets (list[dict]): Power-outlet template definitions; may include a "power_port" name key.
-            device_type (int): ID of the parent device type.
-            context (str | None): Optional context string for log messages.
+            parent_type (str): ``"device"`` or ``"module"``, passed to the component cache.
+            label (str): Human-readable label for log messages (e.g. ``"Power Outlet"``).
+            context (str | None): Optional context string appended to log messages.
         """
 
-        def link_ports(items, pid):
-            """Resolve power-port name references in *items* and persist the outlet templates for device type *pid*."""
+        def link_power_ports(items, pid):
+            """Resolve power-port name references in *items* for parent *pid*."""
             existing_pp = self.components.get(
                 "power_port_templates",
-                "device",
+                parent_type,
                 pid,
                 self.netbox.dcim.power_port_templates,
             )
@@ -2602,7 +2483,7 @@ class DeviceTypes:
                     ctx = f" (Context: {context})" if context else ""
                     self.handle.log(
                         f'Could not find Power Port "{outlet["power_port"]}" for '
-                        f'Power Outlet "{outlet.get("name", "Unknown")}". '
+                        f'{label} "{outlet.get("name", "Unknown")}". '
                         f"Available: {available}{ctx}"
                     )
                     outlets_to_remove.append(outlet)
@@ -2615,41 +2496,11 @@ class DeviceTypes:
                 skipped_names = [o["name"] for o in outlets_to_remove]
                 ctx = f" (Context: {context})" if context else ""
                 self.handle.log(
-                    f"Skipped {len(outlets_to_remove)} power outlet(s) with invalid power port refs: "
+                    f"Skipped {len(outlets_to_remove)} {label.lower()}(s) with invalid power port refs: "
                     f"{skipped_names}{ctx}"
                 )
 
-        self._create_generic(
-            power_outlets,
-            device_type,
-            self.netbox.dcim.power_outlet_templates,
-            "Power Outlet",
-            post_process=link_ports,
-            context=context,
-            cache_name="power_outlet_templates",
-        )
-
-    def create_console_server_ports(self, console_server_ports, device_type, context=None):
-        """Create console server port templates for a device type."""
-        self._create_generic(
-            console_server_ports,
-            device_type,
-            self.netbox.dcim.console_server_port_templates,
-            "Console Server Port",
-            context=context,
-            cache_name="console_server_port_templates",
-        )
-
-    def create_rear_ports(self, rear_ports, device_type, context=None):
-        """Create rear port templates for a device type."""
-        self._create_generic(
-            rear_ports,
-            device_type,
-            self.netbox.dcim.rear_port_templates,
-            "Rear Port",
-            context=context,
-            cache_name="rear_port_templates",
-        )
+        return link_power_ports
 
     def _build_link_rear_ports(self, parent_type, label, context=None):
         """Return a ``post_process`` callable that resolves rear-port name references.
@@ -2766,173 +2617,84 @@ class DeviceTypes:
 
         return link_rear_ports
 
-    def create_front_ports(self, front_ports, device_type, context=None):
-        """Create front port templates for a device type, resolving rear-port references."""
-        self._create_generic(
-            front_ports,
-            device_type,
-            self.netbox.dcim.front_port_templates,
-            "Front Port",
-            post_process=self._build_link_rear_ports("device", "Front Port", context),
-            context=context,
-            cache_name="front_port_templates",
-        )
+    def _link_bridges(self, bridged, parent_id, parent_type, context=None):
+        """Point each bridged interface at its bridge partner, once both exist in NetBox.
 
-    def create_device_bays(self, device_bays, device_type, context=None):
-        """Create device bay templates for a device type."""
-        self._create_generic(
-            device_bays,
-            device_type,
-            self.netbox.dcim.device_bay_templates,
-            "Device Bay",
-            context=context,
-            cache_name="device_bay_templates",
-        )
+        Runs after creation because NetBox wants the partner's id and the YAML has its name.
 
-    def create_module_bays(self, module_bays, device_type, context=None):
-        """Create module bay templates for a device type."""
-        self._create_generic(
-            module_bays,
-            device_type,
-            self.netbox.dcim.module_bay_templates,
-            "Module Bay",
-            context=context,
-            cache_name="module_bay_templates",
-        )
-
-    # Module methods
-    def create_module_interfaces(self, interfaces, module_type, context=None):
-        """Create interface templates for a module type."""
-        self._create_generic(
-            interfaces,
-            module_type,
+        Args:
+            bridged (dict): ``{interface_name: bridge_interface_name}``.
+            parent_id (int): NetBox ID of the parent device or module type.
+            parent_type (str): ``"device"`` or ``"module"``.
+            context (str | None): Optional context string appended to log messages.
+        """
+        all_interfaces = self.components.get(
+            "interface_templates",
+            parent_type,
+            parent_id,
             self.netbox.dcim.interface_templates,
-            "Module Interface",
-            parent_type="module",
-            context=context,
-            cache_name="interface_templates",
         )
 
-    def create_module_power_ports(self, power_ports, module_type, context=None):
-        """Create power port templates for a module type."""
-        self._create_generic(
-            power_ports,
-            module_type,
-            self.netbox.dcim.power_port_templates,
-            "Module Power Port",
-            parent_type="module",
-            context=context,
-            cache_name="power_port_templates",
-        )
+        to_update = []
+        for name, bridge_name in bridged.items():
+            if name in all_interfaces and bridge_name in all_interfaces:
+                to_update.append({"id": all_interfaces[name].id, "bridge": all_interfaces[bridge_name].id})
+            else:
+                self.handle.log(f"Error bridging {name} to {bridge_name}: Interface not found (Context: {context})")
 
-    def create_module_console_ports(self, console_ports, module_type, context=None):
-        """Create console port templates for a module type."""
-        self._create_generic(
-            console_ports,
-            module_type,
-            self.netbox.dcim.console_port_templates,
-            "Module Console Port",
-            parent_type="module",
-            context=context,
-            cache_name="console_port_templates",
-        )
-
-    def create_module_power_outlets(self, power_outlets, module_type, context=None):
-        """Create power outlet templates for a module type, resolving power-port name references."""
-
-        def link_ports(items, pid):
-            """Resolve power-port name references in *items* and persist the outlet templates for module type *pid*."""
-            existing_pp = self.components.get(
-                "power_port_templates",
-                "module",
-                pid,
-                self.netbox.dcim.power_port_templates,
+        if not to_update:
+            return
+        try:
+            _retry_on_connection_error(self.netbox.dcim.interface_templates.update, to_update)
+            self.handle.verbose_log(f"Bridged {len(to_update)} interfaces.")
+        except pynetbox.RequestError as e:
+            self.handle.log(f"Error bridging interfaces: {e} (Context: {context})")
+        except _RETRYABLE_EXCEPTIONS as e:
+            self.handle.log(
+                f"Connection error bridging interfaces after {_MAX_RETRIES} retries: {e} (Context: {context})"
             )
 
-            outlets_to_remove = []
-            for outlet in items:
-                if "power_port" not in outlet:
-                    continue
-                try:
-                    power_port = existing_pp[outlet["power_port"]]
-                    outlet["power_port"] = power_port.id
-                except KeyError:
-                    available = list(existing_pp.keys()) if existing_pp else []
-                    ctx = f" (Context: {context})" if context else ""
-                    self.handle.log(
-                        f'Could not find Power Port "{outlet["power_port"]}" for '
-                        f'Module Power Outlet "{outlet.get("name", "Unknown")}". '
-                        f"Available: {available}{ctx}"
-                    )
-                    outlets_to_remove.append(outlet)
+    def create_components(self, yaml_key, items, parent_id, parent_type="device", context=None):
+        """Create component templates of one kind for one parent, skipping those that exist.
 
-            for outlet in outlets_to_remove:
-                items.remove(outlet)
+        The registry row for *yaml_key* supplies the endpoint, the cache name, the log label
+        and which name references have to become NetBox ids, so every component type takes
+        the same path.
 
-            if outlets_to_remove:
-                skipped_names = [o["name"] for o in outlets_to_remove]
-                ctx = f" (Context: {context})" if context else ""
-                self.handle.log(
-                    f"Skipped {len(outlets_to_remove)} module power outlet(s) with invalid power port refs: "
-                    f"{skipped_names}{ctx}"
-                )
-
-        self._create_generic(
-            power_outlets,
-            module_type,
-            self.netbox.dcim.power_outlet_templates,
-            "Module Power Outlet",
-            parent_type="module",
-            post_process=link_ports,
-            context=context,
-            cache_name="power_outlet_templates",
-        )
-
-    def create_module_console_server_ports(self, console_server_ports, module_type, context=None):
-        """Create console server port templates for a module type."""
-        self._create_generic(
-            console_server_ports,
-            module_type,
-            self.netbox.dcim.console_server_port_templates,
-            "Module Console Server Port",
-            parent_type="module",
-            context=context,
-            cache_name="console_server_port_templates",
-        )
-
-    def create_module_rear_ports(self, rear_ports, module_type, context=None):
-        """Create rear-port templates for a module type in NetBox.
-
-        Adds any rear port templates from `rear_ports` that do not already exist for the specified `module_type`.
         Args:
-            rear_ports (list[dict]): List of rear-port template definitions to create; each item
-                must include a `name` and any other template fields required by NetBox.
-            module_type (int|object): The module type identifier or object used to associate
-                created templates with the parent module type.
-            context (str, optional): Optional context string used for logging to identify the source of these templates.
+            yaml_key (str): YAML component key, e.g. ``"interfaces"``.
+            items (list[dict]): Component definitions from the YAML file.
+            parent_id (int): NetBox ID of the parent device or module type.
+            parent_type (str): ``"device"`` or ``"module"``.
+            context (str | None): Optional context string appended to log messages.
         """
+        component = BY_YAML_KEY[yaml_key]
+        label = component.create_label(parent_type)
+
+        post_process = None
+        if component.link == LINK_POWER_PORT:
+            post_process = self._build_link_power_port(parent_type, label, context)
+        elif component.link == LINK_REAR_PORTS:
+            post_process = self._build_link_rear_ports(parent_type, label, context)
+
+        bridged = {}
+        if component.link == LINK_BRIDGE:
+            # NetBox wants the bridge partner's id, so hold the names back until it exists.
+            for item in items:
+                if "bridge" in item:
+                    bridged[item["name"]] = item.pop("bridge")
+
         self._create_generic(
-            rear_ports,
-            module_type,
-            self.netbox.dcim.rear_port_templates,
-            "Module Rear Port",
-            parent_type="module",
+            component,
+            items,
+            parent_id,
+            parent_type=parent_type,
+            post_process=post_process,
             context=context,
-            cache_name="rear_port_templates",
         )
 
-    def create_module_front_ports(self, front_ports, module_type, context=None):
-        """Create front-port templates for a module type, resolving rear-port references."""
-        self._create_generic(
-            front_ports,
-            module_type,
-            self.netbox.dcim.front_port_templates,
-            "Module Front Port",
-            parent_type="module",
-            post_process=self._build_link_rear_ports("module", "Module Front Port", context),
-            context=context,
-            cache_name="front_port_templates",
-        )
+        if bridged:
+            self._link_bridges(bridged, parent_id, parent_type, context)
 
     def upload_images(self, baseurl, token, images, device_type):
         """Upload front and/or rear image files to the specified NetBox device type.

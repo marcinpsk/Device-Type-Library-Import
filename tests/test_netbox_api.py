@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
 from unittest.mock import MagicMock, patch
+from core.component_registry import BY_YAML_KEY, COMPONENT_TYPES
 from core.netbox_api import (
     NetBox,
     DeviceTypes,
@@ -14,17 +15,7 @@ from helpers import paginate_dispatch
 
 
 # All component list keys used by the GraphQL client for empty-response fallback.
-_ALL_COMPONENT_KEYS = [
-    "interface_template_list",
-    "power_port_template_list",
-    "console_port_template_list",
-    "console_server_port_template_list",
-    "power_outlet_template_list",
-    "rear_port_template_list",
-    "front_port_template_list",
-    "device_bay_template_list",
-    "module_bay_template_list",
-]
+_ALL_COMPONENT_KEYS = [component.list_key for component in COMPONENT_TYPES]
 
 
 def _make_graphql_dispatch(payloads_by_list_key):
@@ -180,7 +171,7 @@ def test_device_types_create_interfaces(mock_settings, mock_pynetbox, graphql_cl
     mock_nb_api.dcim.interface_templates.filter.return_value = []
 
     interfaces = [{"name": "GigabitEthernet1", "type": "virtual"}]
-    dt.create_interfaces(interfaces, device_type=1)
+    dt.create_components("interfaces", interfaces, 1)
 
     # Verify create called
     call_args = mock_nb_api.dcim.interface_templates.create.call_args[0][0]
@@ -670,18 +661,15 @@ class TestCreateGenericError:
         dt = make_device_types(nb_api=mock_nb_api)
         dt.components.record("interface_templates", "device", 1, {})
 
-        endpoint = MagicMock()
         err = real_pynb.RequestError(MagicMock(status_code=400, content=b'{"detail":"bad"}'))
         err.error = ["Name already exists", ""]
-        endpoint.create.side_effect = err
+        mock_nb_api.dcim.interface_templates.create.side_effect = err
 
         dt._create_generic(
+            BY_YAML_KEY["interfaces"],
             [{"name": "eth0"}, {"name": "eth1"}],
             1,
-            endpoint,
-            "Interface",
             parent_type="device",
-            cache_name="interface_templates",
         )
         mock_handle.log.assert_called()
 
@@ -695,18 +683,15 @@ class TestCreateGenericError:
         dt = make_device_types(nb_api=mock_nb_api)
         dt.components.record("interface_templates", "device", 1, {})
 
-        endpoint = MagicMock()
         err = real_pynb.RequestError(MagicMock(status_code=400, content=b'{"detail":"bad"}'))
         err.error = "Something went wrong"
-        endpoint.create.side_effect = err
+        mock_nb_api.dcim.interface_templates.create.side_effect = err
 
         dt._create_generic(
+            BY_YAML_KEY["interfaces"],
             [{"name": "eth0"}],
             1,
-            endpoint,
-            "Interface",
             parent_type="device",
-            cache_name="interface_templates",
         )
         mock_handle.log.assert_called()
 
@@ -760,7 +745,7 @@ class TestCreatePowerConsolePorts:
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
         dt.components.record("power_port_templates", "device", 1, {})
-        dt.create_power_ports([{"name": "PSU1"}], 1)
+        dt.create_components("power-ports", [{"name": "PSU1"}], 1)
         mock_nb_api.dcim.power_port_templates.create.assert_called_once()
 
     def test_create_console_ports_calls_create_generic(
@@ -769,7 +754,7 @@ class TestCreatePowerConsolePorts:
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
         dt.components.record("console_port_templates", "device", 1, {})
-        dt.create_console_ports([{"name": "Con1"}], 1)
+        dt.create_components("console-ports", [{"name": "Con1"}], 1)
         mock_nb_api.dcim.console_port_templates.create.assert_called_once()
 
     def test_create_rear_ports_calls_create_generic(
@@ -778,7 +763,7 @@ class TestCreatePowerConsolePorts:
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
         dt.components.record("rear_port_templates", "device", 1, {})
-        dt.create_rear_ports([{"name": "RP1", "type": "8p8c", "positions": 1}], 1)
+        dt.create_components("rear-ports", [{"name": "RP1", "type": "8p8c", "positions": 1}], 1)
         mock_nb_api.dcim.rear_port_templates.create.assert_called_once()
 
     def test_create_device_bays_calls_create_generic(
@@ -787,7 +772,7 @@ class TestCreatePowerConsolePorts:
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
         dt.components.record("device_bay_templates", "device", 1, {})
-        dt.create_device_bays([{"name": "Bay1"}], 1)
+        dt.create_components("device-bays", [{"name": "Bay1"}], 1)
         mock_nb_api.dcim.device_bay_templates.create.assert_called_once()
 
 
@@ -1225,35 +1210,35 @@ class TestCreateModuleComponents:
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
         dt.components.record("interface_templates", "module", 1, {})
-        dt.create_module_interfaces([{"name": "xe-0"}], 1)
+        dt.create_components("interfaces", [{"name": "xe-0"}], 1, parent_type="module")
         mock_nb_api.dcim.interface_templates.create.assert_called_once()
 
     def test_create_module_power_ports(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
         dt.components.record("power_port_templates", "module", 1, {})
-        dt.create_module_power_ports([{"name": "PSU1"}], 1)
+        dt.create_components("power-ports", [{"name": "PSU1"}], 1, parent_type="module")
         mock_nb_api.dcim.power_port_templates.create.assert_called_once()
 
     def test_create_module_console_ports(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
         dt.components.record("console_port_templates", "module", 1, {})
-        dt.create_module_console_ports([{"name": "Con1"}], 1)
+        dt.create_components("console-ports", [{"name": "Con1"}], 1, parent_type="module")
         mock_nb_api.dcim.console_port_templates.create.assert_called_once()
 
     def test_create_module_console_server_ports(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
         dt.components.record("console_server_port_templates", "module", 1, {})
-        dt.create_module_console_server_ports([{"name": "CSP1"}], 1)
+        dt.create_components("console-server-ports", [{"name": "CSP1"}], 1, parent_type="module")
         mock_nb_api.dcim.console_server_port_templates.create.assert_called_once()
 
     def test_create_module_rear_ports(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
         dt.components.record("rear_port_templates", "module", 1, {})
-        dt.create_module_rear_ports([{"name": "RP1", "type": "8p8c", "positions": 1}], 1)
+        dt.create_components("rear-ports", [{"name": "RP1", "type": "8p8c", "positions": 1}], 1, parent_type="module")
         mock_nb_api.dcim.rear_port_templates.create.assert_called_once()
 
 
@@ -1416,7 +1401,7 @@ class TestCreateConsoleServerPorts:
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
         dt.components.record("console_server_port_templates", "device", 1, {})
-        dt.create_console_server_ports([{"name": "CSP1"}], 1)
+        dt.create_components("console-server-ports", [{"name": "CSP1"}], 1)
         mock_nb_api.dcim.console_server_port_templates.create.assert_called_once()
 
 
@@ -1429,7 +1414,7 @@ class TestCreateModuleBays:
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
         dt.components.record("module_bay_templates", "device", 1, {})
-        dt.create_module_bays([{"name": "MB1"}], 1)
+        dt.create_components("module-bays", [{"name": "MB1"}], 1)
         mock_nb_api.dcim.module_bay_templates.create.assert_called_once()
 
 
@@ -2308,16 +2293,9 @@ class TestCreateDeviceTypesRequestErrorAndComponents:
         dt = make_device_types(nb_api=mock_nb_api)
         dt.existing_device_types = {}
         dt.existing_device_types_by_slug = {}
-        # Patch all create_* methods on dt
-        dt.create_power_ports = MagicMock()
-        dt.create_console_ports = MagicMock()
-        dt.create_power_outlets = MagicMock()
-        dt.create_console_server_ports = MagicMock()
-        dt.create_rear_ports = MagicMock()
-        dt.create_front_ports = MagicMock()
-        dt.create_device_bays = MagicMock()
-        dt.create_module_bays = MagicMock()
-        dt.create_interfaces = MagicMock()
+        # An empty cache entry per endpoint, so creation does not fall back to a REST read.
+        for component in COMPONENT_TYPES:
+            dt.components.record(component.endpoint, "device", 1, {})
         dt.upload_images = MagicMock()
 
         nb = NetBox(mock_settings, mock_handle)
@@ -2348,14 +2326,18 @@ class TestCreateDeviceTypesRequestErrorAndComponents:
         with patch("glob.glob", return_value=[]):
             nb.create_device_types([device_type])
 
-        dt.create_power_ports.assert_called()
-        dt.create_console_ports.assert_called()
-        dt.create_power_outlets.assert_called()
-        dt.create_console_server_ports.assert_called()
-        dt.create_rear_ports.assert_called()
-        dt.create_front_ports.assert_called()
-        dt.create_device_bays.assert_called()
-        dt.create_module_bays.assert_called()
+        for yaml_key in (
+            "power-ports",
+            "console-ports",
+            "power-outlets",
+            "console-server-ports",
+            "rear-ports",
+            "front-ports",
+            "device-bays",
+            "module-bays",
+        ):
+            endpoint = getattr(mock_nb_api.dcim, BY_YAML_KEY[yaml_key].endpoint)
+            endpoint.create.assert_called_once()
 
     def test_upload_images_called_for_new_dt(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path, mock_handle
@@ -2728,7 +2710,7 @@ class TestCreateModuleTypesEdge:
         mock_pynetbox.api.return_value.version = "3.5"
         nb = NetBox(mock_settings, mock_handle)
         nb.device_types = make_device_types(nb_api=mock_pynetbox.api.return_value)
-        nb.device_types.create_module_interfaces = MagicMock()
+        nb.device_types.components.record("interface_templates", "module", 5, {})
 
         existing_mt = MagicMock()
         existing_mt.id = 5
@@ -2748,7 +2730,7 @@ class TestCreateModuleTypesEdge:
             all_module_types=all_module_types,
             module_type_existing_images={},
         )
-        nb.device_types.create_module_interfaces.assert_not_called()
+        mock_pynetbox.api.return_value.dcim.interface_templates.create.assert_not_called()
 
     def test_creates_module_type_with_power_outlets_console_server_ports_front_ports(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
@@ -2757,9 +2739,10 @@ class TestCreateModuleTypesEdge:
         mock_pynetbox.api.return_value.version = "3.5"
         nb = NetBox(mock_settings, mock_handle)
         nb.device_types = make_device_types(nb_api=mock_pynetbox.api.return_value)
-        nb.device_types.create_module_power_outlets = MagicMock()
-        nb.device_types.create_module_console_server_ports = MagicMock()
-        nb.device_types.create_module_front_ports = MagicMock()
+        for endpoint_name in ("power_outlet_templates", "console_server_port_templates", "front_port_templates"):
+            nb.device_types.components.record(endpoint_name, "module", 5, {})
+        nb.device_types.components.record("power_port_templates", "module", 5, {})
+        nb.device_types.components.record("rear_port_templates", "module", 5, {})
 
         created_mt = MagicMock()
         created_mt.id = 5
@@ -2776,9 +2759,36 @@ class TestCreateModuleTypesEdge:
             "src": "/repo/module-types/cisco/lc.yaml",
         }
         nb.create_module_types([module_type], all_module_types={}, module_type_existing_images={})
-        nb.device_types.create_module_power_outlets.assert_called_once()
-        nb.device_types.create_module_console_server_ports.assert_called_once()
-        nb.device_types.create_module_front_ports.assert_called_once()
+        dcim = mock_pynetbox.api.return_value.dcim
+        dcim.power_outlet_templates.create.assert_called_once()
+        dcim.console_server_port_templates.create.assert_called_once()
+        dcim.front_port_templates.create.assert_called_once()
+
+    def test_a_new_module_type_gets_its_module_bays(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """The DTL module-type schema allows module-bays, so creation must not skip them."""
+        mock_pynetbox.api.return_value.version = "3.5"
+        nb = NetBox(mock_settings, mock_handle)
+        nb.device_types = make_device_types(nb_api=mock_pynetbox.api.return_value)
+        nb.device_types.components.record("module_bay_templates", "module", 5, {})
+
+        created_mt = MagicMock()
+        created_mt.id = 5
+        created_mt.manufacturer.name = "Cisco"
+        created_mt.model = "LC"
+        mock_pynetbox.api.return_value.dcim.module_types.create.return_value = created_mt
+
+        module_type = {
+            "manufacturer": {"slug": "cisco"},
+            "model": "LC",
+            "module-bays": [{"name": "MB1", "position": "1"}],
+            "src": "/repo/module-types/cisco/lc.yaml",
+        }
+        nb.create_module_types([module_type], all_module_types={}, module_type_existing_images={})
+
+        (posted,), _ = mock_pynetbox.api.return_value.dcim.module_bay_templates.create.call_args
+        assert posted == [{"name": "MB1", "position": "1", "module_type": 5}]
 
     def test_existing_module_type_property_update_calls_api(self, mock_settings, mock_pynetbox, mock_handle):
         """Existing module type with changed part_number calls module_types.update and increments counter."""
@@ -3256,13 +3266,11 @@ class TestCreateGenericPostProcess:
             post_calls.append((len(items), pid))
 
         dt._create_generic(
+            BY_YAML_KEY["power-outlets"],
             [{"name": "PO1"}],
             1,
-            mock_nb_api.dcim.power_outlet_templates,
-            "Power Outlet",
             parent_type="device",
             post_process=my_post_process,
-            cache_name="power_outlet_templates",
         )
         assert len(post_calls) == 1
         assert post_calls[0] == (1, 1)
@@ -3278,7 +3286,7 @@ class TestUpdateComponentsMiscBranches:
     """Tests for miscellaneous branches in update_components."""
 
     def test_no_mapping_for_comp_type_continues(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """Unknown comp_type (no ENDPOINT_CACHE_MAP entry) is silently skipped."""
+        """Unknown comp_type (no registry row) is silently skipped."""
         from core.change_detector import ChangeType, ComponentChange, PropertyChange
 
         mock_nb_api = mock_pynetbox.api.return_value
@@ -3288,25 +3296,6 @@ class TestUpdateComponentsMiscBranches:
             ComponentChange(
                 component_type="nonexistent-type",
                 component_name="x",
-                change_type=ChangeType.COMPONENT_CHANGED,
-                property_changes=[PropertyChange("label", "a", "b")],
-            )
-        ]
-        # Should not raise
-        dt.update_components({}, 1, changes, parent_type="device")
-
-    def test_no_endpoint_attr_continues(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """If dcim has no attribute for endpoint_attr, the update loop is skipped."""
-        from core.change_detector import ChangeType, ComponentChange, PropertyChange
-
-        mock_nb_api = MagicMock(spec=[])  # no attributes on dcim
-        mock_nb_api.dcim = MagicMock(spec=[])
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        changes = [
-            ComponentChange(
-                component_type="interfaces",
-                component_name="eth0",
                 change_type=ChangeType.COMPONENT_CHANGED,
                 property_changes=[PropertyChange("label", "a", "b")],
             )
@@ -3422,37 +3411,38 @@ class TestUpdateComponentsAdditionsBranches:
         dt.update_components(yaml_data, 1, changes)
         mock_nb_api.dcim.interface_templates.create.assert_not_called()
 
-    def test_front_ports_addition_delegates_to_create_front_ports(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
+    @pytest.mark.parametrize(
+        ("parent_type", "parent_key"),
+        [("device", "device_type"), ("module", "module_type")],
+    )
+    def test_a_front_port_addition_resolves_its_rear_port(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, parent_type, parent_key
     ):
-        """front-ports COMPONENT_ADDED delegates to create_front_ports."""
+        """An added front port is POSTed with the rear port's id, not its name."""
         from core.change_detector import ChangeType, ComponentChange
 
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.create_front_ports = MagicMock()
-        dt.components.record("front_port_templates", "device", 1, {})
+        dt.m2m_front_ports = True
+        dt.components.record("front_port_templates", parent_type, 1, {})
+        dt.components.record("rear_port_templates", parent_type, 1, {"RP1": MagicMock(id=7)})
 
         changes = [ComponentChange("front-ports", "FP1", ChangeType.COMPONENT_ADDED)]
-        yaml_data = {"front-ports": [{"name": "FP1"}]}
-        dt.update_components(yaml_data, 1, changes, parent_type="device")
-        dt.create_front_ports.assert_called_once()
+        yaml_data = {
+            "front-ports": [
+                {"name": "FP1", "_mappings": [{"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 2}]}
+            ]
+        }
+        dt.update_components(yaml_data, 1, changes, parent_type=parent_type)
 
-    def test_front_ports_addition_module_delegates_to_create_module_front_ports(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
-    ):
-        """front-ports COMPONENT_ADDED for module delegates to create_module_front_ports."""
-        from core.change_detector import ChangeType, ComponentChange
-
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-        dt.create_module_front_ports = MagicMock()
-        dt.components.record("front_port_templates", "module", 1, {})
-
-        changes = [ComponentChange("front-ports", "FP1", ChangeType.COMPONENT_ADDED)]
-        yaml_data = {"front-ports": [{"name": "FP1"}]}
-        dt.update_components(yaml_data, 1, changes, parent_type="module")
-        dt.create_module_front_ports.assert_called_once()
+        (posted,), _ = mock_nb_api.dcim.front_port_templates.create.call_args
+        assert posted == [
+            {
+                "name": "FP1",
+                parent_key: 1,
+                "rear_ports": [{"position": 1, "rear_port": 7, "rear_port_position": 2}],
+            }
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -3464,7 +3454,7 @@ class TestRemoveComponentsBranches:
     """Tests for missing branches in remove_components."""
 
     def test_unknown_comp_type_skipped(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """comp_type with no ENDPOINT_CACHE_MAP entry is silently skipped."""
+        """comp_type with no registry row is silently skipped."""
         from core.change_detector import ChangeType, ComponentChange
 
         mock_nb_api = mock_pynetbox.api.return_value
@@ -3473,17 +3463,6 @@ class TestRemoveComponentsBranches:
         changes = [ComponentChange("nonexistent-type", "x", ChangeType.COMPONENT_REMOVED)]
         dt.remove_components(1, changes)
         # No exception; no delete called
-
-    def test_missing_endpoint_attr_skipped(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """If dcim has no attribute for endpoint_attr, deletion is skipped."""
-        from core.change_detector import ChangeType, ComponentChange
-
-        mock_nb_api = MagicMock(spec=[])
-        mock_nb_api.dcim = MagicMock(spec=[])
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        changes = [ComponentChange("interfaces", "eth0", ChangeType.COMPONENT_REMOVED)]
-        dt.remove_components(1, changes)
 
     def test_request_error_on_delete_is_logged(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
@@ -3535,7 +3514,7 @@ class TestCreateInterfacesBridge:
         interfaces = [
             {"name": "eth0", "type": "virtual", "bridge": "eth1"},
         ]
-        dt.create_interfaces(interfaces, device_type=1, context="test.yaml")
+        dt.create_components("interfaces", interfaces, 1, context="test.yaml")
         mock_handle.log.assert_called()
         assert any("Error bridging" in str(c) for c in mock_handle.log.call_args_list)
 
@@ -3551,9 +3530,29 @@ class TestCreateInterfacesBridge:
         mock_nb_api.dcim.interface_templates.filter.return_value = []
 
         iface = {"name": "eth0", "type": "virtual", "bridge": "eth1"}
-        dt.create_interfaces([iface], device_type=1)
+        dt.create_components("interfaces", [iface], 1)
         # "bridge" key should have been removed from the dict
         assert "bridge" not in iface
+
+    def test_a_module_interface_bridges_like_a_device_interface(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
+    ):
+        """A module interface holds its bridge back too: NetBox wants the partner's id."""
+        mock_nb_api = mock_pynetbox.api.return_value
+        dt = make_device_types(nb_api=mock_nb_api)
+        xe0, xe1 = MagicMock(id=10), MagicMock(id=20)
+        dt.components.record("interface_templates", "module", 1, {})
+        mock_nb_api.dcim.interface_templates.create.return_value = []
+
+        dt.create_components("interfaces", [{"name": "xe-0", "bridge": "xe-1"}, {"name": "xe-1"}], 1, "module")
+
+        (posted,), _ = mock_nb_api.dcim.interface_templates.create.call_args
+        assert posted == [{"name": "xe-0", "module_type": 1}, {"name": "xe-1", "module_type": 1}]
+
+        # The link is applied once both interfaces exist in NetBox.
+        dt.components.record("interface_templates", "module", 1, {"xe-0": xe0, "xe-1": xe1})
+        dt.create_components("interfaces", [{"name": "xe-0", "bridge": "xe-1"}], 1, "module")
+        mock_nb_api.dcim.interface_templates.update.assert_called_once_with([{"id": 10, "bridge": 20}])
 
     def test_bridge_update_success(self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle):
         """Successful bridge update calls verbose_log."""
@@ -3573,7 +3572,7 @@ class TestCreateInterfacesBridge:
             {"name": "eth0", "type": "virtual", "bridge": "eth1"},
             {"name": "eth1", "type": "virtual"},
         ]
-        dt.create_interfaces(interfaces, device_type=1)
+        dt.create_components("interfaces", interfaces, 1)
         mock_nb_api.dcim.interface_templates.update.assert_called_once_with([{"id": 10, "bridge": 20}])
         assert any("Bridged" in str(c) for c in mock_handle.verbose_log.call_args_list)
 
@@ -3602,7 +3601,7 @@ class TestCreateInterfacesBridge:
             {"name": "eth0", "type": "virtual", "bridge": "eth1"},
             {"name": "eth1", "type": "virtual"},
         ]
-        dt.create_interfaces(interfaces, device_type=1, context="test.yaml")
+        dt.create_components("interfaces", interfaces, 1, context="test.yaml")
         mock_handle.log.assert_called()
         assert any("Error bridging" in str(c) for c in mock_handle.log.call_args_list)
 
@@ -3627,7 +3626,7 @@ class TestCreatePowerOutletsInvalidPort:
         mock_handle.log.reset_mock()
 
         power_outlets = [{"name": "PO1", "power_port": "PSU1"}]
-        dt.create_power_outlets(power_outlets, 1, context="test.yaml")
+        dt.create_components("power-outlets", power_outlets, 1, context="test.yaml")
         mock_handle.log.assert_called()
         assert any("Could not find Power Port" in str(c) for c in mock_handle.log.call_args_list)
 
@@ -3648,7 +3647,7 @@ class TestCreatePowerOutletsInvalidPort:
             {"name": "PO1", "power_port": "PSU1"},  # valid
             {"name": "PO2", "power_port": "MISSING"},  # invalid
         ]
-        dt.create_power_outlets(power_outlets, 1)
+        dt.create_components("power-outlets", power_outlets, 1)
         # The "Skipped" log should mention PO2
         assert any("PO2" in str(c) or "Skipped" in str(c) for c in mock_handle.log.call_args_list)
 
@@ -3673,7 +3672,7 @@ class TestBuildLinkRearPorts:
         mock_handle.log.reset_mock()
 
         front_ports = [{"name": "FP1", "type": "8p8c", "rear_port": "RP1"}]
-        dt.create_front_ports(front_ports, 1, context="test.yaml")
+        dt.create_components("front-ports", front_ports, 1, context="test.yaml")
         assert any("Could not find Rear Port" in str(c) for c in mock_handle.log.call_args_list)
 
     def test_rear_port_found_non_m2m(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
@@ -3689,7 +3688,7 @@ class TestBuildLinkRearPorts:
         mock_nb_api.dcim.front_port_templates.create.return_value = []
 
         front_ports = [{"name": "FP1", "type": "8p8c", "rear_port": "RP1", "rear_port_position": 1}]
-        dt.create_front_ports(front_ports, 1)
+        dt.create_components("front-ports", front_ports, 1)
         call_args = mock_nb_api.dcim.front_port_templates.create.call_args[0][0]
         assert call_args[0]["rear_port"] == 77
 
@@ -3706,7 +3705,7 @@ class TestBuildLinkRearPorts:
         mock_nb_api.dcim.front_port_templates.create.return_value = []
 
         front_ports = [{"name": "FP1", "type": "8p8c", "rear_port": "RP1", "rear_port_position": 2}]
-        dt.create_front_ports(front_ports, 1)
+        dt.create_components("front-ports", front_ports, 1)
         call_args = mock_nb_api.dcim.front_port_templates.create.call_args[0][0]
         assert call_args[0]["rear_ports"] == [{"position": 1, "rear_port": 77, "rear_port_position": 2}]
         assert "rear_port" not in call_args[0]
@@ -3730,7 +3729,7 @@ class TestBuildLinkRearPorts:
             {"name": "FP1", "type": "8p8c", "rear_port": "RP1"},
             {"name": "FP2", "type": "8p8c", "rear_port": "MISSING"},
         ]
-        dt.create_front_ports(front_ports, 1, context="test.yaml")
+        dt.create_components("front-ports", front_ports, 1, context="test.yaml")
         assert any("Skipped" in str(c) for c in mock_handle.log.call_args_list)
         call_args = mock_nb_api.dcim.front_port_templates.create.call_args[0][0]
         names = [x["name"] for x in call_args]
@@ -3759,7 +3758,7 @@ class TestCreateModuleFrontPorts:
         mock_nb_api.dcim.front_port_templates.create.return_value = []
 
         front_ports = [{"name": "FP1", "type": "8p8c", "rear_port": "RP1"}]
-        dt.create_module_front_ports(front_ports, 5, context="test.yaml")
+        dt.create_components("front-ports", front_ports, 5, context="test.yaml", parent_type="module")
         call_args = mock_nb_api.dcim.front_port_templates.create.call_args[0][0]
         assert call_args[0]["module_type"] == 5
 
@@ -3784,7 +3783,7 @@ class TestCreateModulePowerOutletsInvalidPort:
         mock_handle.log.reset_mock()
 
         power_outlets = [{"name": "PO1", "power_port": "PSU1"}]
-        dt.create_module_power_outlets(power_outlets, 1, context="test.yaml")
+        dt.create_components("power-outlets", power_outlets, 1, context="test.yaml", parent_type="module")
         assert any("Could not find Power Port" in str(c) for c in mock_handle.log.call_args_list)
 
     def test_multiple_outlets_one_invalid(
@@ -3804,7 +3803,7 @@ class TestCreateModulePowerOutletsInvalidPort:
             {"name": "PO1", "power_port": "PSU1"},
             {"name": "PO2", "power_port": "MISSING"},
         ]
-        dt.create_module_power_outlets(power_outlets, 1)
+        dt.create_components("power-outlets", power_outlets, 1, parent_type="module")
         assert any("PO2" in str(c) or "Skipped" in str(c) for c in mock_handle.log.call_args_list)
 
 
@@ -3825,7 +3824,7 @@ class TestCreateModuleRearPorts:
         dt.components.record("rear_port_templates", "module", 3, {})
 
         rear_ports = [{"name": "RP1", "type": "8p8c", "positions": 8}]
-        dt.create_module_rear_ports(rear_ports, 3, context="test.yaml")
+        dt.create_components("rear-ports", rear_ports, 3, context="test.yaml", parent_type="module")
         call_args = mock_nb_api.dcim.rear_port_templates.create.call_args[0][0]
         assert call_args[0]["module_type"] == 3
 
@@ -4004,7 +4003,7 @@ class TestCreateDeviceTypesCornerCases:
         dt = make_device_types(nb_api=mock_nb_api)
         dt.existing_device_types = {}
         dt.existing_device_types_by_slug = {}
-        dt.create_module_bays = MagicMock()
+        dt.components.record("module_bay_templates", "device", 1, {})
 
         nb = NetBox(mock_settings, mock_handle)
         nb.device_types = dt
@@ -4024,7 +4023,7 @@ class TestCreateDeviceTypesCornerCases:
             "src": "/tmp/device-types/cisco/testswitch.yaml",
         }
         nb.create_device_types([device_type])
-        dt.create_module_bays.assert_not_called()
+        mock_nb_api.dcim.module_bay_templates.create.assert_not_called()
 
 
 class TestCreateModuleTypesCornerCases:
@@ -4121,24 +4120,6 @@ class TestCreateModuleTypesCornerCases:
 # ---------------------------------------------------------------------------
 
 
-class TestUpdateComponentsAdditionsNoEndpoint:
-    """Tests for additions branch with missing endpoint in update_components."""
-
-    def test_no_endpoint_for_addition_continues(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """Addition branch: endpoint returns None → continue (line 1550)."""
-        from core.change_detector import ChangeType, ComponentChange
-
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-        # Make dcim.interface_templates return None (falsy)
-        dt.netbox.dcim.interface_templates = None
-
-        changes = [ComponentChange("interfaces", "eth0", ChangeType.COMPONENT_ADDED)]
-        yaml_data = {"interfaces": [{"name": "eth0"}]}
-        # Should not raise
-        dt.update_components(yaml_data, 1, changes, parent_type="device")
-
-
 class TestPowerOutletWithoutPowerPortKey:
     """Test that power outlets without 'power_port' key use the continue path."""
 
@@ -4152,7 +4133,7 @@ class TestPowerOutletWithoutPowerPortKey:
         dt.components.record("power_port_templates", "device", 1, {})
         # Outlet without "power_port" key → continue at line 1723
         power_outlets = [{"name": "PO1"}]  # no power_port key
-        dt.create_power_outlets(power_outlets, 1)
+        dt.create_components("power-outlets", power_outlets, 1)
         call_args = mock_nb_api.dcim.power_outlet_templates.create.call_args[0][0]
         assert call_args[0]["name"] == "PO1"
 
@@ -4170,7 +4151,7 @@ class TestFrontPortWithoutRearPortKey:
         dt.components.record("front_port_templates", "device", 1, {})
         # Front port without rear_port key → continue at line 1808
         front_ports = [{"name": "FP1", "type": "8p8c"}]  # no rear_port key
-        dt.create_front_ports(front_ports, 1)
+        dt.create_components("front-ports", front_ports, 1)
         call_args = mock_nb_api.dcim.front_port_templates.create.call_args[0][0]
         assert call_args[0]["name"] == "FP1"
 
@@ -4187,7 +4168,7 @@ class TestModulePowerOutletWithoutPowerPortKey:
         dt.components.record("power_outlet_templates", "module", 1, {})
         dt.components.record("power_port_templates", "module", 1, {})
         power_outlets = [{"name": "PO1"}]  # no power_port key
-        dt.create_module_power_outlets(power_outlets, 1)
+        dt.create_components("power-outlets", power_outlets, 1, parent_type="module")
         call_args = mock_nb_api.dcim.power_outlet_templates.create.call_args[0][0]
         assert call_args[0]["name"] == "PO1"
 
@@ -6107,17 +6088,11 @@ class TestAdditionalDeviceTypesCoverage:
         mock_pynetbox.RequestError = real_pynb.RequestError
         dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
         dt.components.record("interface_templates", "device", 1, {})
-        endpoint = MagicMock()
-        endpoint.create.side_effect = requests.exceptions.ConnectionError("offline")
+        dcim = mock_pynetbox.api.return_value.dcim
+        dcim.interface_templates.create.side_effect = requests.exceptions.ConnectionError("offline")
 
         with patch("core.netbox_api.time.sleep"):
-            dt._create_generic(
-                [{"name": "eth0"}],
-                1,
-                endpoint,
-                "Interface",
-                cache_name="interface_templates",
-            )
+            dt._create_generic(BY_YAML_KEY["interfaces"], [{"name": "eth0"}], 1)
 
         assert any("Connection error creating Interface" in str(c) for c in mock_handle.log.call_args_list)
 
@@ -6182,7 +6157,7 @@ class TestAdditionalDeviceTypesCoverage:
         interfaces = [{"name": "eth0", "type": "virtual", "bridge": "eth1"}, {"name": "eth1", "type": "virtual"}]
 
         with patch("core.netbox_api.time.sleep"):
-            dt.create_interfaces(interfaces, 1, context="ctx.yaml")
+            dt.create_components("interfaces", interfaces, 1, context="ctx.yaml")
 
         assert any("Connection error bridging interfaces" in str(c) for c in mock_handle.log.call_args_list)
 
