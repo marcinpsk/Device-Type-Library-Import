@@ -1,4 +1,3 @@
-import queue
 import threading
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -92,6 +91,20 @@ def make_device_types(mock_settings, mock_handle, graphql_client):
         )
 
     return _factory
+
+
+class _NoComponents:
+    """GraphQL stand-in whose component endpoints are all empty."""
+
+    def get_component_templates(self, endpoint_name, manufacturer_slug=None, on_page=None):
+        """Return no records for any endpoint."""
+        return []
+
+
+def _mark_cache_ready(device_types):
+    """Run the real prefetch against an empty NetBox, so later lookups do not start one."""
+    device_types.components.graphql = _NoComponents()
+    device_types.components.ensure_ready()
 
 
 def test_netbox_init(mock_settings, mock_pynetbox, mock_handle):
@@ -214,432 +227,6 @@ def test_redundant_image_upload(mock_settings, mock_pynetbox, mock_handle):
     nb.device_types.upload_images.assert_not_called()
 
 
-def test_preload_global_builds_component_cache(
-    mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
-):
-    mock_nb_api = mock_pynetbox.api.return_value
-
-    mock_graphql_requests.side_effect = _make_graphql_dispatch(
-        {
-            "device_type_list": {
-                "data": {
-                    "device_type_list": [
-                        {
-                            "id": "1",
-                            "model": "ModelA",
-                            "slug": "model-a",
-                            "manufacturer": {
-                                "id": "10",
-                                "name": "Cisco",
-                                "slug": "cisco",
-                            },
-                            "front_image": None,
-                            "rear_image": None,
-                        }
-                    ]
-                }
-            },
-            "interface_template_list": {
-                "data": {
-                    "interface_template_list": [
-                        {
-                            "id": "100",
-                            "name": "eth0",
-                            "type": "1000base-t",
-                            "label": "",
-                            "mgmt_only": False,
-                            "enabled": True,
-                            "poe_mode": None,
-                            "poe_type": None,
-                            "device_type": {"id": "1"},
-                            "module_type": None,
-                        }
-                    ]
-                }
-            },
-        }
-    )
-
-    dt = make_device_types(nb_api=mock_nb_api)
-    dt.preload_all_components(progress_wrapper=None)
-
-    assert "interface_templates" in dt.cached_components
-    assert ("device", 1) in dt.cached_components["interface_templates"]
-    assert dt.cached_components["interface_templates"][("device", 1)]["eth0"].name == "eth0"
-
-
-def test_fetch_global_endpoint_records_uses_graphql(
-    mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
-):
-    mock_nb_api = mock_pynetbox.api.return_value
-
-    mock_graphql_requests.side_effect = _make_graphql_dispatch(
-        {
-            "device_type_list": {"data": {"device_type_list": []}},
-            "interface_template_list": {
-                "data": {
-                    "interface_template_list": [
-                        {
-                            "id": "1",
-                            "name": "xe-0/0/0",
-                            "type": "10gbase-x-sfpp",
-                            "label": "",
-                            "mgmt_only": False,
-                            "enabled": True,
-                            "poe_mode": None,
-                            "poe_type": None,
-                            "device_type": {"id": "5"},
-                            "module_type": None,
-                        },
-                        {
-                            "id": "2",
-                            "name": "xe-0/0/1",
-                            "type": "10gbase-x-sfpp",
-                            "label": "",
-                            "mgmt_only": False,
-                            "enabled": True,
-                            "poe_mode": None,
-                            "poe_type": None,
-                            "device_type": {"id": "5"},
-                            "module_type": None,
-                        },
-                        {
-                            "id": "3",
-                            "name": "xe-0/0/2",
-                            "type": "10gbase-x-sfpp",
-                            "label": "",
-                            "mgmt_only": False,
-                            "enabled": True,
-                            "poe_mode": None,
-                            "poe_type": None,
-                            "device_type": {"id": "5"},
-                            "module_type": None,
-                        },
-                    ]
-                }
-            },
-        }
-    )
-
-    dt = make_device_types(nb_api=mock_nb_api)
-    updates = []
-
-    records = dt._fetch_global_endpoint_records(
-        "interface_templates",
-        progress_callback=lambda endpoint, advance: updates.append((endpoint, advance)),
-    )
-
-    assert len(records) == 3
-    assert records[0].name == "xe-0/0/0"
-    # REST endpoint should NOT be called
-    mock_nb_api.dcim.interface_templates.all.assert_not_called()
-    assert updates == [("interface_templates", 3)]
-
-
-def test_fetch_global_endpoint_records_progress_emits_live_per_page(
-    mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
-):
-    """Progress callback must fire per page during the fetch, not in one batch at the end.
-
-    Regression: an earlier implementation buffered per-attempt advances and only
-    flushed them after the fetch completed.  For large endpoints (e.g. 100k+
-    interfaces) the bar appeared frozen at 0 for the whole fetch, then jumped
-    to 100% at the end.
-    """
-    from unittest.mock import patch as _patch
-    from core.graphql_client import DotDict
-
-    mock_nb_api = mock_pynetbox.api.return_value
-    dt = make_device_types(nb_api=mock_nb_api)
-
-    pages = [
-        [DotDict({"id": "1", "name": "a", "device_type": {"id": "5"}, "module_type": None})],
-        [DotDict({"id": "2", "name": "b", "device_type": {"id": "5"}, "module_type": None})],
-        [DotDict({"id": "3", "name": "c", "device_type": {"id": "5"}, "module_type": None})],
-    ]
-
-    advances_during_fetch = []
-
-    def fake_get(endpoint_name, manufacturer_slug=None, on_page=None):
-        # Stream pages and verify that the consumer-facing callback was invoked
-        # before the next page is yielded.
-        all_records = []
-        for idx, page in enumerate(pages, start=1):
-            all_records.extend(page)
-            if on_page is not None:
-                on_page(len(page))
-                assert len(advances_during_fetch) == idx
-        return all_records
-
-    def progress_cb(endpoint, advance):
-        advances_during_fetch.append((endpoint, advance))
-
-    with _patch.object(dt.graphql, "get_component_templates", side_effect=fake_get):
-        records = dt._fetch_global_endpoint_records(
-            "interface_templates",
-            progress_callback=progress_cb,
-        )
-
-    assert len(records) == 3
-    # Live emission: one callback per page, not a single batched flush.
-    assert advances_during_fetch == [
-        ("interface_templates", 1),
-        ("interface_templates", 1),
-        ("interface_templates", 1),
-    ]
-
-
-def test_fetch_global_endpoint_records_passes_manufacturer_slug(
-    mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
-):
-    """manufacturer_slug is forwarded to get_component_templates."""
-    from unittest.mock import patch as _patch
-
-    mock_nb_api = mock_pynetbox.api.return_value
-    dt = make_device_types(nb_api=mock_nb_api)
-
-    received_slugs = []
-
-    def fake_get(endpoint_name, manufacturer_slug=None, on_page=None):
-        received_slugs.append(manufacturer_slug)
-        return []
-
-    with _patch.object(dt.graphql, "get_component_templates", side_effect=fake_get):
-        dt._fetch_global_endpoint_records("interface_templates", manufacturer_slug="cisco")
-
-    assert received_slugs == ["cisco"]
-
-
-def test_fetch_global_endpoint_records_progress_skipped_when_empty(
-    mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
-):
-    mock_nb_api = mock_pynetbox.api.return_value
-
-    mock_graphql_requests.side_effect = _make_graphql_dispatch(
-        {
-            "device_type_list": {"data": {"device_type_list": []}},
-            "interface_template_list": {"data": {"interface_template_list": []}},
-        }
-    )
-
-    dt = make_device_types(nb_api=mock_nb_api)
-    updates = []
-
-    fetched = dt._fetch_global_endpoint_records(
-        "interface_templates",
-        progress_callback=lambda endpoint, advance: updates.append((endpoint, advance)),
-    )
-
-    assert fetched == []
-    assert updates == []
-
-
-def test_fetch_global_endpoint_records_returns_all_records_without_retry(
-    mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
-):
-    """_fetch_global_endpoint_records returns all GraphQL records; no retry logic."""
-    from unittest.mock import patch as _patch
-    from core.graphql_client import DotDict
-
-    mock_nb_api = mock_pynetbox.api.return_value
-    dt = make_device_types(nb_api=mock_nb_api)
-
-    iface1 = DotDict({"id": "1", "name": "xe-0/0/0", "device_type": {"id": "5"}, "module_type": None})
-    iface2 = DotDict({"id": "2", "name": "xe-0/0/1", "device_type": {"id": "5"}, "module_type": None})
-
-    call_count = {"n": 0}
-
-    def fake_get(endpoint_name, manufacturer_slug=None, on_page=None):
-        call_count["n"] += 1
-        return [iface1, iface2]
-
-    with _patch.object(dt.graphql, "get_component_templates", side_effect=fake_get):
-        records = dt._fetch_global_endpoint_records("interface_templates")
-
-    assert len(records) == 2
-    assert call_count["n"] == 1  # exactly one call, no retry
-
-
-def test_fetch_global_endpoint_records_no_warning_logged(
-    mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
-):
-    """No warnings are logged by _fetch_global_endpoint_records on a normal fetch."""
-    mock_nb_api = mock_pynetbox.api.return_value
-    mock_graphql_requests.side_effect = _make_graphql_dispatch(
-        {
-            "device_type_list": {"data": {"device_type_list": []}},
-            "interface_template_list": {
-                "data": {
-                    "interface_template_list": [
-                        {
-                            "id": "1",
-                            "name": "xe-0/0/0",
-                            "type": "10gbase-x-sfpp",
-                            "label": "",
-                            "mgmt_only": False,
-                            "enabled": True,
-                            "poe_mode": None,
-                            "poe_type": None,
-                            "device_type": {"id": "5"},
-                            "module_type": None,
-                        }
-                    ]
-                }
-            },
-        }
-    )
-
-    dt = make_device_types(nb_api=mock_nb_api)
-    logged = []
-    dt.handle.log = lambda msg: logged.append(msg)
-
-    records = dt._fetch_global_endpoint_records("interface_templates")
-
-    assert len(records) == 1
-    assert not any("WARNING" in m for m in logged)
-
-
-def test_preload_always_global_caches_all_vendors(
-    mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
-):
-    """Preload always fetches all components globally, regardless of vendor filter."""
-    mock_nb_api = mock_pynetbox.api.return_value
-
-    mock_graphql_requests.side_effect = _make_graphql_dispatch(
-        {
-            "device_type_list": {
-                "data": {
-                    "device_type_list": [
-                        {
-                            "id": "1",
-                            "model": "ModelA",
-                            "slug": "model-a",
-                            "manufacturer": {
-                                "id": "10",
-                                "name": "Cisco",
-                                "slug": "cisco",
-                            },
-                            "front_image": None,
-                            "rear_image": None,
-                        },
-                        {
-                            "id": "2",
-                            "model": "ModelB",
-                            "slug": "model-b",
-                            "manufacturer": {
-                                "id": "20",
-                                "name": "Juniper",
-                                "slug": "juniper",
-                            },
-                            "front_image": None,
-                            "rear_image": None,
-                        },
-                    ]
-                }
-            },
-            "interface_template_list": {
-                "data": {
-                    "interface_template_list": [
-                        {
-                            "id": "100",
-                            "name": "eth0",
-                            "type": "1000base-t",
-                            "label": "",
-                            "mgmt_only": False,
-                            "enabled": True,
-                            "poe_mode": None,
-                            "poe_type": None,
-                            "device_type": {"id": "1"},
-                            "module_type": None,
-                        },
-                        {
-                            "id": "200",
-                            "name": "xe-0/0/0",
-                            "type": "10gbase-x-sfpp",
-                            "label": "",
-                            "mgmt_only": False,
-                            "enabled": True,
-                            "poe_mode": None,
-                            "poe_type": None,
-                            "device_type": {"id": "2"},
-                            "module_type": None,
-                        },
-                    ]
-                }
-            },
-        }
-    )
-
-    dt = make_device_types(nb_api=mock_nb_api)
-    dt.preload_all_components(progress_wrapper=None)
-
-    # Both vendors are cached because global fetch returns everything
-    assert ("device", 1) in dt.cached_components["interface_templates"]
-    assert ("device", 2) in dt.cached_components["interface_templates"]
-
-
-def test_start_component_preload_global_job_can_be_consumed(
-    mock_settings, mock_pynetbox, graphql_client, make_device_types
-):
-    mock_nb_api = mock_pynetbox.api.return_value
-
-    dt = make_device_types(nb_api=mock_nb_api)
-    preload_job = dt.start_component_preload()
-
-    assert preload_job["mode"] == "global"
-    dt.preload_all_components(progress_wrapper=None, preload_job=preload_job)
-    assert preload_job["executor"] is None
-
-
-def test_preload_tolerates_none_endpoint_totals(mock_settings, mock_pynetbox, graphql_client, make_device_types):
-    """``_preload_track_progress`` must not raise TypeError when a total is ``None``.
-
-    ``endpoint_totals`` may contain ``None`` sentinels when a count is unavailable.
-    Internal ``max(endpoint_totals.get(name, 0), ...)`` calls would raise ``TypeError``
-    on ``None`` because ``dict.get`` returns the stored ``None`` instead of the default.
-    The fix uses ``endpoint_totals.get(name) or 0`` to coerce ``None`` to ``0`` for
-    the ``max()`` comparison.
-    """
-    from concurrent.futures import Future
-
-    dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
-
-    components = [("interface_templates", "Interfaces")]
-    fut = Future()
-    fut.set_result([])
-    futures = {"interface_templates": fut}
-
-    progress = MagicMock()
-    task_ids = {"interface_templates": "task-1"}
-    endpoint_totals = {"interface_templates": None}
-
-    import queue
-
-    progress_updates = queue.Queue()
-    # Exercise BOTH branches: the already-finished branch (where the
-    # endpoint_totals.get(name) or 0 fallback runs) and the pending-future
-    # branch (covered by another test).  Marking interface_templates finished
-    # routes through the already_done code path with a None total.
-    preload_job = {"finished_endpoints": {"interface_templates"}}
-
-    # Must not raise TypeError on max(None, ...).
-    result = dt._preload_track_progress(
-        components,
-        futures,
-        progress,
-        task_ids,
-        preload_job,
-        progress_updates,
-        endpoint_totals,
-    )
-
-    assert result == {"interface_templates": []}
-    # The already_done branch must update the task to completed==total.
-    # With an empty result list and a None REST count, final_total = max(0, 0, 1) = 1
-    # (the max(..., 1) floor prevents a 0/0 bar in the Rich progress UI).
-    progress.update.assert_called_once_with("task-1", total=1, completed=1)
-
-
 def test_upload_images_success_logs_verbose_only(
     mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path, mock_handle
 ):
@@ -681,99 +268,6 @@ def test_filter_new_module_types_returns_only_missing_items(mock_settings, mock_
     ]
 
 
-def test_filter_actionable_module_types_skips_unchanged_existing_module(
-    mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle
-):
-    mock_nb_api = mock_pynetbox.api.return_value
-    mock_nb_api.version = "3.5"
-
-    mock_graphql_requests.side_effect = paginate_dispatch(
-        {
-            "manufacturer_list": [],
-            "device_type_list": [],
-            "module_type_list": [
-                {
-                    "id": "42",
-                    "model": "Linecard 1",
-                    "manufacturer": {"id": "20", "name": "Juniper", "slug": "juniper"},
-                }
-            ],
-            "image_attachment_list": [],
-        }
-    )
-
-    existing_interface = MagicMock()
-    existing_interface.name = "xe-0/0/0"
-
-    nb = NetBox(mock_settings, mock_handle)
-    # Simulate the global GraphQL preload having already populated the cache for module 42.
-    nb.device_types._global_preload_done = True
-    nb.device_types.cached_components["interface_templates"] = {("module", 42): {"xe-0/0/0": existing_interface}}
-
-    module_types = [
-        {
-            "manufacturer": {"slug": "juniper"},
-            "model": "Linecard 1",
-            "slug": "linecard-1",
-            "interfaces": [{"name": "xe-0/0/0"}],
-            "src": "/tmp/repo/module-types/juniper/linecard-1.yaml",
-        }
-    ]
-
-    with patch("glob.glob", return_value=[]):
-        actionable, _, _ = nb.filter_actionable_module_types(
-            module_types,
-            nb.get_existing_module_types(),
-            only_new=False,
-        )
-
-    assert actionable == []
-
-
-def test_filter_actionable_module_types_includes_module_with_missing_component(
-    mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle
-):
-    mock_nb_api = mock_pynetbox.api.return_value
-    mock_nb_api.version = "3.5"
-
-    mock_graphql_requests.side_effect = paginate_dispatch(
-        {
-            "manufacturer_list": [],
-            "device_type_list": [],
-            "module_type_list": [
-                {
-                    "id": "42",
-                    "model": "Linecard 1",
-                    "manufacturer": {"id": "20", "name": "Juniper", "slug": "juniper"},
-                }
-            ],
-            "image_attachment_list": [],
-        }
-    )
-
-    nb = NetBox(mock_settings, mock_handle)
-    # Global preload done; module 42 has no interfaces cached → component is missing.
-    nb.device_types._global_preload_done = True
-    nb.device_types.cached_components["interface_templates"] = {("module", 42): {}}
-
-    module_type = {
-        "manufacturer": {"slug": "juniper"},
-        "model": "Linecard 1",
-        "slug": "linecard-1",
-        "interfaces": [{"name": "xe-0/0/0"}],
-        "src": "/tmp/repo/module-types/juniper/linecard-1.yaml",
-    }
-
-    with patch("glob.glob", return_value=[]):
-        actionable, _, _ = nb.filter_actionable_module_types(
-            [module_type],
-            nb.get_existing_module_types(),
-            only_new=False,
-        )
-
-    assert actionable == [module_type]
-
-
 def test_update_components_m2m_front_port_mappings(mock_settings, mock_pynetbox, graphql_client, make_device_types):
     """On NetBox 4.5+, _mappings updates should rebuild the full M2M rear_ports array."""
     from core.change_detector import ChangeType, ComponentChange, PropertyChange
@@ -790,10 +284,8 @@ def test_update_components_m2m_front_port_mappings(mock_settings, mock_pynetbox,
     rp.id = 99
 
     # Cache both front port templates and rear port templates
-    dt.cached_components = {
-        "front_port_templates": {("device", 1): {"FP1": existing_fp}},
-        "rear_port_templates": {("device", 1): {"RP1": rp}},
-    }
+    dt.components.record("front_port_templates", "device", 1, {"FP1": existing_fp})
+    dt.components.record("rear_port_templates", "device", 1, {"RP1": rp})
 
     # new_value is a frozenset of (rear_port_name, fp_pos, rp_pos) tuples
     new_mappings_set = frozenset({("RP1", 1, 2), ("RP1", 2, 1)})
@@ -835,10 +327,8 @@ def test_update_components_m2m_no_mapping_warns(
     existing_fp.id = 10
     existing_fp.name = "FP1"
 
-    dt.cached_components = {
-        "front_port_templates": {("device", 1): {"FP1": existing_fp}},
-        "rear_port_templates": {("device", 1): {}},  # Empty: rear port missing
-    }
+    dt.components.record("front_port_templates", "device", 1, {"FP1": existing_fp})
+    dt.components.record("rear_port_templates", "device", 1, {})
 
     new_mappings_set = frozenset({("MISSING_RP", 1, 1)})
     old_mappings_set = frozenset()
@@ -877,10 +367,8 @@ def test_update_components_legacy_mapping_translates_to_fields(
     rp = MagicMock()
     rp.id = 99
 
-    dt.cached_components = {
-        "front_port_templates": {("device", 1): {"FP1": existing_fp}},
-        "rear_port_templates": {("device", 1): {"RP1": rp}},
-    }
+    dt.components.record("front_port_templates", "device", 1, {"FP1": existing_fp})
+    dt.components.record("rear_port_templates", "device", 1, {"RP1": rp})
 
     new_mappings_set = frozenset({("RP1", 1, 3)})
     old_mappings_set = frozenset({("RP1", 1, 1)})
@@ -920,10 +408,8 @@ def test_update_components_legacy_mapping_missing_rear_port_warns(
     existing_fp.id = 10
     existing_fp.name = "FP1"
 
-    dt.cached_components = {
-        "front_port_templates": {("device", 1): {"FP1": existing_fp}},
-        "rear_port_templates": {("device", 1): {}},  # Empty cache
-    }
+    dt.components.record("front_port_templates", "device", 1, {"FP1": existing_fp})
+    dt.components.record("rear_port_templates", "device", 1, {})
 
     new_mappings_set = frozenset({("MISSING_RP", 1, 1)})
     old_mappings_set = frozenset()
@@ -962,10 +448,8 @@ def test_update_components_legacy_mapping_two_tuple_warns_and_skips(
     existing_fp = MagicMock()
     existing_fp.id = 10
     existing_fp.name = "FP1"
-    dt.cached_components = {
-        "front_port_templates": {("device", 1): {"FP1": existing_fp}},
-        "rear_port_templates": {("device", 1): {}},
-    }
+    dt.components.record("front_port_templates", "device", 1, {"FP1": existing_fp})
+    dt.components.record("rear_port_templates", "device", 1, {})
 
     # 2-tuple: legacy ChangeDetector cannot include rp_name
     new_mappings_set = frozenset({(1, 3)})
@@ -1010,10 +494,8 @@ def test_update_components_legacy_mapping_two_tuple_uses_yaml_fallback(
     rp = MagicMock()
     rp.id = 99
 
-    dt.cached_components = {
-        "front_port_templates": {("device", 1): {"FP1": existing_fp}},
-        "rear_port_templates": {("device", 1): {"RP1": rp}},
-    }
+    dt.components.record("front_port_templates", "device", 1, {"FP1": existing_fp})
+    dt.components.record("rear_port_templates", "device", 1, {"RP1": rp})
 
     # 2-tuple: legacy ChangeDetector cannot include rp_name
     new_mappings_set = frozenset({(1, 3)})
@@ -1062,9 +544,7 @@ def test_update_components_legacy_mapping_empty_clears_rear_port(
     existing_fp = MagicMock()
     existing_fp.id = 10
     existing_fp.name = "FP1"
-    dt.cached_components = {
-        "front_port_templates": {("device", 1): {"FP1": existing_fp}},
-    }
+    dt.components.record("front_port_templates", "device", 1, {"FP1": existing_fp})
 
     changes = [
         ComponentChange(
@@ -1177,114 +657,6 @@ class TestFrontPortRecordWithMappings:
         assert wrapped.name == "FP1"
 
 
-class TestStopComponentPreload:
-    """Tests for TestStopComponentPreload."""
-
-    def test_noop_on_none(self):
-        DeviceTypes.stop_component_preload(None)  # should not raise
-
-    def test_cancels_pending_futures_and_shuts_down(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
-    ):
-        mock_nb_api = mock_pynetbox.api.return_value
-        make_device_types(nb_api=mock_nb_api)
-
-        future = MagicMock()
-        future.done.return_value = False
-        executor = MagicMock()
-        preload_job = {
-            "futures": {"interface_templates": future},
-            "executor": executor,
-        }
-        DeviceTypes.stop_component_preload(preload_job)
-        future.cancel.assert_called_once()
-        executor.shutdown.assert_called_once()
-        assert preload_job["executor"] is None
-
-
-class TestApplyProgressUpdates:
-    """Tests for TestApplyProgressUpdates."""
-
-    def test_returns_false_when_no_progress(self):
-        result = DeviceTypes._apply_progress_updates(None, None, None)
-        assert result is False
-
-    def test_drains_queue_and_advances(self):
-        progress = MagicMock()
-        task_ids = {"interface_templates": 1}
-        q = queue.Queue()
-        q.put(("interface_templates", 5))
-        result = DeviceTypes._apply_progress_updates(q, progress, task_ids)
-        assert result is True
-        progress.update.assert_called_once_with(1, advance=5)
-
-    def test_drops_disallowed_endpoints(self):
-        progress = MagicMock()
-        task_ids = {"interface_templates": 1}
-        q = queue.Queue()
-        q.put(("other_endpoint", 5))
-        result = DeviceTypes._apply_progress_updates(q, progress, task_ids, allowed_endpoints={"interface_templates"})
-        assert result is False
-
-
-class TestBuildComponentCache:
-    """Tests for TestBuildComponentCache."""
-
-    def test_device_type_indexed(self):
-        item = MagicMock()
-        item.device_type = MagicMock(id=10)
-        item.module_type = None
-        item.name = "eth0"
-        cache, count = DeviceTypes._build_component_cache([item])
-        assert ("device", 10) in cache
-        assert "eth0" in cache[("device", 10)]
-        assert count == 1
-
-    def test_module_type_indexed(self):
-        item = MagicMock()
-        item.device_type = None
-        item.module_type = MagicMock(id=20)
-        item.name = "xe-0"
-        cache, count = DeviceTypes._build_component_cache([item])
-        assert ("module", 20) in cache
-        assert count == 1
-
-    def test_item_without_parent_skipped(self):
-        item = MagicMock()
-        item.device_type = None
-        item.module_type = None
-        cache, count = DeviceTypes._build_component_cache([item])
-        assert count == 0
-
-
-class TestGetFilterKwargs:
-    """Tests for TestGetFilterKwargs."""
-
-    def test_device_old_filter(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-        dt.new_filters = False
-        assert dt._get_filter_kwargs(1, "device") == {"devicetype_id": 1}
-
-    def test_device_new_filter(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-        dt.new_filters = True
-        assert dt._get_filter_kwargs(1, "device") == {"device_type_id": 1}
-
-    def test_module_new_filter(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-        dt.new_filters = True
-        assert dt._get_filter_kwargs(5, "module") == {"module_type_id": 5}
-
-    def test_module_old_filter(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-        dt.new_filters = False
-        assert dt._get_filter_kwargs(5, "module") == {"moduletype_id": 5}
-
-
 class TestCreateGenericError:
     """Tests for TestCreateGenericError."""
 
@@ -1296,7 +668,7 @@ class TestCreateGenericError:
         mock_pynetbox.RequestError = real_pynb.RequestError
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"interface_templates": {("device", 1): {}}}
+        dt.components.record("interface_templates", "device", 1, {})
 
         endpoint = MagicMock()
         err = real_pynb.RequestError(MagicMock(status_code=400, content=b'{"detail":"bad"}'))
@@ -1321,7 +693,7 @@ class TestCreateGenericError:
         mock_pynetbox.RequestError = real_pynb.RequestError
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"interface_templates": {("device", 1): {}}}
+        dt.components.record("interface_templates", "device", 1, {})
 
         endpoint = MagicMock()
         err = real_pynb.RequestError(MagicMock(status_code=400, content=b'{"detail":"bad"}'))
@@ -1350,7 +722,7 @@ class TestRemoveComponents:
 
         existing_comp = MagicMock()
         existing_comp.id = 99
-        dt.cached_components = {"interface_templates": {("device", 1): {"eth0": existing_comp}}}
+        dt.components.record("interface_templates", "device", 1, {"eth0": existing_comp})
 
         from core.change_detector import ChangeType, ComponentChange
 
@@ -1363,7 +735,7 @@ class TestRemoveComponents:
     def test_skips_component_not_in_cache(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"interface_templates": {("device", 1): {}}}
+        dt.components.record("interface_templates", "device", 1, {})
 
         from core.change_detector import ChangeType, ComponentChange
 
@@ -1387,7 +759,7 @@ class TestCreatePowerConsolePorts:
     ):
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"power_port_templates": {("device", 1): {}}}
+        dt.components.record("power_port_templates", "device", 1, {})
         dt.create_power_ports([{"name": "PSU1"}], 1)
         mock_nb_api.dcim.power_port_templates.create.assert_called_once()
 
@@ -1396,7 +768,7 @@ class TestCreatePowerConsolePorts:
     ):
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"console_port_templates": {("device", 1): {}}}
+        dt.components.record("console_port_templates", "device", 1, {})
         dt.create_console_ports([{"name": "Con1"}], 1)
         mock_nb_api.dcim.console_port_templates.create.assert_called_once()
 
@@ -1405,7 +777,7 @@ class TestCreatePowerConsolePorts:
     ):
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"rear_port_templates": {("device", 1): {}}}
+        dt.components.record("rear_port_templates", "device", 1, {})
         dt.create_rear_ports([{"name": "RP1", "type": "8p8c", "positions": 1}], 1)
         mock_nb_api.dcim.rear_port_templates.create.assert_called_once()
 
@@ -1414,7 +786,7 @@ class TestCreatePowerConsolePorts:
     ):
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"device_bay_templates": {("device", 1): {}}}
+        dt.components.record("device_bay_templates", "device", 1, {})
         dt.create_device_bays([{"name": "Bay1"}], 1)
         mock_nb_api.dcim.device_bay_templates.create.assert_called_once()
 
@@ -1436,10 +808,8 @@ class TestCreateDeviceTypesNewDT:
         created_dt.model = "TestSwitch"
         mock_nb_api.dcim.device_types.create.return_value = created_dt
 
-        dt.cached_components = {
-            "interface_templates": {("device", 1): {}},
-            "power_port_templates": {("device", 1): {}},
-        }
+        dt.components.record("interface_templates", "device", 1, {})
+        dt.components.record("power_port_templates", "device", 1, {})
 
         nb = NetBox(mock_settings, mock_handle)
         nb.device_types = dt
@@ -1657,67 +1027,13 @@ class TestUpdateComponentsAdditions:
 
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"interface_templates": {("device", 1): {}}}
+        dt.components.record("interface_templates", "device", 1, {})
 
         changes = [ComponentChange("interfaces", "eth0", ChangeType.COMPONENT_ADDED)]
         yaml_data = {"interfaces": [{"name": "eth0", "type": "virtual"}]}
         dt.update_components(yaml_data, 1, changes, parent_type="device")
 
         mock_nb_api.dcim.interface_templates.create.assert_called_once()
-
-
-class TestFetchGlobalEndpointRestPath:
-    """Tests for TestFetchGlobalEndpointRestPath."""
-
-    def test_front_port_templates_uses_graphql_and_wraps(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_graphql_requests
-    ):
-        """front_port_templates always uses GraphQL and wraps records with _FrontPortRecordWithMappings."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-        dt.m2m_front_ports = True  # no longer affects front_port_templates path
-
-        fp_record = {
-            "id": "1",
-            "name": "FP1",
-            "type": "8p8c",
-            "label": "",
-            "mappings": [],
-            "device_type": {"id": "42"},
-            "module_type": None,
-        }
-
-        # First call returns one record; second call returns empty to stop pagination.
-        resp1 = MagicMock()
-        resp1.raise_for_status = MagicMock()
-        resp1.json.return_value = {"data": {"front_port_template_list": [fp_record]}}
-        resp2 = MagicMock()
-        resp2.raise_for_status = MagicMock()
-        resp2.json.return_value = {"data": {"front_port_template_list": []}}
-        mock_graphql_requests.side_effect = [resp1, resp2]
-
-        records = dt._fetch_global_endpoint_records("front_port_templates")
-        # REST endpoint should NOT be called
-        mock_nb_api.dcim.front_port_templates.all.assert_not_called()
-        assert len(records) == 1
-        assert isinstance(records[0], _FrontPortRecordWithMappings)
-
-    def test_rest_only_endpoint_with_progress_callback(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
-    ):
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-        dt.REST_ONLY_ENDPOINTS = frozenset(["interface_templates"])
-
-        raw = MagicMock()
-        mock_nb_api.dcim.interface_templates.all.return_value = [raw]
-
-        updates = []
-        dt._fetch_global_endpoint_records(
-            "interface_templates",
-            progress_callback=lambda e, n: updates.append((e, n)),
-        )
-        assert updates == [("interface_templates", 1)]
 
 
 class TestCountDeviceTypeImages:
@@ -1880,15 +1196,13 @@ class TestCreateModuleTypesBody:
         created_mt.model = "LC"
         nb.netbox.dcim.module_types.create.return_value = created_mt
 
-        nb.device_types.cached_components = {
-            "interface_templates": {("module", 5): {}},
-            "power_port_templates": {("module", 5): {}},
-            "console_port_templates": {("module", 5): {}},
-            "power_outlet_templates": {("module", 5): {}},
-            "console_server_port_templates": {("module", 5): {}},
-            "rear_port_templates": {("module", 5): {}},
-            "front_port_templates": {("module", 5): {}},
-        }
+        nb.device_types.components.record("interface_templates", "module", 5, {})
+        nb.device_types.components.record("power_port_templates", "module", 5, {})
+        nb.device_types.components.record("console_port_templates", "module", 5, {})
+        nb.device_types.components.record("power_outlet_templates", "module", 5, {})
+        nb.device_types.components.record("console_server_port_templates", "module", 5, {})
+        nb.device_types.components.record("rear_port_templates", "module", 5, {})
+        nb.device_types.components.record("front_port_templates", "module", 5, {})
 
         module_type = {
             "manufacturer": {"slug": "cisco"},
@@ -1910,35 +1224,35 @@ class TestCreateModuleComponents:
     def test_create_module_interfaces(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"interface_templates": {("module", 1): {}}}
+        dt.components.record("interface_templates", "module", 1, {})
         dt.create_module_interfaces([{"name": "xe-0"}], 1)
         mock_nb_api.dcim.interface_templates.create.assert_called_once()
 
     def test_create_module_power_ports(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"power_port_templates": {("module", 1): {}}}
+        dt.components.record("power_port_templates", "module", 1, {})
         dt.create_module_power_ports([{"name": "PSU1"}], 1)
         mock_nb_api.dcim.power_port_templates.create.assert_called_once()
 
     def test_create_module_console_ports(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"console_port_templates": {("module", 1): {}}}
+        dt.components.record("console_port_templates", "module", 1, {})
         dt.create_module_console_ports([{"name": "Con1"}], 1)
         mock_nb_api.dcim.console_port_templates.create.assert_called_once()
 
     def test_create_module_console_server_ports(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"console_server_port_templates": {("module", 1): {}}}
+        dt.components.record("console_server_port_templates", "module", 1, {})
         dt.create_module_console_server_ports([{"name": "CSP1"}], 1)
         mock_nb_api.dcim.console_server_port_templates.create.assert_called_once()
 
     def test_create_module_rear_ports(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"rear_port_templates": {("module", 1): {}}}
+        dt.components.record("rear_port_templates", "module", 1, {})
         dt.create_module_rear_ports([{"name": "RP1", "type": "8p8c", "positions": 1}], 1)
         mock_nb_api.dcim.rear_port_templates.create.assert_called_once()
 
@@ -2101,7 +1415,7 @@ class TestCreateConsoleServerPorts:
     ):
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"console_server_port_templates": {("device", 1): {}}}
+        dt.components.record("console_server_port_templates", "device", 1, {})
         dt.create_console_server_ports([{"name": "CSP1"}], 1)
         mock_nb_api.dcim.console_server_port_templates.create.assert_called_once()
 
@@ -2114,7 +1428,7 @@ class TestCreateModuleBays:
     ):
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"module_bay_templates": {("device", 1): {}}}
+        dt.components.record("module_bay_templates", "device", 1, {})
         dt.create_module_bays([{"name": "MB1"}], 1)
         mock_nb_api.dcim.module_bay_templates.create.assert_called_once()
 
@@ -3149,7 +2463,7 @@ class TestFilterActionableModuleTypesEdge:
             }
         )
         nb = NetBox(mock_settings, mock_handle)
-        nb.device_types._global_preload_done = True  # isolate from preload side-effects
+        _mark_cache_ready(nb.device_types)
 
         existing_mt = MagicMock()
         existing_mt.id = 42
@@ -3201,7 +2515,7 @@ class TestFilterActionableModuleTypesEdge:
         )
         nb = NetBox(mock_settings, mock_handle)
         # Skip the GraphQL preload — these tests isolate scalar/image diffs.
-        nb.device_types._global_preload_done = True
+        _mark_cache_ready(nb.device_types)
 
         existing_mt = DotDict(
             {"id": 42, "model": "IOM-s-3.0T", "part_number": "OLD_PN", "manufacturer": {"slug": "nokia"}}
@@ -3254,7 +2568,7 @@ class TestFilterActionableModuleTypesEdge:
         )
         nb = NetBox(mock_settings, mock_handle)
         # Skip the GraphQL preload — these tests isolate scalar/image diffs.
-        nb.device_types._global_preload_done = True
+        _mark_cache_ready(nb.device_types)
 
         existing_mt = DotDict(
             {"id": 42, "model": "IOM-s-3.0T", "part_number": "OLD_PN", "manufacturer": {"slug": "nokia"}}
@@ -3310,7 +2624,7 @@ class TestFilterActionableModuleTypesEdge:
         )
         nb = NetBox(mock_settings, mock_handle)
         # Skip the GraphQL preload — these tests isolate scalar/image diffs.
-        nb.device_types._global_preload_done = True
+        _mark_cache_ready(nb.device_types)
 
         existing_mt = DotDict(
             {"id": 42, "model": "IOM-s-3.0T", "part_number": "3HE16474AA", "manufacturer": {"slug": "nokia"}}
@@ -3355,7 +2669,7 @@ class TestFilterActionableModuleTypesEdge:
         )
         nb = NetBox(mock_settings, mock_handle)
         # Skip the GraphQL preload — these tests isolate scalar/image diffs.
-        nb.device_types._global_preload_done = True
+        _mark_cache_ready(nb.device_types)
 
         existing_mt = DotDict(
             {"id": 42, "model": "IOM-s-3.0T", "part_number": "3HE16474AA", "manufacturer": {"slug": "nokia"}}
@@ -3592,20 +2906,12 @@ class TestCreateModuleTypesEdge:
         all_module_types = {"nokia": {"IOM-s-3.0T": existing_mt}}
 
         # Cache shows interface with no description; YAML has a description → COMPONENT_CHANGED
-        nb.device_types.cached_components = {
-            "interface_templates": {
-                ("module", 5): {
-                    "xe-0": DotDict(
-                        {
-                            "id": "10",
-                            "name": "xe-0",
-                            "description": "",
-                            "type": {"value": "10gbase-x-sfpp"},
-                        }
-                    )
-                }
-            },
-        }
+        nb.device_types.components.record(
+            "interface_templates",
+            "module",
+            5,
+            {"xe-0": DotDict({"id": "10", "name": "xe-0", "description": "", "type": {"value": "10gbase-x-sfpp"}})},
+        )
 
         module_type = {
             "manufacturer": {"slug": "nokia"},
@@ -3662,20 +2968,12 @@ class TestCreateModuleTypesEdge:
         )
         all_module_types = {"nokia": {"IOM-s-3.0T": existing_mt}}
 
-        nb.device_types.cached_components = {
-            "interface_templates": {
-                ("module", 5): {
-                    "xe-0": DotDict(
-                        {
-                            "id": "10",
-                            "name": "xe-0",
-                            "description": "",
-                            "type": {"value": "10gbase-x-sfpp"},
-                        }
-                    )
-                }
-            },
-        }
+        nb.device_types.components.record(
+            "interface_templates",
+            "module",
+            5,
+            {"xe-0": DotDict({"id": "10", "name": "xe-0", "description": "", "type": {"value": "10gbase-x-sfpp"}})},
+        )
 
         module_type = {
             "manufacturer": {"slug": "nokia"},
@@ -3734,16 +3032,15 @@ class TestCreateModuleTypesEdge:
         all_module_types = {"nokia": {"IOM-s-3.0T": existing_mt}}
 
         # Cache has an interface that YAML doesn't have → COMPONENT_REMOVED
-        nb.device_types.cached_components = {
-            "interface_templates": {
-                ("module", 5): {
-                    "xe-0": DotDict(
-                        {"id": "10", "name": "xe-0", "description": "", "type": {"value": "10gbase-x-sfpp"}}
-                    ),
-                    "xe-extra": DotDict({"id": "11", "name": "xe-extra", "description": ""}),
-                }
+        nb.device_types.components.record(
+            "interface_templates",
+            "module",
+            5,
+            {
+                "xe-0": DotDict({"id": "10", "name": "xe-0", "description": "", "type": {"value": "10gbase-x-sfpp"}}),
+                "xe-extra": DotDict({"id": "11", "name": "xe-extra", "description": ""}),
             },
-        }
+        )
 
         module_type = {
             "manufacturer": {"slug": "nokia"},
@@ -3795,13 +3092,12 @@ class TestCreateModuleTypesEdge:
         all_module_types = {"nokia": {"IOM-s-3.0T": existing_mt}}
 
         # Cache has an extra interface not in YAML → COMPONENT_REMOVED
-        nb.device_types.cached_components = {
-            "interface_templates": {
-                ("module", 5): {
-                    "xe-extra": DotDict({"id": "11", "name": "xe-extra", "description": ""}),
-                }
-            },
-        }
+        nb.device_types.components.record(
+            "interface_templates",
+            "module",
+            5,
+            {"xe-extra": DotDict({"id": "11", "name": "xe-extra", "description": ""})},
+        )
 
         module_type = {
             "manufacturer": {"slug": "nokia"},
@@ -3922,87 +3218,9 @@ class TestUploadModuleTypeImages:
 # ---------------------------------------------------------------------------
 
 
-class TestStartComponentPreloadProgress:
-    """Tests for start_component_preload with a progress object."""
-
-    def test_with_progress_creates_task_ids(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """start_component_preload with a progress object creates task IDs."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        progress = MagicMock()
-        progress.add_task.return_value = 1
-
-        preload_job = dt.start_component_preload(progress=progress)
-        assert preload_job["task_ids"] is not None
-        progress.add_task.assert_called()
-        dt.stop_component_preload(preload_job)
-
-    def test_exception_shuts_down_executor(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """If _component_preload_targets raises, executor is shut down and exception re-raised."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        with patch.object(dt, "_component_preload_targets", side_effect=RuntimeError("oops")):
-            with pytest.raises(RuntimeError, match="oops"):
-                dt.start_component_preload()
-
-
 # ---------------------------------------------------------------------------
 # pump_preload_progress (lines 996-1025)
 # ---------------------------------------------------------------------------
-
-
-class TestPumpPreloadProgress:
-    """Tests for pump_preload_progress."""
-
-    def test_returns_false_when_no_preload_job(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """pump_preload_progress returns False when preload_job is None."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-        assert dt.pump_preload_progress(None, MagicMock()) is False
-
-    def test_marks_done_futures(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """Completed futures are moved to finished_endpoints and advanced=True returned."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        future = MagicMock()
-        future.done.return_value = True
-        future.result.return_value = [MagicMock(), MagicMock()]
-
-        progress = MagicMock()
-        task_id = 99
-        preload_job = {
-            "futures": {"interface_templates": future},
-            "progress_updates": queue.Queue(),
-            "task_ids": {"interface_templates": task_id},
-            "finished_endpoints": set(),
-        }
-        result = dt.pump_preload_progress(preload_job, progress)
-        assert result is True
-        assert "interface_templates" in preload_job["finished_endpoints"]
-        progress.stop_task.assert_called_with(task_id)
-
-    def test_future_exception_sets_final_total_1(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """When future.result() raises, final_total defaults to 1."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        future = MagicMock()
-        future.done.return_value = True
-        future.result.side_effect = RuntimeError("fetch failed")
-
-        progress = MagicMock()
-        preload_job = {
-            "futures": {"interface_templates": future},
-            "progress_updates": queue.Queue(),
-            "task_ids": {"interface_templates": 1},
-            "finished_endpoints": set(),
-        }
-        result = dt.pump_preload_progress(preload_job, progress)
-        assert result is True
-        progress.update.assert_called()
 
 
 # ---------------------------------------------------------------------------
@@ -4010,116 +3228,9 @@ class TestPumpPreloadProgress:
 # ---------------------------------------------------------------------------
 
 
-class TestPreloadGlobalWithProgress:
-    """Tests for _preload_global with various progress/preload_job configurations."""
-
-    def test_own_executor_with_progress(
-        self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
-    ):
-        """_preload_global with progress and no preload_job (own executor path)."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        mock_graphql_requests.side_effect = _make_graphql_dispatch(
-            {
-                "device_type_list": {"data": {"device_type_list": []}},
-                "interface_template_list": {"data": {"interface_template_list": []}},
-            }
-        )
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        progress = MagicMock()
-        progress.add_task.return_value = 1
-        # Run only one component to keep the test fast
-        components = [("interface_templates", "Interface Templates")]
-        dt._preload_global(components, progress_wrapper=None, progress=progress)
-        progress.add_task.assert_called()
-
-    def test_preload_global_no_progress_future_failure(
-        self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types, mock_handle
-    ):
-        """When no progress and a future raises, the exception is logged and re-raised."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        broken_future = MagicMock()
-        broken_future.result.side_effect = RuntimeError("network error")
-
-        mock_handle.log.reset_mock()
-        mock_handle.verbose_log.reset_mock()
-
-        with patch.object(dt, "_fetch_global_endpoint_records", return_value=[]):
-            preload_job = {
-                "executor": None,
-                "futures": {"interface_templates": broken_future},
-                "progress_updates": None,
-                "endpoint_totals": {},
-                "task_ids": None,
-                "finished_endpoints": set(),
-            }
-            components = [("interface_templates", "Interface Templates")]
-            with pytest.raises(RuntimeError, match="network error"):
-                dt._preload_global(components, preload_job=preload_job, progress=None)
-
-        mock_handle.log.assert_any_call("Preload failed for Interface Templates: network error")
-
-    def test_preload_global_with_preload_job_already_finished(
-        self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
-    ):
-        """_preload_global with preload_job that has already-finished endpoints."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        mock_graphql_requests.side_effect = _make_graphql_dispatch(
-            {"device_type_list": {"data": {"device_type_list": []}}}
-        )
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        future = MagicMock()
-        future.done.return_value = True
-        future.result.return_value = []
-
-        progress = MagicMock()
-        progress.add_task.return_value = 1
-
-        preload_job = {
-            "executor": MagicMock(),
-            "futures": {"interface_templates": future},
-            "progress_updates": queue.Queue(),
-            "endpoint_totals": {"interface_templates": 0},
-            "task_ids": {"interface_templates": 1},
-            "finished_endpoints": {"interface_templates"},  # already done
-        }
-        components = [("interface_templates", "Interface Templates")]
-        dt._preload_global(components, preload_job=preload_job, progress=progress)
-        # Already-done endpoint should still have its task stopped
-        progress.stop_task.assert_called()
-
-
 # ---------------------------------------------------------------------------
 # preload_module_type_components (lines 1346, 1353, 1370)
 # ---------------------------------------------------------------------------
-
-
-class TestPreloadModuleTypeComponents:
-    """Tests for preload_module_type_components edge cases."""
-
-    def test_empty_ids_returns_immediately(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """Empty module_type_ids → return immediately."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-        dt.preload_module_type_components(set(), ["interfaces"])
-        mock_nb_api.dcim.interface_templates.filter.assert_not_called()
-
-    def test_item_with_no_module_type_skipped(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """Items where item.module_type is None are skipped."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        item_no_mt = MagicMock()
-        item_no_mt.module_type = None
-        item_no_mt.name = "xe-0"
-        mock_nb_api.dcim.interface_templates.filter.return_value = [item_no_mt]
-
-        dt.preload_module_type_components({1}, ["interfaces"])
-        # No item indexed; cache entry is empty dict
-        assert dt.cached_components["interface_templates"][("module", 1)] == {}
 
 
 # ---------------------------------------------------------------------------
@@ -4134,7 +3245,7 @@ class TestCreateGenericPostProcess:
         """post_process callback is invoked before endpoint.create."""
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"power_outlet_templates": {("device", 1): {}}}
+        dt.components.record("power_outlet_templates", "device", 1, {})
 
         post_calls = []
 
@@ -4214,7 +3325,7 @@ class TestUpdateComponentsMiscBranches:
 
         existing = MagicMock()
         existing.id = 10
-        dt.cached_components = {"interface_templates": {("device", 1): {"eth0": existing}}}
+        dt.components.record("interface_templates", "device", 1, {"eth0": existing})
 
         changes = [
             ComponentChange(
@@ -4242,7 +3353,7 @@ class TestUpdateComponentsMiscBranches:
 
         existing = MagicMock()
         existing.id = 10
-        dt.cached_components = {"interface_templates": {("device", 1): {"eth0": existing}}}
+        dt.components.record("interface_templates", "device", 1, {"eth0": existing})
 
         err = real_pynb2.RequestError(MagicMock(status_code=400, content=b'{"detail":"bad"}'))
         mock_nb_api.dcim.interface_templates.update.side_effect = err
@@ -4300,7 +3411,7 @@ class TestUpdateComponentsAdditionsBranches:
 
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"interface_templates": {("device", 1): {}}}
+        dt.components.record("interface_templates", "device", 1, {})
 
         # yaml has "interfaces" but the name doesn't match the change
         changes = [ComponentChange("interfaces", "nonexistent", ChangeType.COMPONENT_ADDED)]
@@ -4317,7 +3428,7 @@ class TestUpdateComponentsAdditionsBranches:
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
         dt.create_front_ports = MagicMock()
-        dt.cached_components = {"front_port_templates": {("device", 1): {}}}
+        dt.components.record("front_port_templates", "device", 1, {})
 
         changes = [ComponentChange("front-ports", "FP1", ChangeType.COMPONENT_ADDED)]
         yaml_data = {"front-ports": [{"name": "FP1"}]}
@@ -4333,7 +3444,7 @@ class TestUpdateComponentsAdditionsBranches:
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
         dt.create_module_front_ports = MagicMock()
-        dt.cached_components = {"front_port_templates": {("module", 1): {}}}
+        dt.components.record("front_port_templates", "module", 1, {})
 
         changes = [ComponentChange("front-ports", "FP1", ChangeType.COMPONENT_ADDED)]
         yaml_data = {"front-ports": [{"name": "FP1"}]}
@@ -4384,7 +3495,7 @@ class TestRemoveComponentsBranches:
 
         existing_comp = MagicMock()
         existing_comp.id = 99
-        dt.cached_components = {"interface_templates": {("device", 1): {"eth0": existing_comp}}}
+        dt.components.record("interface_templates", "device", 1, {"eth0": existing_comp})
 
         err = real_pynb2.RequestError(MagicMock(status_code=400, content=b'{"detail":"bad"}'))
         mock_nb_api.dcim.interface_templates.delete.side_effect = err
@@ -4409,7 +3520,7 @@ class TestCreateInterfacesBridge:
         """If bridge target interface is not found, handle.log is called."""
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"interface_templates": {("device", 1): {}}}
+        dt.components.record("interface_templates", "device", 1, {})
 
         # The created interface will be in cache; bridge target will not be.
         created = MagicMock()
@@ -4431,7 +3542,7 @@ class TestCreateInterfacesBridge:
         """Bridge key is extracted before _create_generic and removed from the dict."""
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"interface_templates": {("device", 1): {}}}
+        dt.components.record("interface_templates", "device", 1, {})
 
         mock_nb_api.dcim.interface_templates.create.return_value = []
         mock_nb_api.dcim.interface_templates.filter.return_value = []
@@ -4450,7 +3561,7 @@ class TestCreateInterfacesBridge:
         eth0.id = 10
         eth1 = MagicMock()
         eth1.id = 20
-        dt.cached_components = {"interface_templates": {("device", 1): {"eth0": eth0, "eth1": eth1}}}
+        dt.components.record("interface_templates", "device", 1, {"eth0": eth0, "eth1": eth1})
 
         mock_nb_api.dcim.interface_templates.create.return_value = []
         mock_handle.verbose_log.reset_mock()
@@ -4477,7 +3588,7 @@ class TestCreateInterfacesBridge:
         eth0.id = 10
         eth1 = MagicMock()
         eth1.id = 20
-        dt.cached_components = {"interface_templates": {("device", 1): {"eth0": eth0, "eth1": eth1}}}
+        dt.components.record("interface_templates", "device", 1, {"eth0": eth0, "eth1": eth1})
 
         mock_nb_api.dcim.interface_templates.create.return_value = []
         err = real_pynb2.RequestError(MagicMock(status_code=400, content=b'{"detail":"bad"}'))
@@ -4507,10 +3618,8 @@ class TestCreatePowerOutletsInvalidPort:
         """Power outlet referencing unknown power_port is logged and skipped."""
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {
-            "power_port_templates": {("device", 1): {}},  # no power ports
-            "power_outlet_templates": {("device", 1): {}},
-        }
+        dt.components.record("power_port_templates", "device", 1, {})
+        dt.components.record("power_outlet_templates", "device", 1, {})
         mock_nb_api.dcim.power_port_templates.filter.return_value = []
         mock_handle.log.reset_mock()
 
@@ -4528,10 +3637,8 @@ class TestCreatePowerOutletsInvalidPort:
 
         psu1 = MagicMock()
         psu1.id = 99
-        dt.cached_components = {
-            "power_port_templates": {("device", 1): {"PSU1": psu1}},
-            "power_outlet_templates": {("device", 1): {}},
-        }
+        dt.components.record("power_port_templates", "device", 1, {"PSU1": psu1})
+        dt.components.record("power_outlet_templates", "device", 1, {})
         mock_handle.log.reset_mock()
 
         power_outlets = [
@@ -4557,10 +3664,8 @@ class TestBuildLinkRearPorts:
         """Front port whose rear_port cannot be resolved is removed and logged."""
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {
-            "rear_port_templates": {("device", 1): {}},  # no rear ports
-            "front_port_templates": {("device", 1): {}},
-        }
+        dt.components.record("rear_port_templates", "device", 1, {})
+        dt.components.record("front_port_templates", "device", 1, {})
         mock_nb_api.dcim.rear_port_templates.filter.return_value = []
         mock_handle.log.reset_mock()
 
@@ -4576,10 +3681,8 @@ class TestBuildLinkRearPorts:
 
         rp = MagicMock()
         rp.id = 77
-        dt.cached_components = {
-            "rear_port_templates": {("device", 1): {"RP1": rp}},
-            "front_port_templates": {("device", 1): {}},
-        }
+        dt.components.record("rear_port_templates", "device", 1, {"RP1": rp})
+        dt.components.record("front_port_templates", "device", 1, {})
         mock_nb_api.dcim.front_port_templates.create.return_value = []
 
         front_ports = [{"name": "FP1", "type": "8p8c", "rear_port": "RP1", "rear_port_position": 1}]
@@ -4595,10 +3698,8 @@ class TestBuildLinkRearPorts:
 
         rp = MagicMock()
         rp.id = 77
-        dt.cached_components = {
-            "rear_port_templates": {("device", 1): {"RP1": rp}},
-            "front_port_templates": {("device", 1): {}},
-        }
+        dt.components.record("rear_port_templates", "device", 1, {"RP1": rp})
+        dt.components.record("front_port_templates", "device", 1, {})
         mock_nb_api.dcim.front_port_templates.create.return_value = []
 
         front_ports = [{"name": "FP1", "type": "8p8c", "rear_port": "RP1", "rear_port_position": 2}]
@@ -4617,10 +3718,8 @@ class TestBuildLinkRearPorts:
 
         rp = MagicMock()
         rp.id = 77
-        dt.cached_components = {
-            "rear_port_templates": {("device", 1): {"RP1": rp}},
-            "front_port_templates": {("device", 1): {}},
-        }
+        dt.components.record("rear_port_templates", "device", 1, {"RP1": rp})
+        dt.components.record("front_port_templates", "device", 1, {})
         mock_nb_api.dcim.front_port_templates.create.return_value = []
         mock_handle.log.reset_mock()
 
@@ -4652,10 +3751,8 @@ class TestCreateModuleFrontPorts:
 
         rp = MagicMock()
         rp.id = 55
-        dt.cached_components = {
-            "rear_port_templates": {("module", 5): {"RP1": rp}},
-            "front_port_templates": {("module", 5): {}},
-        }
+        dt.components.record("rear_port_templates", "module", 5, {"RP1": rp})
+        dt.components.record("front_port_templates", "module", 5, {})
         mock_nb_api.dcim.front_port_templates.create.return_value = []
 
         front_ports = [{"name": "FP1", "type": "8p8c", "rear_port": "RP1"}]
@@ -4678,10 +3775,8 @@ class TestCreateModulePowerOutletsInvalidPort:
         """Module power outlet with unknown power_port is logged and skipped."""
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {
-            "power_port_templates": {("module", 1): {}},
-            "power_outlet_templates": {("module", 1): {}},
-        }
+        dt.components.record("power_port_templates", "module", 1, {})
+        dt.components.record("power_outlet_templates", "module", 1, {})
         mock_nb_api.dcim.power_port_templates.filter.return_value = []
         mock_handle.log.reset_mock()
 
@@ -4698,10 +3793,8 @@ class TestCreateModulePowerOutletsInvalidPort:
 
         psu1 = MagicMock()
         psu1.id = 88
-        dt.cached_components = {
-            "power_port_templates": {("module", 1): {"PSU1": psu1}},
-            "power_outlet_templates": {("module", 1): {}},
-        }
+        dt.components.record("power_port_templates", "module", 1, {"PSU1": psu1})
+        dt.components.record("power_outlet_templates", "module", 1, {})
         mock_handle.log.reset_mock()
 
         power_outlets = [
@@ -4726,7 +3819,7 @@ class TestCreateModuleRearPorts:
         """create_module_rear_ports creates rear ports with module_type parent."""
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {"rear_port_templates": {("module", 3): {}}}
+        dt.components.record("rear_port_templates", "module", 3, {})
 
         rear_ports = [{"name": "RP1", "type": "8p8c", "positions": 8}]
         dt.create_module_rear_ports(rear_ports, 3, context="test.yaml")
@@ -5016,96 +4109,6 @@ class TestCreateModuleTypesCornerCases:
             )
         mock_fetch.assert_called_once()
 
-
-class TestPreloadGlobalCornerCases:
-    """Corner-case tests for _preload_global (cognitive complexity 26)."""
-
-    def test_wait_fallback_when_no_progress_updates_queue(
-        self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
-    ):
-        """When progress_updates is None and futures are pending, concurrent.futures.wait is called."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        # future that is initially not done, then done on second call
-        future = MagicMock()
-        done_sequence = [False, True]
-        future.done.side_effect = lambda: done_sequence.pop(0)
-        future.result.return_value = []
-
-        progress = MagicMock()
-        progress.add_task.return_value = 1
-
-        preload_job = {
-            "executor": MagicMock(),
-            "futures": {"interface_templates": future},
-            "progress_updates": None,  # no queue → triggers wait() fallback
-            "endpoint_totals": {},
-            "task_ids": {"interface_templates": 1},
-            "finished_endpoints": set(),
-        }
-        components = [("interface_templates", "Interface Templates")]
-        with patch("concurrent.futures.wait") as mock_wait:
-            dt._preload_global(components, preload_job=preload_job, progress=progress)
-        # concurrent.futures.wait should have been called
-        mock_wait.assert_called()
-
-    def test_already_done_endpoint_has_task_stopped(
-        self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
-    ):
-        """Endpoint in finished_endpoints has its progress task stopped without double-processing."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        future = MagicMock()
-        future.done.return_value = True
-        future.result.return_value = []
-
-        progress = MagicMock()
-        progress.add_task.return_value = 1
-
-        preload_job = {
-            "executor": MagicMock(),
-            "futures": {"interface_templates": future},
-            "progress_updates": queue.Queue(),
-            "endpoint_totals": {},
-            "task_ids": {"interface_templates": 1},
-            "finished_endpoints": {"interface_templates"},
-        }
-        components = [("interface_templates", "Interface Templates")]
-        dt._preload_global(components, preload_job=preload_job, progress=progress)
-        progress.stop_task.assert_called_with(1)
-
-    def test_progress_update_dropped_for_finished_endpoint(
-        self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
-    ):
-        """Progress updates for already-finished endpoints are dropped when getting from queue."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        future = MagicMock()
-        # First call: not done; second call: done
-        done_seq = [False, True]
-        future.done.side_effect = lambda: done_seq.pop(0)
-        future.result.return_value = []
-
-        q = queue.Queue()
-        # Add an update for a DIFFERENT (already-finished) endpoint
-        q.put(("other_endpoint", 5))
-
-        progress = MagicMock()
-        progress.add_task.return_value = 1
-
-        preload_job = {
-            "executor": MagicMock(),
-            "futures": {"interface_templates": future},
-            "progress_updates": q,
-            "endpoint_totals": {},
-            "task_ids": {"interface_templates": 1},
-            "finished_endpoints": set(),
-        }
-        components = [("interface_templates", "Interface Templates")]
-        dt._preload_global(components, preload_job=preload_job, progress=progress)
         # "other_endpoint" update should be dropped (not in pending)
         # The test mainly verifies no exception is raised
 
@@ -5142,10 +4145,8 @@ class TestPowerOutletWithoutPowerPortKey:
         """Power outlet that has no 'power_port' key hits the continue at line 1723."""
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {
-            "power_outlet_templates": {("device", 1): {}},
-            "power_port_templates": {("device", 1): {}},
-        }
+        dt.components.record("power_outlet_templates", "device", 1, {})
+        dt.components.record("power_port_templates", "device", 1, {})
         # Outlet without "power_port" key → continue at line 1723
         power_outlets = [{"name": "PO1"}]  # no power_port key
         dt.create_power_outlets(power_outlets, 1)
@@ -5162,10 +4163,8 @@ class TestFrontPortWithoutRearPortKey:
         """Front port without 'rear_port' key hits the continue at line 1808."""
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {
-            "rear_port_templates": {("device", 1): {}},
-            "front_port_templates": {("device", 1): {}},
-        }
+        dt.components.record("rear_port_templates", "device", 1, {})
+        dt.components.record("front_port_templates", "device", 1, {})
         # Front port without rear_port key → continue at line 1808
         front_ports = [{"name": "FP1", "type": "8p8c"}]  # no rear_port key
         dt.create_front_ports(front_ports, 1)
@@ -5182,10 +4181,8 @@ class TestModulePowerOutletWithoutPowerPortKey:
         """Module power outlet without 'power_port' key hits the continue at line 1925."""
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = {
-            "power_outlet_templates": {("module", 1): {}},
-            "power_port_templates": {("module", 1): {}},
-        }
+        dt.components.record("power_outlet_templates", "module", 1, {})
+        dt.components.record("power_port_templates", "module", 1, {})
         power_outlets = [{"name": "PO1"}]  # no power_port key
         dt.create_module_power_outlets(power_outlets, 1)
         call_args = mock_nb_api.dcim.power_outlet_templates.create.call_args[0][0]
@@ -5215,260 +4212,7 @@ class TestUploadImageAttachmentExceptions:
         assert result is False
         assert mock_handle.log.called
 
-
-class TestPumpPreloadProgressFutureNotDone:
-    """Tests for pump_preload_progress when futures are still running."""
-
-    def test_pending_future_returns_false_when_no_updates(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
-    ):
-        """When future is not done and no progress updates, returns False (line 1013)."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        future = MagicMock()
-        future.done.return_value = False  # not done yet
-
-        progress = MagicMock()
-        preload_job = {
-            "futures": {"interface_templates": future},
-            "progress_updates": queue.Queue(),  # empty queue
-            "task_ids": {"interface_templates": 1},
-            "finished_endpoints": set(),
-        }
-        result = dt.pump_preload_progress(preload_job, progress)
-        # Future not done, no updates → no advancement
-        assert result is False
-        assert "interface_templates" not in preload_job["finished_endpoints"]
-
-
-class TestPreloadGlobalMissingLines:
-    """Targeted tests for remaining missing lines in _preload_global."""
-
-    def test_already_done_endpoint_with_future_exception(
-        self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types, mock_handle
-    ):
-        """already_done endpoint whose future raises → log + exception re-raised."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        future = MagicMock()
-        future.done.return_value = True
-        future.result.side_effect = RuntimeError("fetch failed")
-
-        progress = MagicMock()
-        progress.add_task.return_value = 1
-
-        mock_handle.log.reset_mock()
-        preload_job = {
-            "executor": MagicMock(),
-            "futures": {"interface_templates": future},
-            "progress_updates": queue.Queue(),
-            "endpoint_totals": {},
-            "task_ids": {"interface_templates": 1},
-            "finished_endpoints": {"interface_templates"},  # already done
-        }
-        components = [("interface_templates", "Interface Templates")]
-        with pytest.raises(RuntimeError, match="fetch failed"):
-            dt._preload_global(components, preload_job=preload_job, progress=progress)
-        mock_handle.log.assert_any_call("Preload failed for interface_templates: fetch failed")
-
-    def test_already_done_endpoint_progress_update_exception_swallowed(
-        self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
-    ):
-        """progress.stop_task raising for already_done endpoint is swallowed (1135-1136)."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        future = MagicMock()
-        future.done.return_value = True
-        future.result.return_value = []
-
-        progress = MagicMock()
-        progress.add_task.return_value = 1
-        progress.stop_task.side_effect = RuntimeError("task gone")
-
-        preload_job = {
-            "executor": MagicMock(),
-            "futures": {"interface_templates": future},
-            "progress_updates": queue.Queue(),
-            "endpoint_totals": {},
-            "task_ids": {"interface_templates": 1},
-            "finished_endpoints": {"interface_templates"},
-        }
-        components = [("interface_templates", "Interface Templates")]
-        # Should not raise
-        dt._preload_global(components, preload_job=preload_job, progress=progress)
-
-    def test_pending_future_exception_logged(
-        self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types, mock_handle
-    ):
-        """Future raising while pending logs error and re-raises."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        future = MagicMock()
-        done_seq = [False, True]
-        future.done.side_effect = lambda: done_seq.pop(0) if done_seq else True
-        future.result.side_effect = RuntimeError("network error")
-
-        progress = MagicMock()
-        progress.add_task.return_value = 1
-
-        mock_handle.log.reset_mock()
-        preload_job = {
-            "executor": MagicMock(),
-            "futures": {"interface_templates": future},
-            "progress_updates": queue.Queue(),
-            "endpoint_totals": {},
-            "task_ids": {"interface_templates": 1},
-            "finished_endpoints": set(),
-        }
-        components = [("interface_templates", "Interface Templates")]
-        with pytest.raises(RuntimeError, match="network error"):
-            dt._preload_global(components, preload_job=preload_job, progress=progress)
-        mock_handle.log.assert_any_call("Preload failed for interface_templates: network error")
-
-    def test_progress_updates_get_with_timeout_advances_task(
-        self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
-    ):
-        """progress_updates.get(timeout=0.1) returns item and updates progress (1172-1177)."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        # First call: not done (triggers the timeout-get path); second: done
-        done_seq = [False, True]
-        future = MagicMock()
-        future.done.side_effect = lambda: done_seq.pop(0) if done_seq else True
-        future.result.return_value = []
-
-        q = queue.Queue()
-        # Pre-load with an update for the pending endpoint
-        q.put(("interface_templates", 3))
-
-        progress = MagicMock()
-        progress.add_task.return_value = 1
-
-        preload_job = {
-            "executor": MagicMock(),
-            "futures": {"interface_templates": future},
-            "progress_updates": q,
-            "endpoint_totals": {},
-            "task_ids": {"interface_templates": 1},
-            "finished_endpoints": set(),
-        }
-        components = [("interface_templates", "Interface Templates")]
-
-        # Force _apply_progress_updates to return False so the item stays in queue
-        # for progress_updates.get(timeout=0.1) to pick up
-        with patch.object(DeviceTypes, "_apply_progress_updates", return_value=False):
-            dt._preload_global(components, preload_job=preload_job, progress=progress)
-
-        # progress.update should have been called for the queued advance (line 1177)
-        progress.update.assert_called()
-
-    def test_progress_updates_get_drops_finished_endpoint(
-        self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
-    ):
-        """progress_updates.get returns item for finished endpoint → dropped (line 1172-1174)."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        # future not done first, then done
-        done_seq = [False, True]
-        future = MagicMock()
-        future.done.side_effect = lambda: done_seq.pop(0) if done_seq else True
-        future.result.return_value = []
-
-        q = queue.Queue()
-        # Update for a NON-pending endpoint → dropped at line 1172-1174
-        q.put(("other_endpoint", 5))
-
-        progress = MagicMock()
-        progress.add_task.return_value = 1
-
-        preload_job = {
-            "executor": MagicMock(),
-            "futures": {"interface_templates": future},
-            "progress_updates": q,
-            "endpoint_totals": {},
-            "task_ids": {"interface_templates": 1},
-            "finished_endpoints": set(),
-        }
-        components = [("interface_templates", "Interface Templates")]
-
-        with patch.object(DeviceTypes, "_apply_progress_updates", return_value=False):
-            dt._preload_global(components, preload_job=preload_job, progress=progress)
         # "other_endpoint" was dropped; no exception raised
-
-
-class TestStartComponentPreloadProgressCallback:
-    """Tests for the update_progress closure in start_component_preload (line 901)."""
-
-    def test_update_progress_called_when_records_available(
-        self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
-    ):
-        """update_progress callback is triggered when _fetch_global_endpoint_records has records."""
-        mock_nb_api = mock_pynetbox.api.return_value
-
-        # Mock _fetch_global_endpoint_records to call its callback
-        def fake_fetch(endpoint_name, progress_callback=None, manufacturer_slug=None):
-            records = [MagicMock(name="fake")]
-            if progress_callback is not None and records:
-                progress_callback(endpoint_name, len(records))
-            return records
-
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        progress = MagicMock()
-        progress.add_task.return_value = 1
-
-        with patch.object(dt, "_fetch_global_endpoint_records", side_effect=fake_fetch):
-            preload_job = dt.start_component_preload(progress=progress)
-            # Let the futures complete
-            dt.preload_all_components(preload_job=preload_job, progress=progress)
-
-        # update_progress was called, which put items in progress_updates queue
-        # pump_preload_progress or preload_all_components drained them
-        progress.add_task.assert_called()
-        # Assert the advance reached progress.update — guards against a regression
-        # where the callback path silently stops publishing advances.
-        update_calls = [c for c in progress.update.call_args_list if c.kwargs.get("advance")]
-        total_advance = sum(c.kwargs["advance"] for c in update_calls)
-        assert total_advance >= 1, "progress.update was never called with advance>=1"
-
-
-class TestPreloadGlobalOwnExecutorProgressCallback:
-    """Tests for _preload_global own-executor progress callback (line 1079)."""
-
-    def test_update_progress_callback_triggered(
-        self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
-    ):
-        """The update_progress closure in _preload_global is called when records exist."""
-        mock_nb_api = mock_pynetbox.api.return_value
-
-        def fake_fetch(endpoint_name, progress_callback=None, manufacturer_slug=None):
-            records = [MagicMock()]
-            if progress_callback is not None and records:
-                progress_callback(endpoint_name, len(records))
-            return records
-
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        progress = MagicMock()
-        progress.add_task.return_value = 1
-
-        components = [("interface_templates", "Interface Templates")]
-        with patch.object(dt, "_fetch_global_endpoint_records", side_effect=fake_fetch):
-            dt._preload_global(components, progress_wrapper=None, progress=progress)
-
-        progress.add_task.assert_called()
-        progress.stop_task.assert_called()
-        # Assert the advance reached progress.update — guards against a regression
-        # where the own-executor callback stops publishing advances.
-        update_calls = [c for c in progress.update.call_args_list if c.kwargs.get("advance")]
-        total_advance = sum(c.kwargs["advance"] for c in update_calls)
-        assert total_advance >= 1, "progress.update was never called with advance>=1"
 
 
 class TestUploadImagesRequestException:
@@ -5762,7 +4506,7 @@ class TestRegressionPortMappings:
         """
         dt = make_device_types()
         dt.m2m_front_ports = True
-        dt.cached_components = {"rear_port_templates": {("device", 1): {"RP1": MagicMock(id=99)}}}
+        dt.components.record("rear_port_templates", "device", 1, {"RP1": MagicMock(id=99)})
 
         # 2-tuple: legacy ChangeDetector format — should return None, not crash
         result = dt._build_mappings_patch("FP1", frozenset({(1, 2)}), 1, "device")
@@ -5780,7 +4524,7 @@ class TestRegressionPortMappings:
         dt.m2m_front_ports = False
 
         existing_fp = MagicMock(id=10, name="FP1")
-        dt.cached_components = {"front_port_templates": {("device", 1): {"FP1": existing_fp}}}
+        dt.components.record("front_port_templates", "device", 1, {"FP1": existing_fp})
 
         changes = [
             ComponentChange(
@@ -5812,10 +4556,8 @@ class TestRegressionPortMappings:
 
         existing_fp = MagicMock(id=10, name="FP1")
         mock_rp = MagicMock(id=99, name="RP1")
-        dt.cached_components = {
-            "front_port_templates": {("device", 1): {"FP1": existing_fp}},
-            "rear_port_templates": {("device", 1): {"RP1": mock_rp}},
-        }
+        dt.components.record("front_port_templates", "device", 1, {"FP1": existing_fp})
+        dt.components.record("rear_port_templates", "device", 1, {"RP1": mock_rp})
 
         yaml_data = {
             "front-ports": [
@@ -5852,7 +4594,7 @@ class TestRegressionPortMappings:
         dt.m2m_front_ports = False
 
         existing_fp = MagicMock(id=10, name="FP1")
-        dt.cached_components = {"front_port_templates": {("device", 1): {"FP1": existing_fp}}}
+        dt.components.record("front_port_templates", "device", 1, {"FP1": existing_fp})
 
         changes = [
             ComponentChange(
@@ -5885,7 +4627,7 @@ class TestBuildLinkRearPortsEdgeCases:
         """
         dt = make_device_types()
         mock_rp = MagicMock(id=99, name="RP1")
-        dt.cached_components = {"rear_port_templates": {("device", 1): {"RP1": mock_rp}}}
+        dt.components.record("rear_port_templates", "device", 1, {"RP1": mock_rp})
 
         post_process = dt._build_link_rear_ports("device", "Front Port")
         # Port with neither _mappings nor rear_port key
@@ -5905,9 +4647,7 @@ class TestBuildLinkRearPortsEdgeCases:
 
         mock_rp1 = MagicMock(id=99)
         mock_rp2 = MagicMock(id=100)
-        dt.cached_components = {
-            "rear_port_templates": {("device", 1): {"RP1": mock_rp1, "RP2": mock_rp2}},
-        }
+        dt.components.record("rear_port_templates", "device", 1, {"RP1": mock_rp1, "RP2": mock_rp2})
 
         post_process = dt._build_link_rear_ports("device", "Front Port", context="MyDevice")
         items = [
@@ -5936,6 +4676,22 @@ class TestBuildLinkRearPortsEdgeCases:
 class TestModuleTypeHasMissingComponents:
     """Tests for NetBox._module_type_has_missing_components()."""
 
+    def test_returns_false_when_no_components_in_yaml(
+        self, mock_settings, mock_pynetbox, make_device_types, mock_handle
+    ):
+        """Returns False when the module type dict has no components under the key."""
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "3.5"
+
+        nb = NetBox(mock_settings, mock_handle)
+        module_type = {}  # no "interfaces" key
+        existing_module = MagicMock()
+        existing_module.id = 99
+
+        result = nb._module_type_has_missing_components(module_type, existing_module, ["interfaces"])
+
+        assert result is False
+
     def test_returns_true_when_component_missing(self, mock_settings, mock_pynetbox, make_device_types, mock_handle):
         """Returns True when a YAML-defined component name is absent from the cache."""
         mock_nb_api = mock_pynetbox.api.return_value
@@ -5943,7 +4699,7 @@ class TestModuleTypeHasMissingComponents:
 
         nb = NetBox(mock_settings, mock_handle)
         # Pre-populate cache with an empty interface set for module 42.
-        nb.device_types.cached_components["interface_templates"] = {("module", 42): {}}
+        nb.device_types.components.record("interface_templates", "module", 42, {})
 
         module_type = {"interfaces": [{"name": "xe-0/0/0"}]}
         existing_module = MagicMock()
@@ -5963,7 +4719,7 @@ class TestModuleTypeHasMissingComponents:
         nb = NetBox(mock_settings, mock_handle)
         existing_iface = MagicMock()
         existing_iface.name = "xe-0/0/0"
-        nb.device_types.cached_components["interface_templates"] = {("module", 42): {"xe-0/0/0": existing_iface}}
+        nb.device_types.components.record("interface_templates", "module", 42, {"xe-0/0/0": existing_iface})
 
         module_type = {"interfaces": [{"name": "xe-0/0/0"}]}
         existing_module = MagicMock()
@@ -5973,85 +4729,10 @@ class TestModuleTypeHasMissingComponents:
 
         assert result is False
 
-    def test_returns_false_when_no_components_in_yaml(
-        self, mock_settings, mock_pynetbox, make_device_types, mock_handle
-    ):
-        """Returns False when the module type dict has no components under the key."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "3.5"
-
-        nb = NetBox(mock_settings, mock_handle)
-        module_type = {}  # no "interfaces" key
-        existing_module = MagicMock()
-        existing_module.id = 99
-
-        result = nb._module_type_has_missing_components(module_type, existing_module, ["interfaces"])
-
-        assert result is False
-
 
 # ---------------------------------------------------------------------------
 # filter_actionable_module_types _MISSING skip (line 847)
 # ---------------------------------------------------------------------------
-
-
-class TestFilterActionableModuleTypesMissingAttr:
-    """Tests for the _MISSING guard in filter_actionable_module_types."""
-
-    def test_missing_netbox_field_is_not_treated_as_change(
-        self, mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle
-    ):
-        """When existing module lacks an attribute, it's skipped — no false positive change."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "3.5"
-
-        mock_graphql_requests.side_effect = paginate_dispatch(
-            {
-                "manufacturer_list": [],
-                "device_type_list": [],
-                "module_type_list": [
-                    {
-                        "id": "10",
-                        "model": "Linecard-A",
-                        "manufacturer": {"id": "5", "name": "Arista", "slug": "arista"},
-                    }
-                ],
-                "image_attachment_list": [],
-            }
-        )
-
-        nb = NetBox(mock_settings, mock_handle)
-        nb.device_types._global_preload_done = True
-
-        # existing_module is a spec=[] object so getattr(…, field, _MISSING) returns _MISSING
-        existing_module = MagicMock(spec=[])
-        existing_module.id = 10
-        existing_module.manufacturer = MagicMock()
-        existing_module.manufacturer.slug = "arista"
-        existing_module.model = "Linecard-A"
-
-        all_module_types = {"arista": {"Linecard-A": existing_module}}
-
-        module_type = {
-            "manufacturer": {"slug": "arista"},
-            "model": "Linecard-A",
-            "slug": "linecard-a",
-            "part_number": "LC-123",
-            "src": "/repo/module-types/arista/linecard-a.yaml",
-        }
-
-        with patch("glob.glob", return_value=[]):
-            actionable, _, changed_property_log = nb.filter_actionable_module_types(
-                [module_type],
-                all_module_types,
-                only_new=False,
-            )
-
-        # The _MISSING sentinel must prevent the module from being flagged for update.
-        # A MagicMock(spec=[]) has no attributes, so every field access returns _MISSING
-        # and the module should NOT appear in actionable or the change log.
-        assert actionable == []
-        assert changed_property_log == []
 
 
 # ---------------------------------------------------------------------------
@@ -6217,134 +4898,6 @@ class TestProcessSingleModuleTypeCreateRetryable:
 # ---------------------------------------------------------------------------
 
 
-class TestProcessSingleModuleTypeRemoveComponents:
-    """Tests that remove_components=True calls device_types.remove_components."""
-
-    def test_remove_components_is_called_when_flag_set(
-        self, mock_settings, mock_pynetbox, mock_graphql_requests, make_device_types, mock_handle
-    ):
-        """When remove_components=True and there are component changes, remove_components is called."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "3.5"
-
-        nb = NetBox(mock_settings, mock_handle)
-
-        # Build a pre-existing module type so the "else" path (update) is taken.
-        existing_module = MagicMock()
-        existing_module.id = 55
-        existing_module.manufacturer.name = "Cisco"
-        existing_module.model = "CM-Remove"
-
-        all_module_types = {"cisco": {"CM-Remove": existing_module}}
-
-        # Populate cache so _compare_components returns a COMPONENT_REMOVED change.
-        stale_iface = MagicMock()
-        stale_iface.name = "xe-stale"
-        nb.device_types.cached_components["interface_templates"] = {("module", 55): {"xe-stale": stale_iface}}
-        nb.device_types._global_preload_done = True
-
-        curr_mt = {
-            "manufacturer": {"slug": "cisco"},
-            "model": "CM-Remove",
-            "slug": "cm-remove",
-            "interfaces": [],  # empty → xe-stale should be detected as removed
-        }
-
-        nb.device_types.remove_components = MagicMock()
-        nb.device_types.update_components = MagicMock()
-
-        result = nb._process_single_module_type(
-            curr_mt,
-            "test.yaml",
-            all_module_types,
-            {},
-            only_new=False,
-            remove_components=True,
-        )
-
-        assert result is True
-        nb.device_types.remove_components.assert_called_once()
-        # Verify the payload: exactly one COMPONENT_REMOVED change for "xe-stale".
-        from core.change_detector import ChangeType
-
-        removal_changes = nb.device_types.remove_components.call_args.args[1]
-        assert len(removal_changes) == 1
-        assert removal_changes[0].change_type == ChangeType.COMPONENT_REMOVED
-        assert removal_changes[0].component_name == "xe-stale"
-
-    def test_component_reconciliation_continues_when_scalar_patch_fails(
-        self, mock_settings, mock_pynetbox, mock_graphql_requests, make_device_types, mock_handle
-    ):
-        """A failed scalar PATCH must NOT skip subsequent component reconciliation.
-
-        Regression: previously the early ``return False`` on a failed
-        ``module_types.update`` left existing modules with property + component
-        diffs in a partial-sync state because component reconciliation was
-        skipped entirely.
-        """
-        mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "3.5"
-
-        nb = NetBox(mock_settings, mock_handle)
-
-        existing_module = MagicMock()
-        existing_module.id = 77
-        existing_module.manufacturer.name = "Cisco"
-        existing_module.model = "CM-Fail-Patch"
-        # Make the scalar diff non-empty so update() will be invoked and fail.
-        existing_module.part_number = "OLD_PN"
-
-        all_module_types = {"cisco": {"CM-Fail-Patch": existing_module}}
-
-        # Cache a stale interface so _compare_components yields a COMPONENT_REMOVED.
-        stale_iface = MagicMock()
-        stale_iface.name = "xe-stale"
-        nb.device_types.cached_components["interface_templates"] = {("module", 77): {"xe-stale": stale_iface}}
-        nb.device_types._global_preload_done = True
-
-        curr_mt = {
-            "manufacturer": {"slug": "cisco"},
-            "model": "CM-Fail-Patch",
-            "slug": "cm-fail-patch",
-            "part_number": "NEW_PN",  # forces a scalar diff
-            "interfaces": [],  # empty → xe-stale should be detected as removed
-        }
-
-        # Force the scalar PATCH to fail with a pynetbox RequestError.
-        # pynetbox is mocked at module level, so we restore the real exception
-        # class first (otherwise `except pynetbox.RequestError` raises TypeError).
-        import pynetbox as _real_pynb
-
-        mock_pynetbox.RequestError = _real_pynb.RequestError
-        request_error = _real_pynb.RequestError(MagicMock(status_code=400, content=b'{"detail":"boom"}'))
-        mock_nb_api.dcim.module_types.update = MagicMock(side_effect=request_error)
-
-        nb.device_types.update_components = MagicMock()
-        nb.device_types.remove_components = MagicMock()
-
-        result = nb._process_single_module_type(
-            curr_mt,
-            "test.yaml",
-            all_module_types,
-            {},
-            only_new=False,
-            remove_components=True,
-        )
-
-        # The failed PATCH should NOT prevent component reconciliation.
-        # Verify the failing PATCH was actually attempted (regression: scalar
-        # diff detection silently skipping update() would still pass without
-        # this assertion).
-        mock_nb_api.dcim.module_types.update.assert_called_once()
-        assert result is True
-        nb.device_types.remove_components.assert_called_once()
-        assert nb.counter["module_updated"] == 0
-        assert nb.counter["module_update_failed"] == 1
-        failures = nb.outcomes.failures()
-        assert len(failures) == 1
-        assert "CM-Fail-Patch" in failures[0].identity
-
-
 # ---------------------------------------------------------------------------
 # Task 6: DeviceTypes.load_for_vendor and NetBox.load_vendor
 # ---------------------------------------------------------------------------
@@ -6385,26 +4938,6 @@ class TestLoadForVendor:
         assert dt.existing_device_types == by_model
         assert dt.existing_device_types_by_slug == by_slug
 
-    def test_load_for_vendor_resets_state_before_fetch_on_failure(
-        self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
-    ):
-        """State is reset before the fetch so a raised exception leaves a clean slate."""
-        from unittest.mock import patch as _patch
-        import pytest
-
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        dt._global_preload_done = True
-        dt.cached_components = {"interface_templates": {("device", 1): {}}}
-
-        with _patch.object(dt.graphql, "get_device_types", side_effect=RuntimeError("timeout")):
-            with pytest.raises(RuntimeError, match="timeout"):
-                dt.load_for_vendor("vendor-b")
-
-        assert dt._global_preload_done is False
-        assert dt.cached_components == {}
-
     def test_load_for_vendor_replaces_prior_data(
         self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
     ):
@@ -6435,6 +4968,26 @@ class TestLoadForVendor:
 
         assert ("cisco", "M1") not in dt.existing_device_types
         assert ("juniper", "M2") in dt.existing_device_types
+
+    def test_load_for_vendor_resets_state_before_fetch_on_failure(
+        self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, make_device_types
+    ):
+        """State is reset before the fetch so a raised exception leaves a clean slate."""
+        from unittest.mock import patch as _patch
+        import pytest
+
+        mock_nb_api = mock_pynetbox.api.return_value
+        dt = make_device_types(nb_api=mock_nb_api)
+
+        _mark_cache_ready(dt)
+        dt.components.record("interface_templates", "device", 1, {})
+
+        with _patch.object(dt.graphql, "get_device_types", side_effect=RuntimeError("timeout")):
+            with pytest.raises(RuntimeError, match="timeout"):
+                dt.load_for_vendor("vendor-b")
+
+        assert dt.components.ready is False
+        assert dt.components.entries("interface_templates", "device", 1) == {}
 
 
 class TestNetBoxLoadVendor:
@@ -6472,30 +5025,6 @@ class TestNetBoxLoadVendor:
         assert nb._change_detector is not None
         assert nb._change_detector is not original_cd
 
-    def test_load_vendor_resets_preload_state_for_iteration(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
-    ):
-        """load_vendor resets _global_preload_done and cached_components between vendors."""
-        from unittest.mock import patch as _patch
-
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        # First call: simulate load for vendor-a
-        with _patch.object(dt.graphql, "get_device_types", return_value=({}, {})):
-            dt.load_for_vendor("vendor-a")
-
-        # Simulate state left behind after processing vendor-a
-        dt._global_preload_done = True
-        dt.cached_components = {"interface_templates": {("device", 1): {}}}
-
-        # Second call: load for vendor-b
-        with _patch.object(dt.graphql, "get_device_types", return_value=({}, {})):
-            dt.load_for_vendor("vendor-b")
-
-        assert dt._global_preload_done is False
-        assert dt.cached_components == {}
-
     def test_load_vendor_resets_module_image_details(self, mock_settings, mock_pynetbox, mock_handle):
         """load_vendor must clear _module_image_details so stale module entries from previous vendor don't persist."""
         nb = NetBox(mock_settings, mock_handle)
@@ -6506,54 +5035,34 @@ class TestNetBoxLoadVendor:
 
         assert nb._module_image_details == {}
 
+    def test_load_vendor_resets_preload_state_for_iteration(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
+    ):
+        """load_vendor clears the component cache and its readiness between vendors."""
+        from unittest.mock import patch as _patch
+
+        mock_nb_api = mock_pynetbox.api.return_value
+        dt = make_device_types(nb_api=mock_nb_api)
+
+        # First call: simulate load for vendor-a
+        with _patch.object(dt.graphql, "get_device_types", return_value=({}, {})):
+            dt.load_for_vendor("vendor-a")
+
+        # Simulate state left behind after processing vendor-a
+        _mark_cache_ready(dt)
+        dt.components.record("interface_templates", "device", 1, {})
+
+        # Second call: load for vendor-b
+        with _patch.object(dt.graphql, "get_device_types", return_value=({}, {})):
+            dt.load_for_vendor("vendor-b")
+
+        assert dt.components.ready is False
+        assert dt.components.entries("interface_templates", "device", 1) == {}
+
 
 # ---------------------------------------------------------------------------
 # Task 7: start_component_preload with manufacturer_slug
 # ---------------------------------------------------------------------------
-
-
-class TestStartComponentPreloadManufacturerSlug:
-    """Tests for start_component_preload(manufacturer_slug=...) (Task 7)."""
-
-    def test_manufacturer_slug_passed_to_fetch(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """manufacturer_slug from start_component_preload is forwarded to _fetch_global_endpoint_records."""
-        from unittest.mock import patch as _patch
-
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        received_slugs = []
-
-        def fake_fetch(endpoint_name, progress_callback=None, manufacturer_slug=None):
-            received_slugs.append(manufacturer_slug)
-            return []
-
-        with _patch.object(dt, "_fetch_global_endpoint_records", side_effect=fake_fetch):
-            preload_job = dt.start_component_preload(manufacturer_slug="cisco")
-            dt.preload_all_components(preload_job=preload_job)
-
-        # Every endpoint should have received the vendor slug
-        assert all(slug == "cisco" for slug in received_slugs)
-        assert len(received_slugs) == len(dt._component_preload_targets())
-
-    def test_no_manufacturer_slug_passes_none(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """Without manufacturer_slug, None is forwarded (global fetch)."""
-        from unittest.mock import patch as _patch
-
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        received_slugs = []
-
-        def fake_fetch(endpoint_name, progress_callback=None, manufacturer_slug=None):
-            received_slugs.append(manufacturer_slug)
-            return []
-
-        with _patch.object(dt, "_fetch_global_endpoint_records", side_effect=fake_fetch):
-            preload_job = dt.start_component_preload()
-            dt.preload_all_components(preload_job=preload_job)
-
-        assert all(slug is None for slug in received_slugs)
 
 
 # ---------------------------------------------------------------------------
@@ -6561,333 +5070,14 @@ class TestStartComponentPreloadManufacturerSlug:
 # ---------------------------------------------------------------------------
 
 
-class TestVerifyComponentCacheIntegrity:
-    """Tests for DeviceTypes._verify_component_cache_integrity (Task 8)."""
-
-    def test_returns_true_when_all_records_match_dt_ids(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
-    ):
-        """Returns True when cache records have device_type_ids in vendor_dt_ids."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        # Populate cache with records whose device_type id is 1 (in vendor set)
-        rec = MagicMock()
-        dt.cached_components = {
-            "interface_templates": {("device", 1): {"eth0": rec}},
-        }
-
-        result = dt._verify_component_cache_integrity(vendor_dt_ids={1}, vendor_mt_ids=set())
-        assert result is True
-        # Cache should be untouched
-        assert ("device", 1) in dt.cached_components["interface_templates"]
-
-    def test_returns_false_and_clears_cache_when_no_ids_match(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
-    ):
-        """Returns False and clears offending endpoint when no record belongs to vendor."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        rec = MagicMock()
-        # Cache has records for device_type id 99, but vendor only owns id 1
-        dt.cached_components = {
-            "interface_templates": {("device", 99): {"eth0": rec}},
-        }
-
-        logged = []
-        dt.handle.log = lambda msg: logged.append(msg)
-
-        result = dt._verify_component_cache_integrity(vendor_dt_ids={1}, vendor_mt_ids=set())
-        assert result is False
-        # Cache entry must be cleared
-        assert dt.cached_components["interface_templates"] == {}
-        assert any("ERROR" in m for m in logged)
-
-    def test_empty_endpoint_cache_not_flagged(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """Empty endpoint cache entries are skipped — no false positives."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        dt.cached_components = {
-            "interface_templates": {},
-        }
-
-        result = dt._verify_component_cache_integrity(vendor_dt_ids={1}, vendor_mt_ids=set())
-        assert result is True
-
-    def test_module_type_records_pass_when_mt_ids_match(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
-    ):
-        """Module-type records pass when module_type_id is in vendor_mt_ids."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        rec = MagicMock()
-        dt.cached_components = {
-            "interface_templates": {("module", 5): {"mod-iface": rec}},
-        }
-
-        # vendor_mt_ids contains 5
-        result = dt._verify_component_cache_integrity(vendor_dt_ids=set(), vendor_mt_ids={5})
-        assert result is True
-
-    def test_mixed_valid_invalid_records_pass(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """If at least one record matches, the endpoint is considered valid."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        rec = MagicMock()
-        dt.cached_components = {
-            "interface_templates": {
-                ("device", 1): {"eth0": rec},  # valid
-                ("device", 99): {"eth1": rec},  # foreign but that's OK if 1 is valid
-            },
-        }
-
-        result = dt._verify_component_cache_integrity(vendor_dt_ids={1}, vendor_mt_ids=set())
-        assert result is True
-
-
 # ---------------------------------------------------------------------------
 # Issue 2: preload_all_components integrity check handles get_module_types errors
 # ---------------------------------------------------------------------------
 
 
-class TestPreloadAllComponentsIntegrityCheckError:
-    """preload_all_components skips the integrity check only for a rejected query shape."""
-
-    def test_get_module_types_transport_error_propagates(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
-    ):
-        """Any failure other than a schema rejection must reach the caller, guard unfinished."""
-        from unittest.mock import patch as _patch
-
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        with _patch.object(dt, "_preload_global"):
-            with _patch.object(dt.graphql, "get_module_types", side_effect=RuntimeError("network error")):
-                with pytest.raises(RuntimeError, match="network error"):
-                    dt.preload_all_components(manufacturer_slug="cisco")
-
-        assert dt._global_preload_done is False
-
-
 # ---------------------------------------------------------------------------
 # _check_component_counts_against_rest and _rest_count_chunked
 # ---------------------------------------------------------------------------
-
-
-class TestCheckComponentCountsAgainstRest:
-    """Tests for DeviceTypes._check_component_counts_against_rest."""
-
-    def _make_dt_with_cache(self, make_device_types, mock_nb_api, cached_components):
-        dt = make_device_types(nb_api=mock_nb_api)
-        dt.cached_components = cached_components
-        return dt
-
-    def test_matching_counts_does_not_raise(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """No exception when cached count equals REST count for all endpoints."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = self._make_dt_with_cache(
-            make_device_types,
-            mock_nb_api,
-            {
-                "interface_templates": {("device", 1): {"eth0": MagicMock(), "eth1": MagicMock()}},
-                "power_port_templates": {("device", 1): {"pwr": MagicMock()}},
-            },
-        )
-
-        # REST always returns matching count
-        mock_nb_api.dcim.interface_templates.count.return_value = 2
-        mock_nb_api.dcim.power_port_templates.count.return_value = 1
-
-        # Should not raise — all other endpoints return 0 from both REST and cache
-        def zero_count(**kwargs):
-            return 0
-
-        for endpoint_name, _ in dt._component_preload_targets():
-            ep = getattr(mock_nb_api.dcim, endpoint_name)
-            ep.count.side_effect = zero_count
-
-        mock_nb_api.dcim.interface_templates.count.side_effect = None
-        mock_nb_api.dcim.interface_templates.count.return_value = 2
-        mock_nb_api.dcim.power_port_templates.count.side_effect = None
-        mock_nb_api.dcim.power_port_templates.count.return_value = 1
-
-        dt._check_component_counts_against_rest(vendor_dt_ids={1}, vendor_mt_ids=set())
-
-    def test_mismatch_raises_graphql_count_mismatch_error(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
-    ):
-        """GraphQLCountMismatchError raised when REST count differs from cached count."""
-        from core.graphql_client import GraphQLCountMismatchError
-
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = self._make_dt_with_cache(
-            make_device_types,
-            mock_nb_api,
-            {
-                "interface_templates": {("device", 1): {"eth0": MagicMock()}},  # 1 cached
-            },
-        )
-
-        # Make all endpoints return 0 by default, then override interface_templates
-        for endpoint_name, _ in dt._component_preload_targets():
-            getattr(mock_nb_api.dcim, endpoint_name).count.return_value = 0
-
-        # REST says 5 for interface_templates, cache has 1 → mismatch
-        mock_nb_api.dcim.interface_templates.count.return_value = 5
-
-        with pytest.raises(GraphQLCountMismatchError, match="interface_templates"):
-            dt._check_component_counts_against_rest(vendor_dt_ids={1}, vendor_mt_ids=set())
-
-    def test_empty_dt_ids_skips_dt_count_call(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """When vendor_dt_ids is empty, REST count is not called for device-type path."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = self._make_dt_with_cache(make_device_types, mock_nb_api, {})
-
-        for endpoint_name, _ in dt._component_preload_targets():
-            getattr(mock_nb_api.dcim, endpoint_name).count.return_value = 0
-
-        dt._check_component_counts_against_rest(vendor_dt_ids=set(), vendor_mt_ids=set())
-
-        # count() should never be called when both ID sets are empty
-        for endpoint_name, _ in dt._component_preload_targets():
-            getattr(mock_nb_api.dcim, endpoint_name).count.assert_not_called()
-
-    def test_device_bay_templates_skips_module_type_path(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
-    ):
-        """device_bay_templates never queries the module-type count path."""
-        from core.compat import module_type_filter_key
-
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = self._make_dt_with_cache(make_device_types, mock_nb_api, {})
-
-        for endpoint_name, _ in dt._component_preload_targets():
-            getattr(mock_nb_api.dcim, endpoint_name).count.return_value = 0
-
-        dt._check_component_counts_against_rest(vendor_dt_ids={1}, vendor_mt_ids={5})
-
-        # device_bay_templates must only be called once (device path), not twice
-        calls = mock_nb_api.dcim.device_bay_templates.count.call_args_list
-        mt_filter_key = module_type_filter_key(dt.new_filters)
-        mt_calls = [c for c in calls if mt_filter_key in (c.kwargs or {})]
-        assert mt_calls == [], "device_bay_templates should not be queried with module_type filter"
-
-    def test_rest_only_endpoints_skipped(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """Endpoints in REST_ONLY_ENDPOINTS are skipped (no tautological REST-vs-REST check)."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = self._make_dt_with_cache(make_device_types, mock_nb_api, {})
-
-        # Override REST_ONLY_ENDPOINTS to include interface_templates for this test
-        dt.REST_ONLY_ENDPOINTS = frozenset({"interface_templates"})
-
-        for endpoint_name, _ in dt._component_preload_targets():
-            getattr(mock_nb_api.dcim, endpoint_name).count.return_value = 0
-
-        dt._check_component_counts_against_rest(vendor_dt_ids={1}, vendor_mt_ids=set())
-
-        mock_nb_api.dcim.interface_templates.count.assert_not_called()
-
-
-class TestRestCountChunked:
-    """Tests for DeviceTypes._rest_count_chunked."""
-
-    def test_single_chunk(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """IDs that fit in one chunk make exactly one REST call."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        ep = MagicMock()
-        ep.count.return_value = 5
-
-        result = dt._rest_count_chunked(ep, "device_type_id", [1, 2, 3])
-
-        assert result == 5
-        ep.count.assert_called_once_with(device_type_id=[1, 2, 3])
-
-    def test_multiple_chunks_summed(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """IDs exceeding chunk_size are split into multiple calls whose counts are summed."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        ep = MagicMock()
-        ep.count.side_effect = [10, 7]  # two chunks return 10 and 7
-
-        ids = list(range(150))  # 150 IDs, default chunk_size=100 → 2 chunks
-        result = dt._rest_count_chunked(ep, "device_type_id", ids, chunk_size=100)
-
-        assert result == 17
-        assert ep.count.call_count == 2
-        ep.count.assert_any_call(device_type_id=ids[:100])
-        ep.count.assert_any_call(device_type_id=ids[100:])
-
-    def test_empty_ids_returns_zero(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """Empty ID list returns 0 without making any REST calls."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        ep = MagicMock()
-
-        result = dt._rest_count_chunked(ep, "device_type_id", [])
-        assert result == 0
-        ep.count.assert_not_called()
-
-
-class TestPreloadAllComponentsCountCheck:
-    """preload_all_components calls count check and propagates GraphQLCountMismatchError."""
-
-    def test_count_check_called_when_manufacturer_slug_set(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
-    ):
-        """_check_component_counts_against_rest is called when manufacturer_slug is given."""
-        from unittest.mock import patch as _patch
-
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        with _patch.object(dt, "_preload_global"):
-            with _patch.object(dt.graphql, "get_module_types", return_value={}):
-                with _patch.object(dt, "_check_component_counts_against_rest") as mock_check:
-                    dt.preload_all_components(manufacturer_slug="cisco")
-
-        mock_check.assert_called_once()
-
-    def test_count_mismatch_propagates(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        """GraphQLCountMismatchError from count check is not swallowed."""
-        from unittest.mock import patch as _patch
-        from core.graphql_client import GraphQLCountMismatchError
-
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        with _patch.object(dt, "_preload_global"):
-            with _patch.object(dt.graphql, "get_module_types", return_value={}):
-                with _patch.object(
-                    dt,
-                    "_check_component_counts_against_rest",
-                    side_effect=GraphQLCountMismatchError("mismatch"),
-                ):
-                    with pytest.raises(GraphQLCountMismatchError):
-                        dt.preload_all_components(manufacturer_slug="cisco")
-
-    def test_count_check_not_called_without_manufacturer_slug(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types
-    ):
-        """When no manufacturer_slug, count check is not called (global preload)."""
-        from unittest.mock import patch as _patch
-
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        with _patch.object(dt, "_preload_global"):
-            with _patch.object(dt, "_check_component_counts_against_rest") as mock_check:
-                dt.preload_all_components()
-
-        mock_check.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -7754,26 +5944,6 @@ class TestAdditionalNetBoxCoverage:
         assert any("~ 1 changed component(s)" in c for c in logs)
         assert any("- 1 component(s) present in NetBox but absent from YAML" in c for c in logs)
 
-    def test_filter_actionable_module_types_marks_verify_images_module_actionable(
-        self, mock_settings, mock_pynetbox, mock_handle
-    ):
-        mock_pynetbox.api.return_value.version = "3.5"
-        nb = NetBox(mock_settings, mock_handle)
-        nb.verify_images = True
-        nb.device_types._global_preload_done = True
-        nb._fetch_module_type_existing_images = MagicMock(return_value={42: {"linecard.front"}})
-        nb._discover_module_image_files = MagicMock(return_value=["/repo/module-images/linecard.front.png"])
-        nb.change_detector._compare_components = MagicMock(return_value=[])
-
-        existing_module = MagicMock(id=42, model="LC")
-        existing_module.manufacturer.slug = "cisco"
-        all_module_types = {"cisco": {"LC": existing_module}}
-        module_type = {"manufacturer": {"slug": "cisco"}, "model": "LC", "src": "linecard.yaml"}
-
-        actionable, _, _ = nb.filter_actionable_module_types([module_type], all_module_types, only_new=False)
-
-        assert actionable == [module_type]
-
     def test_fetch_module_type_existing_images_uses_detailed_query_in_verify_mode(
         self, mock_settings, mock_pynetbox, mock_handle
     ):
@@ -7803,6 +5973,26 @@ class TestAdditionalNetBoxCoverage:
         assert updated is False
         nb.netbox.dcim.module_types.update.assert_not_called()
 
+    def test_filter_actionable_module_types_marks_verify_images_module_actionable(
+        self, mock_settings, mock_pynetbox, mock_handle
+    ):
+        mock_pynetbox.api.return_value.version = "3.5"
+        nb = NetBox(mock_settings, mock_handle)
+        nb.verify_images = True
+        _mark_cache_ready(nb.device_types)
+        nb._fetch_module_type_existing_images = MagicMock(return_value={42: {"linecard.front"}})
+        nb._discover_module_image_files = MagicMock(return_value=["/repo/module-images/linecard.front.png"])
+        nb.change_detector._compare_components = MagicMock(return_value=[])
+
+        existing_module = MagicMock(id=42, model="LC")
+        existing_module.manufacturer.slug = "cisco"
+        all_module_types = {"cisco": {"LC": existing_module}}
+        module_type = {"manufacturer": {"slug": "cisco"}, "model": "LC", "src": "linecard.yaml"}
+
+        actionable, _, _ = nb.filter_actionable_module_types([module_type], all_module_types, only_new=False)
+
+        assert actionable == [module_type]
+
 
 class TestAdditionalModuleTypeCoverage:
     """Focused tests for uncovered module-type branches."""
@@ -7821,44 +6011,6 @@ class TestAdditionalModuleTypeCoverage:
         assert nb.counter["module_update_failed"] == 1
         assert nb.outcomes.failures()[0].reason == "Scalar PATCH failed; no component changes detected."
 
-    def test_apply_module_type_component_updates_records_failed_when_no_changes_apply(
-        self, mock_settings, mock_pynetbox, mock_handle
-    ):
-        from core.change_detector import ChangeType, ComponentChange
-
-        mock_pynetbox.api.return_value.version = "3.5"
-        nb = NetBox(mock_settings, mock_handle)
-        module_type_res = MagicMock(id=7, model="LC")
-        module_type_res.manufacturer.name = "Cisco"
-        nb.device_types._global_preload_done = True
-        nb.change_detector._compare_components = MagicMock(
-            return_value=[ComponentChange("interfaces", "xe-0", ChangeType.COMPONENT_REMOVED)]
-        )
-
-        nb._apply_module_type_component_updates({}, module_type_res, False, False, patch_ok=False)
-
-        assert nb.counter["module_update_failed"] == 1
-        assert nb.outcomes.failures()[0].reason == "Scalar PATCH failed; no component changes were actionable."
-
-    def test_apply_module_type_component_updates_marks_partial_when_properties_only_succeed(
-        self, mock_settings, mock_pynetbox, mock_handle
-    ):
-        from core.change_detector import ChangeType, ComponentChange
-
-        mock_pynetbox.api.return_value.version = "3.5"
-        nb = NetBox(mock_settings, mock_handle)
-        module_type_res = MagicMock(id=7, model="LC")
-        module_type_res.manufacturer.name = "Cisco"
-        nb.device_types._global_preload_done = True
-        nb.device_types.update_components = MagicMock()
-        nb.change_detector._compare_components = MagicMock(
-            return_value=[ComponentChange("interfaces", "xe-0", ChangeType.COMPONENT_CHANGED)]
-        )
-
-        nb._apply_module_type_component_updates({}, module_type_res, True, False, patch_ok=True)
-
-        assert nb.counter["module_partial_update"] == 1
-
     def test_apply_module_type_component_updates_marks_partial_on_partial_component_success(
         self, mock_settings, mock_pynetbox, mock_handle
     ):
@@ -7868,7 +6020,7 @@ class TestAdditionalModuleTypeCoverage:
         nb = NetBox(mock_settings, mock_handle)
         module_type_res = MagicMock(id=7, model="LC")
         module_type_res.manufacturer.name = "Cisco"
-        nb.device_types._global_preload_done = True
+        _mark_cache_ready(nb.device_types)
 
         def update_some(*_args, **_kwargs):
             nb.counter["components_updated"] += 1
@@ -7885,6 +6037,44 @@ class TestAdditionalModuleTypeCoverage:
 
         assert nb.counter["module_partial_update"] == 1
 
+    def test_apply_module_type_component_updates_marks_partial_when_properties_only_succeed(
+        self, mock_settings, mock_pynetbox, mock_handle
+    ):
+        from core.change_detector import ChangeType, ComponentChange
+
+        mock_pynetbox.api.return_value.version = "3.5"
+        nb = NetBox(mock_settings, mock_handle)
+        module_type_res = MagicMock(id=7, model="LC")
+        module_type_res.manufacturer.name = "Cisco"
+        _mark_cache_ready(nb.device_types)
+        nb.device_types.update_components = MagicMock()
+        nb.change_detector._compare_components = MagicMock(
+            return_value=[ComponentChange("interfaces", "xe-0", ChangeType.COMPONENT_CHANGED)]
+        )
+
+        nb._apply_module_type_component_updates({}, module_type_res, True, False, patch_ok=True)
+
+        assert nb.counter["module_partial_update"] == 1
+
+    def test_apply_module_type_component_updates_records_failed_when_no_changes_apply(
+        self, mock_settings, mock_pynetbox, mock_handle
+    ):
+        from core.change_detector import ChangeType, ComponentChange
+
+        mock_pynetbox.api.return_value.version = "3.5"
+        nb = NetBox(mock_settings, mock_handle)
+        module_type_res = MagicMock(id=7, model="LC")
+        module_type_res.manufacturer.name = "Cisco"
+        _mark_cache_ready(nb.device_types)
+        nb.change_detector._compare_components = MagicMock(
+            return_value=[ComponentChange("interfaces", "xe-0", ChangeType.COMPONENT_REMOVED)]
+        )
+
+        nb._apply_module_type_component_updates({}, module_type_res, False, False, patch_ok=False)
+
+        assert nb.counter["module_update_failed"] == 1
+        assert nb.outcomes.failures()[0].reason == "Scalar PATCH failed; no component changes were actionable."
+
 
 class TestAdditionalDeviceTypesCoverage:
     """Focused tests for uncovered DeviceTypes branches."""
@@ -7895,122 +6085,6 @@ class TestAdditionalDeviceTypesCoverage:
 
         assert dt.get_device_types() == ({("cisco", "A"): 1}, {("cisco", "a"): 1})
 
-    def test_start_component_preload_populates_task_registry(self, mock_pynetbox, make_device_types):
-        dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
-        progress = MagicMock()
-        progress.add_task.side_effect = range(1, 20)
-        task_registry = {}
-
-        preload_job = dt.start_component_preload(progress=progress, task_registry=task_registry)
-
-        assert task_registry
-        assert preload_job["task_ids"]
-        dt.stop_component_preload(preload_job)
-
-    def test_start_component_preload_shuts_down_executor_when_submit_fails(self, mock_pynetbox, make_device_types):
-        executor = MagicMock()
-        executor.submit.side_effect = RuntimeError("submit failed")
-        dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
-
-        with patch("core.netbox_api.concurrent.futures.ThreadPoolExecutor", return_value=executor):
-            with pytest.raises(RuntimeError, match="submit failed"):
-                dt.start_component_preload()
-
-        executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
-
-    def test_stop_component_preload_swallows_progress_cleanup_errors(self):
-        progress = MagicMock()
-        progress.stop_task.side_effect = RuntimeError("gone")
-        preload_job = {"task_ids": {"interfaces": 1}, "owns_tasks": True}
-
-        DeviceTypes.stop_component_preload(preload_job, progress=progress)
-
-    def test_apply_progress_updates_ignores_zero_advance(self):
-        progress = MagicMock()
-        q = queue.Queue()
-        q.put(("interface_templates", 0))
-
-        result = DeviceTypes._apply_progress_updates(q, progress, {"interface_templates": 1})
-
-        assert result is False
-        progress.update.assert_not_called()
-
-    def test_apply_progress_updates_rewinds_negative_advance(self):
-        progress = MagicMock()
-        progress.tasks = [MagicMock(id=1, completed=5)]
-        q = queue.Queue()
-        q.put(("interface_templates", -3))
-
-        result = DeviceTypes._apply_progress_updates(q, progress, {"interface_templates": 1})
-
-        assert result is True
-        progress.update.assert_called_once_with(1, completed=2)
-
-    def test_drain_pending_rewinds_negative_progress_update(self, mock_pynetbox, make_device_types):
-        dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
-        future = MagicMock()
-        done_states = [False, True]
-        future.done.side_effect = lambda: done_states.pop(0)
-        future.result.return_value = []
-        progress = MagicMock()
-        progress.tasks = [MagicMock(id=1, completed=4)]
-        updates = queue.Queue()
-        updates.put(("interface_templates", -2))
-        pending = {"interface_templates"}
-        records = {}
-
-        dt._drain_pending(
-            pending,
-            {"interface_templates": future},
-            progress,
-            {"interface_templates": 1},
-            updates,
-            {},
-            records,
-        )
-
-        assert progress.update.call_args_list[0].kwargs == {"completed": 2}
-
-    def test_preload_global_creates_tasks_from_registry_when_missing(self, mock_pynetbox, make_device_types):
-        dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
-        progress = MagicMock()
-        progress.add_task.return_value = 7
-        task_registry = {}
-        preload_job = {
-            "executor": None,
-            "futures": {},
-            "progress_updates": queue.Queue(),
-            "endpoint_totals": {},
-            "task_ids": None,
-            "finished_endpoints": set(),
-        }
-
-        with patch.object(dt, "_preload_track_progress", return_value={"interface_templates": []}):
-            dt._preload_global(
-                [("interface_templates", "Interfaces")],
-                preload_job=preload_job,
-                progress=progress,
-                task_registry=task_registry,
-            )
-
-        assert task_registry["Caching Interfaces"] == 7
-
-    def test_preload_module_type_components_wraps_front_ports_and_deduplicates_targets(
-        self, mock_pynetbox, make_device_types
-    ):
-        dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
-        item = MagicMock()
-        item.module_type = MagicMock(id=5)
-        item.name = "FP1"
-        item.mappings = []
-        dt.netbox.dcim.front_port_templates.filter.return_value = [item]
-
-        dt.preload_module_type_components({5}, ["front-ports", "front-ports"])
-
-        cached = dt.cached_components["front_port_templates"][("module", 5)]["FP1"]
-        assert isinstance(cached, _FrontPortRecordWithMappings)
-        dt.netbox.dcim.front_port_templates.filter.assert_called_once()
-
     def test_create_generic_logs_retryable_exception(
         self, mock_pynetbox, make_device_types, mock_settings, mock_handle
     ):
@@ -8019,7 +6093,7 @@ class TestAdditionalDeviceTypesCoverage:
 
         mock_pynetbox.RequestError = real_pynb.RequestError
         dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
-        dt.cached_components = {"interface_templates": {("device", 1): {}}}
+        dt.components.record("interface_templates", "device", 1, {})
         endpoint = MagicMock()
         endpoint.create.side_effect = requests.exceptions.ConnectionError("offline")
 
@@ -8044,7 +6118,7 @@ class TestAdditionalDeviceTypesCoverage:
         mock_pynetbox.RequestError = real_pynb.RequestError
         dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
         existing = MagicMock(id=9, name="eth0")
-        dt.cached_components = {"interface_templates": {("device", 1): {"eth0": existing}}}
+        dt.components.record("interface_templates", "device", 1, {"eth0": existing})
         dt.netbox.dcim.interface_templates.update.side_effect = requests.exceptions.ConnectionError("offline")
         changes = [
             ComponentChange(
@@ -8070,7 +6144,7 @@ class TestAdditionalDeviceTypesCoverage:
         mock_pynetbox.RequestError = real_pynb.RequestError
         dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
         existing = MagicMock(id=9, name="eth0")
-        dt.cached_components = {"interface_templates": {("device", 1): {"eth0": existing}}}
+        dt.components.record("interface_templates", "device", 1, {"eth0": existing})
         dt.netbox.dcim.interface_templates.delete.side_effect = requests.exceptions.ConnectionError("offline")
         changes = [ComponentChange("interfaces", "eth0", ChangeType.COMPONENT_REMOVED)]
 
@@ -8089,7 +6163,7 @@ class TestAdditionalDeviceTypesCoverage:
         dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
         eth0 = MagicMock(id=10)
         eth1 = MagicMock(id=20)
-        dt.cached_components = {"interface_templates": {("device", 1): {"eth0": eth0, "eth1": eth1}}}
+        dt.components.record("interface_templates", "device", 1, {"eth0": eth0, "eth1": eth1})
         dt.netbox.dcim.interface_templates.create.return_value = []
         dt.netbox.dcim.interface_templates.update.side_effect = requests.exceptions.ConnectionError("offline")
         interfaces = [{"name": "eth0", "type": "virtual", "bridge": "eth1"}, {"name": "eth1", "type": "virtual"}]
@@ -8210,41 +6284,6 @@ class TestRemainingCoverageBranches:
         nb.device_types.upload_image_attachment.assert_not_called()
         assert "mymodule.front" in existing_images[10]
         assert any("skipping upload to avoid duplicates" in str(c) for c in mock_handle.verbose_log.call_args_list)
-
-    def test_stop_component_preload_removes_tasks_when_owned(self):
-        progress = MagicMock()
-        preload_job = {"task_ids": {"interfaces": 1}, "owns_tasks": True}
-
-        DeviceTypes.stop_component_preload(preload_job, progress=progress)
-
-        progress.stop_task.assert_called_once_with(1)
-        progress.remove_task.assert_called_once_with(1)
-
-    def test_drain_pending_rewinds_negative_update_from_fallback_queue(self, mock_pynetbox, make_device_types):
-        dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
-        future = MagicMock()
-        done_states = [False, True]
-        future.done.side_effect = lambda: done_states.pop(0)
-        future.result.return_value = []
-        progress = MagicMock()
-        progress.tasks = [MagicMock(id=1, completed=4)]
-        updates = queue.Queue()
-        updates.put(("interface_templates", -2))
-        records = {}
-
-        with patch.object(dt, "_apply_progress_updates", return_value=False):
-            dt._drain_pending(
-                {"interface_templates"},
-                {"interface_templates": future},
-                progress,
-                {"interface_templates": 1},
-                updates,
-                {},
-                records,
-            )
-
-        assert progress.update.call_args_list[0].args == (1,)
-        assert progress.update.call_args_list[0].kwargs == {"completed": 2}
 
 
 # ---------------------------------------------------------------------------
@@ -8461,35 +6500,280 @@ class TestPreloadIntegrityGuard:
             max_threads=2,
         )
 
-    def test_transport_failure_does_not_skip_the_truncation_guard(self):
-        """A failed request must not silently disable the check that catches truncated results."""
-        from core.graphql_client import GraphQLError
 
-        url, server = self._serve((403, '{"detail": "forbidden"}'))
-        handle = MagicMock()
-        try:
-            device_types = self._device_types(url, handle)
-            with pytest.raises(GraphQLError):
-                device_types.preload_all_components(manufacturer_slug="acme")
-        finally:
-            server.shutdown()
+def test_filter_actionable_module_types_skips_unchanged_existing_module(
+    mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle
+):
+    mock_nb_api = mock_pynetbox.api.return_value
+    mock_nb_api.version = "3.5"
 
-        logged = " ".join(str(call) for call in handle.log.call_args_list)
-        assert "integrity check skipped" not in logged
-        assert device_types._global_preload_done is False
+    mock_graphql_requests.side_effect = paginate_dispatch(
+        {
+            "manufacturer_list": [],
+            "device_type_list": [],
+            "module_type_list": [
+                {
+                    "id": "42",
+                    "model": "Linecard 1",
+                    "manufacturer": {"id": "20", "name": "Juniper", "slug": "juniper"},
+                }
+            ],
+            "image_attachment_list": [],
+        }
+    )
 
-    def test_schema_rejection_skips_the_guard_with_a_warning(self):
-        """A server that cannot answer the query shape may skip the check, and says so."""
-        import json as _json
+    existing_interface = MagicMock()
+    existing_interface.name = "xe-0/0/0"
 
-        rejection = _json.dumps({"errors": [{"message": "Cannot query field 'weight' on type 'ModuleTypeType'."}]})
-        url, server = self._serve((200, rejection))
-        handle = MagicMock()
-        try:
-            device_types = self._device_types(url, handle)
-            device_types.preload_all_components(manufacturer_slug="acme")
-        finally:
-            server.shutdown()
+    nb = NetBox(mock_settings, mock_handle)
+    # Simulate the global GraphQL preload having already populated the cache for module 42.
+    _mark_cache_ready(nb.device_types)
+    nb.device_types.components.record("interface_templates", "module", 42, {"xe-0/0/0": existing_interface})
 
-        logged = " ".join(str(call) for call in handle.log.call_args_list)
-        assert "integrity check skipped" in logged
+    module_types = [
+        {
+            "manufacturer": {"slug": "juniper"},
+            "model": "Linecard 1",
+            "slug": "linecard-1",
+            "interfaces": [{"name": "xe-0/0/0"}],
+            "src": "/tmp/repo/module-types/juniper/linecard-1.yaml",
+        }
+    ]
+
+    with patch("glob.glob", return_value=[]):
+        actionable, _, _ = nb.filter_actionable_module_types(
+            module_types,
+            nb.get_existing_module_types(),
+            only_new=False,
+        )
+
+    assert actionable == []
+
+
+def test_filter_actionable_module_types_includes_module_with_missing_component(
+    mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle
+):
+    mock_nb_api = mock_pynetbox.api.return_value
+    mock_nb_api.version = "3.5"
+
+    mock_graphql_requests.side_effect = paginate_dispatch(
+        {
+            "manufacturer_list": [],
+            "device_type_list": [],
+            "module_type_list": [
+                {
+                    "id": "42",
+                    "model": "Linecard 1",
+                    "manufacturer": {"id": "20", "name": "Juniper", "slug": "juniper"},
+                }
+            ],
+            "image_attachment_list": [],
+        }
+    )
+
+    nb = NetBox(mock_settings, mock_handle)
+    # Global preload done; module 42 has no interfaces cached → component is missing.
+    _mark_cache_ready(nb.device_types)
+    nb.device_types.components.record("interface_templates", "module", 42, {})
+
+    module_type = {
+        "manufacturer": {"slug": "juniper"},
+        "model": "Linecard 1",
+        "slug": "linecard-1",
+        "interfaces": [{"name": "xe-0/0/0"}],
+        "src": "/tmp/repo/module-types/juniper/linecard-1.yaml",
+    }
+
+    with patch("glob.glob", return_value=[]):
+        actionable, _, _ = nb.filter_actionable_module_types(
+            [module_type],
+            nb.get_existing_module_types(),
+            only_new=False,
+        )
+
+    assert actionable == [module_type]
+
+
+class TestFilterActionableModuleTypesMissingAttr:
+    """Tests for the _MISSING guard in filter_actionable_module_types."""
+
+    def test_missing_netbox_field_is_not_treated_as_change(
+        self, mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle
+    ):
+        """When existing module lacks an attribute, it's skipped — no false positive change."""
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "3.5"
+
+        mock_graphql_requests.side_effect = paginate_dispatch(
+            {
+                "manufacturer_list": [],
+                "device_type_list": [],
+                "module_type_list": [
+                    {
+                        "id": "10",
+                        "model": "Linecard-A",
+                        "manufacturer": {"id": "5", "name": "Arista", "slug": "arista"},
+                    }
+                ],
+                "image_attachment_list": [],
+            }
+        )
+
+        nb = NetBox(mock_settings, mock_handle)
+        _mark_cache_ready(nb.device_types)
+        existing_module = MagicMock(spec=[])
+        existing_module.id = 10
+        existing_module.manufacturer = MagicMock()
+        existing_module.manufacturer.slug = "arista"
+        existing_module.model = "Linecard-A"
+
+        all_module_types = {"arista": {"Linecard-A": existing_module}}
+
+        module_type = {
+            "manufacturer": {"slug": "arista"},
+            "model": "Linecard-A",
+            "slug": "linecard-a",
+            "part_number": "LC-123",
+            "src": "/repo/module-types/arista/linecard-a.yaml",
+        }
+
+        with patch("glob.glob", return_value=[]):
+            actionable, _, changed_property_log = nb.filter_actionable_module_types(
+                [module_type],
+                all_module_types,
+                only_new=False,
+            )
+
+        # The _MISSING sentinel must prevent the module from being flagged for update.
+        # A MagicMock(spec=[]) has no attributes, so every field access returns _MISSING
+        # and the module should NOT appear in actionable or the change log.
+        assert actionable == []
+        assert changed_property_log == []
+
+
+class TestProcessSingleModuleTypeRemoveComponents:
+    """Tests that remove_components=True calls device_types.remove_components."""
+
+    def test_remove_components_is_called_when_flag_set(
+        self, mock_settings, mock_pynetbox, mock_graphql_requests, make_device_types, mock_handle
+    ):
+        """When remove_components=True and there are component changes, remove_components is called."""
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "3.5"
+
+        nb = NetBox(mock_settings, mock_handle)
+
+        # Build a pre-existing module type so the "else" path (update) is taken.
+        existing_module = MagicMock()
+        existing_module.id = 55
+        existing_module.manufacturer.name = "Cisco"
+        existing_module.model = "CM-Remove"
+
+        all_module_types = {"cisco": {"CM-Remove": existing_module}}
+
+        # Populate cache so _compare_components returns a COMPONENT_REMOVED change.
+        stale_iface = MagicMock()
+        stale_iface.name = "xe-stale"
+        nb.device_types.components.record("interface_templates", "module", 55, {"xe-stale": stale_iface})
+        _mark_cache_ready(nb.device_types)
+
+        curr_mt = {
+            "manufacturer": {"slug": "cisco"},
+            "model": "CM-Remove",
+            "slug": "cm-remove",
+            "interfaces": [],  # empty → xe-stale should be detected as removed
+        }
+
+        nb.device_types.remove_components = MagicMock()
+        nb.device_types.update_components = MagicMock()
+
+        result = nb._process_single_module_type(
+            curr_mt,
+            "test.yaml",
+            all_module_types,
+            {},
+            only_new=False,
+            remove_components=True,
+        )
+
+        assert result is True
+        nb.device_types.remove_components.assert_called_once()
+        # Verify the payload: exactly one COMPONENT_REMOVED change for "xe-stale".
+        from core.change_detector import ChangeType
+
+        removal_changes = nb.device_types.remove_components.call_args.args[1]
+        assert len(removal_changes) == 1
+        assert removal_changes[0].change_type == ChangeType.COMPONENT_REMOVED
+        assert removal_changes[0].component_name == "xe-stale"
+
+    def test_component_reconciliation_continues_when_scalar_patch_fails(
+        self, mock_settings, mock_pynetbox, mock_graphql_requests, make_device_types, mock_handle
+    ):
+        """A failed scalar PATCH must NOT skip subsequent component reconciliation.
+
+        Regression: previously the early ``return False`` on a failed
+        ``module_types.update`` left existing modules with property + component
+        diffs in a partial-sync state because component reconciliation was
+        skipped entirely.
+        """
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "3.5"
+
+        nb = NetBox(mock_settings, mock_handle)
+
+        existing_module = MagicMock()
+        existing_module.id = 77
+        existing_module.manufacturer.name = "Cisco"
+        existing_module.model = "CM-Fail-Patch"
+        # Make the scalar diff non-empty so update() will be invoked and fail.
+        existing_module.part_number = "OLD_PN"
+
+        all_module_types = {"cisco": {"CM-Fail-Patch": existing_module}}
+
+        # Cache a stale interface so _compare_components yields a COMPONENT_REMOVED.
+        stale_iface = MagicMock()
+        stale_iface.name = "xe-stale"
+        nb.device_types.components.record("interface_templates", "module", 77, {"xe-stale": stale_iface})
+        _mark_cache_ready(nb.device_types)
+
+        curr_mt = {
+            "manufacturer": {"slug": "cisco"},
+            "model": "CM-Fail-Patch",
+            "slug": "cm-fail-patch",
+            "part_number": "NEW_PN",  # forces a scalar diff
+            "interfaces": [],  # empty → xe-stale should be detected as removed
+        }
+
+        # Force the scalar PATCH to fail with a pynetbox RequestError.
+        # pynetbox is mocked at module level, so we restore the real exception
+        # class first (otherwise `except pynetbox.RequestError` raises TypeError).
+        import pynetbox as _real_pynb
+
+        mock_pynetbox.RequestError = _real_pynb.RequestError
+        request_error = _real_pynb.RequestError(MagicMock(status_code=400, content=b'{"detail":"boom"}'))
+        mock_nb_api.dcim.module_types.update = MagicMock(side_effect=request_error)
+
+        nb.device_types.update_components = MagicMock()
+        nb.device_types.remove_components = MagicMock()
+
+        result = nb._process_single_module_type(
+            curr_mt,
+            "test.yaml",
+            all_module_types,
+            {},
+            only_new=False,
+            remove_components=True,
+        )
+
+        # The failed PATCH should NOT prevent component reconciliation.
+        # Verify the failing PATCH was actually attempted (regression: scalar
+        # diff detection silently skipping update() would still pass without
+        # this assertion).
+        mock_nb_api.dcim.module_types.update.assert_called_once()
+        assert result is True
+        nb.device_types.remove_components.assert_called_once()
+        assert nb.counter["module_updated"] == 0
+        assert nb.counter["module_update_failed"] == 1
+        failures = nb.outcomes.failures()
+        assert len(failures) == 1
+        assert "CM-Fail-Patch" in failures[0].identity

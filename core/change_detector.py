@@ -311,14 +311,12 @@ class ChangeDetector:
             List of ComponentChange objects for all differences
         """
         changes = []
-        cache_key = (parent_type, device_type_id)
 
         for yaml_key, (cache_name, properties) in COMPONENT_TYPES.items():
             yaml_components = list(yaml_data.get(yaml_key) or [])
 
-            # Get cached components for this device type
-            cached = self.device_types.cached_components.get(cache_name, {})
-            existing_components = cached.get(cache_key, {})
+            # entries(), not get(): detection must read the cache, never trigger a fetch.
+            existing_components = self.device_types.components.entries(cache_name, parent_type, device_type_id)
 
             # Build set of YAML component names for this type
             yaml_component_names = {comp.get("name") for comp in yaml_components if comp.get("name")}
