@@ -113,6 +113,22 @@ def test_netbox_init(mock_settings, mock_pynetbox, mock_handle):
     assert nb.modules
 
 
+def test_netbox_init_applies_import_policy_flags(make_config, mock_pynetbox, mock_handle):
+    """NetBox receives all import policy flags through construction."""
+    config = make_config(
+        force_resolve_conflicts=True,
+        remove_unmanaged_types=True,
+        verify_images=True,
+    )
+    mock_pynetbox.api.return_value.version = "3.5"
+
+    netbox = NetBox(config, mock_handle)
+
+    assert netbox.force_resolve_conflicts is True
+    assert netbox.remove_unmanaged_types is True
+    assert netbox.verify_images is True
+
+
 def test_netbox_version_check(mock_settings, mock_pynetbox, mock_handle):
     # Test 5.0
     mock_pynetbox.api.return_value.version = "5.0"

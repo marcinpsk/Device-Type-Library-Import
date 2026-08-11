@@ -454,9 +454,9 @@ class NetBox:
         self.new_filters = False
         self.m2m_front_ports = False  # True for NetBox >= 4.5 (M2M port mappings)
         self.rack_types = False
-        self.force_resolve_conflicts = False
-        self.remove_unmanaged_types = False
-        self.verify_images = False
+        self.force_resolve_conflicts = config.force_resolve_conflicts
+        self.remove_unmanaged_types = config.remove_unmanaged_types
+        self.verify_images = config.verify_images
         self._module_image_details: dict = {}  # populated by _fetch_module_type_existing_images in verify mode
         # Image hash cache: local file path -> SHA-256 hex-digest at last upload time.
         # Used by --verify-images to detect whether the local file changed since last upload,

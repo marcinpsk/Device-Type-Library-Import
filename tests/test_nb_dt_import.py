@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from core import config as config_module
+from core import import_run as import_run_module
 
 
 def _dt_sort_key(d):
@@ -43,7 +44,7 @@ def test_log_run_mode_reports_default_non_update_behavior(nb_dt_import):
         verify_images=False,
     )
 
-    nb_dt_import.log_run_mode(handle, args)
+    import_run_module.log_run_mode(handle, args)
 
     messages = [call.args[0] for call in handle.log.call_args_list]
     assert any("--update not set" in message for message in messages)
@@ -62,7 +63,7 @@ def test_log_run_mode_reports_update_and_remove_enabled(nb_dt_import):
         verify_images=False,
     )
 
-    nb_dt_import.log_run_mode(handle, args)
+    import_run_module.log_run_mode(handle, args)
 
     messages = [call.args[0] for call in handle.log.call_args_list]
     assert any("--update enabled" in message for message in messages)
@@ -80,7 +81,7 @@ def test_log_run_mode_reports_update_without_remove_components(nb_dt_import):
         verify_images=False,
     )
 
-    nb_dt_import.log_run_mode(handle, args)
+    import_run_module.log_run_mode(handle, args)
 
     messages = [call.args[0] for call in handle.log.call_args_list]
     assert any("--update enabled" in message for message in messages)
@@ -98,7 +99,7 @@ def test_log_run_mode_reports_only_new_enabled(nb_dt_import):
         verify_images=False,
     )
 
-    nb_dt_import.log_run_mode(handle, args)
+    import_run_module.log_run_mode(handle, args)
 
     messages = [call.args[0] for call in handle.log.call_args_list]
     assert any("--only-new enabled" in message for message in messages)
@@ -106,17 +107,17 @@ def test_log_run_mode_reports_only_new_enabled(nb_dt_import):
 
 def test_should_only_create_new_modules_default_mode(nb_dt_import):
     args = SimpleNamespace(only_new=False, update=False)
-    assert nb_dt_import.should_only_create_new_modules(args)
+    assert import_run_module.should_only_create_new_modules(args)
 
 
 def test_should_only_create_new_modules_update_mode(nb_dt_import):
     args = SimpleNamespace(only_new=False, update=True)
-    assert not nb_dt_import.should_only_create_new_modules(args)
+    assert not import_run_module.should_only_create_new_modules(args)
 
 
 def test_should_only_create_new_modules_only_new_flag(nb_dt_import):
     args = SimpleNamespace(only_new=True, update=True)
-    assert nb_dt_import.should_only_create_new_modules(args)
+    assert import_run_module.should_only_create_new_modules(args)
 
 
 def test_filter_new_device_types_by_model_and_slug(nb_dt_import):
@@ -129,7 +130,7 @@ def test_filter_new_device_types_by_model_and_slug(nb_dt_import):
     existing_by_model = {("cisco", "A"): object()}
     existing_by_slug = {("juniper", "c-renamed"): object()}
 
-    filtered = nb_dt_import.filter_new_device_types(device_types, existing_by_model, existing_by_slug)
+    filtered = import_run_module.filter_new_device_types(device_types, existing_by_model, existing_by_slug)
 
     assert filtered == [{"manufacturer": {"slug": "cisco"}, "model": "B", "slug": "b"}]
 
@@ -145,7 +146,7 @@ def test_has_missing_device_images_detects_image_changes(nb_dt_import):
         ]
     )
 
-    assert nb_dt_import.has_missing_device_images(report)
+    assert import_run_module.has_missing_device_images(report)
 
 
 def test_has_missing_device_images_detects_rear_image_changes(nb_dt_import):
@@ -156,11 +157,11 @@ def test_has_missing_device_images_detects_rear_image_changes(nb_dt_import):
         ]
     )
 
-    assert nb_dt_import.has_missing_device_images(report)
+    assert import_run_module.has_missing_device_images(report)
 
 
 def test_has_missing_device_images_returns_false_for_none_report(nb_dt_import):
-    assert not nb_dt_import.has_missing_device_images(None)
+    assert not import_run_module.has_missing_device_images(None)
 
 
 def test_has_missing_device_images_returns_false_when_no_image_changes(nb_dt_import):
@@ -171,7 +172,7 @@ def test_has_missing_device_images_returns_false_when_no_image_changes(nb_dt_imp
         ]
     )
 
-    assert not nb_dt_import.has_missing_device_images(report)
+    assert not import_run_module.has_missing_device_images(report)
 
 
 def test_select_device_types_for_default_mode_scopes_to_new_and_missing_images(
@@ -202,7 +203,7 @@ def test_select_device_types_for_default_mode_scopes_to_new_and_missing_images(
         ],
     )
 
-    selected = nb_dt_import.select_device_types_for_default_mode(device_types, change_report)
+    selected = import_run_module.select_device_types_for_default_mode(device_types, change_report)
 
     expected = [
         {"manufacturer": {"slug": "cisco"}, "model": "A", "slug": "a"},
@@ -232,7 +233,7 @@ def test_select_device_types_for_update_mode_scopes_to_new_and_modified(nb_dt_im
         ],
     )
 
-    selected = nb_dt_import.select_device_types_for_update_mode(device_types, change_report)
+    selected = import_run_module.select_device_types_for_update_mode(device_types, change_report)
 
     expected = [
         {"manufacturer": {"slug": "cisco"}, "model": "A", "slug": "a"},
@@ -415,7 +416,7 @@ class TestGetProgressWrapper:
     def test_none_progress_returns_original_iterable(self, nb_dt_import):
         """Returns the iterable unchanged when progress is None."""
         items = [1, 2, 3]
-        result = nb_dt_import.get_progress_wrapper(None, items)
+        result = import_run_module.get_progress_wrapper(None, items)
         assert result is items
 
     def test_wraps_iterable_and_advances_task(self, nb_dt_import):
@@ -423,7 +424,7 @@ class TestGetProgressWrapper:
         mock_progress = MagicMock()
         mock_progress.add_task.return_value = 7
 
-        result = list(nb_dt_import.get_progress_wrapper(mock_progress, [10, 20, 30], desc="Test"))
+        result = list(import_run_module.get_progress_wrapper(mock_progress, [10, 20, 30], desc="Test"))
 
         assert result == [10, 20, 30]
         mock_progress.add_task.assert_called_once()
@@ -436,7 +437,7 @@ class TestGetProgressWrapper:
         mock_progress.add_task.return_value = 1
         on_step = MagicMock()
 
-        list(nb_dt_import.get_progress_wrapper(mock_progress, [1, 2], on_step=on_step))
+        list(import_run_module.get_progress_wrapper(mock_progress, [1, 2], on_step=on_step))
 
         # 2 items + 1 in finally = 3
         assert on_step.call_count == 3
@@ -450,7 +451,7 @@ class TestGetProgressWrapper:
             yield 1
             yield 2
 
-        result = list(nb_dt_import.get_progress_wrapper(mock_progress, gen(), total=None))
+        result = list(import_run_module.get_progress_wrapper(mock_progress, gen(), total=None))
 
         assert result == [1, 2]
         mock_progress.update.assert_called()
@@ -460,7 +461,7 @@ class TestGetProgressWrapper:
         mock_progress = MagicMock()
         mock_progress.add_task.return_value = 1
 
-        list(nb_dt_import.get_progress_wrapper(mock_progress, [1, 2], total=2))
+        list(import_run_module.get_progress_wrapper(mock_progress, [1, 2], total=2))
 
         mock_progress.update.assert_not_called()
 
@@ -476,7 +477,7 @@ class TestFilterDeviceTypesByChangeKeys:
     def test_empty_change_keys_returns_empty_list(self, nb_dt_import):
         """Returns [] immediately when change_keys is an empty set."""
         device_types = [{"manufacturer": {"slug": "cisco"}, "model": "A", "slug": "a"}]
-        result = nb_dt_import.filter_device_types_by_change_keys(device_types, set())
+        result = import_run_module.filter_device_types_by_change_keys(device_types, set())
         assert result == []
 
 
@@ -490,12 +491,12 @@ class TestSelectDeviceTypesNoneReport:
 
     def test_select_default_mode_none_report_returns_empty(self, nb_dt_import):
         """Returns [] when change_report is None (default mode)."""
-        result = nb_dt_import.select_device_types_for_default_mode([], None)
+        result = import_run_module.select_device_types_for_default_mode([], None)
         assert result == []
 
     def test_select_update_mode_none_report_returns_empty(self, nb_dt_import):
         """Returns [] when change_report is None (update mode)."""
-        result = nb_dt_import.select_device_types_for_update_mode([], None)
+        result = import_run_module.select_device_types_for_update_mode([], None)
         assert result == []
 
 
@@ -510,7 +511,7 @@ class TestImageProgressScope:
     def test_none_progress_resets_attribute_to_none(self, nb_dt_import):
         """Even with progress=None, _image_progress is reset to None on exit."""
         mock_dt = MagicMock()
-        with nb_dt_import._image_progress_scope(None, mock_dt, total=5):
+        with import_run_module._image_progress_scope(None, mock_dt, total=5):
             pass
         assert mock_dt._image_progress is None
 
@@ -519,7 +520,7 @@ class TestImageProgressScope:
         mock_progress = MagicMock()
         mock_dt = MagicMock()
 
-        with nb_dt_import._image_progress_scope(mock_progress, mock_dt, total=0):
+        with import_run_module._image_progress_scope(mock_progress, mock_dt, total=0):
             pass
 
         mock_progress.add_task.assert_not_called()
@@ -531,7 +532,7 @@ class TestImageProgressScope:
         mock_progress.add_task.return_value = 42
         mock_dt = MagicMock()
 
-        with nb_dt_import._image_progress_scope(mock_progress, mock_dt, total=3):
+        with import_run_module._image_progress_scope(mock_progress, mock_dt, total=3):
             assert mock_dt._image_progress is not None
             mock_dt._image_progress(2)  # simulate uploading 2 images
 
@@ -546,7 +547,7 @@ class TestImageProgressScope:
         mock_dt = MagicMock()
 
         with pytest.raises(ValueError):
-            with nb_dt_import._image_progress_scope(mock_progress, mock_dt, total=3):
+            with import_run_module._image_progress_scope(mock_progress, mock_dt, total=3):
                 raise ValueError("boom")
 
         assert mock_dt._image_progress is None
@@ -561,7 +562,7 @@ class TestMain:
     """Tests for the main() orchestration function covering all branches."""
 
     def test_only_new_no_device_types(self, nb_dt_import):
-        """--only-new with no matching files logs 'No new device types'."""
+        """An empty only-new run returns a zero-count summary."""
         with (
             patch.object(sys, "argv", ["nb-dt-import.py", "--only-new"]),
             patch("nb_dt_import.DTLRepo") as MockRepo,
@@ -570,7 +571,10 @@ class TestMain:
             MockRepo.return_value = _make_mock_repo()
             MockNetBox.return_value = _make_mock_netbox()
 
-            nb_dt_import.main()
+            summary = nb_dt_import.main()
+
+        assert isinstance(summary, import_run_module.RunSummary)
+        assert summary.counter["added"] == 0
 
     def test_only_new_creates_new_device_types(self, nb_dt_import):
         """--only-new calls create_device_types for genuinely new types."""
@@ -594,18 +598,19 @@ class TestMain:
             assert call.kwargs["only_new"] is True
 
     def test_default_mode_no_device_types(self, nb_dt_import):
-        """Default mode with no discovered vendors completes without error."""
+        """An empty default run returns a zero-count summary."""
         with (
             patch.object(sys, "argv", ["nb-dt-import.py"]),
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
-            patch("nb_dt_import.ChangeDetector") as MockDetector,
         ):
             MockRepo.return_value = _make_mock_repo()
             MockNetBox.return_value = _make_mock_netbox()
-            MockDetector.return_value.detect_changes.return_value = _empty_change_report()
 
-            nb_dt_import.main()
+            summary = nb_dt_import.main()
+
+        assert isinstance(summary, import_run_module.RunSummary)
+        assert summary.counter["properties_updated"] == 0
 
     def test_default_mode_with_new_device_types(self, nb_dt_import):
         """Default mode creates new device types when change report lists them."""
@@ -617,7 +622,7 @@ class TestMain:
             patch.object(sys, "argv", ["nb-dt-import.py"]),
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
-            patch("nb_dt_import.ChangeDetector") as MockDetector,
+            patch("core.import_run.ChangeDetector") as MockDetector,
         ):
             mock_repo = _make_mock_repo(device_types=dt)
             mock_repo.discover_vendors.return_value = [{"name": "Cisco", "slug": "cisco"}]
@@ -633,19 +638,25 @@ class TestMain:
             assert call.args[0] == dt
             assert call.kwargs["only_new"] is True
 
-    def test_update_mode_no_changes(self, nb_dt_import):
+    def test_update_mode_no_changes(self, nb_dt_import, capsys):
         """--update with no changes logs 'No device type changes to process'."""
+        device_type = {"manufacturer": {"slug": "vendor-one"}, "model": "Device One", "slug": "device-one"}
         with (
-            patch.object(sys, "argv", ["nb-dt-import.py", "--update"]),
+            patch.object(sys, "argv", ["nb-dt-import.py", "--update", "--verbose"]),
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
-            patch("nb_dt_import.ChangeDetector") as MockDetector,
+            patch("core.import_run.ChangeDetector") as MockDetector,
         ):
-            MockRepo.return_value = _make_mock_repo()
+            repo = _make_mock_repo(device_types=[device_type])
+            repo.discover_vendors.return_value = [{"name": "Vendor One", "slug": "vendor-one"}]
+            repo.get_devices.return_value = (["device.yaml"], [])
+            MockRepo.return_value = repo
             MockNetBox.return_value = _make_mock_netbox()
             MockDetector.return_value.detect_changes.return_value = _empty_change_report()
 
             nb_dt_import.main()
+
+        assert "No device type changes to process." in capsys.readouterr().out
 
     def test_update_mode_with_changes(self, nb_dt_import):
         """--update with changed types calls create_device_types with update=True."""
@@ -657,7 +668,7 @@ class TestMain:
             patch.object(sys, "argv", ["nb-dt-import.py", "--update"]),
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
-            patch("nb_dt_import.ChangeDetector") as MockDetector,
+            patch("core.import_run.ChangeDetector") as MockDetector,
         ):
             mock_repo = _make_mock_repo(device_types=dt)
             mock_repo.discover_vendors.return_value = [{"name": "Cisco", "slug": "cisco"}]
@@ -681,7 +692,7 @@ class TestMain:
             patch.object(sys, "argv", ["nb-dt-import.py", "--update", "--remove-components"]),
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
-            patch("nb_dt_import.ChangeDetector") as MockDetector,
+            patch("core.import_run.ChangeDetector") as MockDetector,
         ):
             mock_repo = _make_mock_repo(device_types=dt)
             mock_repo.discover_vendors.return_value = [{"name": "Cisco", "slug": "cisco"}]
@@ -709,8 +720,8 @@ class TestMain:
                 nb_dt_import.main()
         assert exc_info.value.code == 2
 
-    def test_update_with_remove_unmanaged_types_sets_attribute_and_detector_kwarg(self, nb_dt_import):
-        """--update --remove-components --remove-unmanaged-types propagates to NetBox and ChangeDetector."""
+    def test_update_with_remove_unmanaged_types_reaches_constructors(self, nb_dt_import):
+        """The resolved remove-unmanaged flag reaches NetBox and ChangeDetector construction."""
         dt = [{"manufacturer": {"slug": "cisco"}, "model": "A", "slug": "a"}]
         change_entry = SimpleNamespace(manufacturer_slug="cisco", model="A", slug="a")
         report = SimpleNamespace(new_device_types=[change_entry], modified_device_types=[])
@@ -723,7 +734,7 @@ class TestMain:
             ),
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
-            patch("nb_dt_import.ChangeDetector") as MockDetector,
+            patch("core.import_run.ChangeDetector") as MockDetector,
         ):
             mock_repo = _make_mock_repo(device_types=dt)
             mock_repo.discover_vendors.return_value = [{"name": "Cisco", "slug": "cisco"}]
@@ -735,8 +746,8 @@ class TestMain:
 
             nb_dt_import.main()
 
-            assert mock_nb.remove_unmanaged_types is True
-            # ChangeDetector instantiated with remove_unmanaged_types=True
+            netbox_config = MockNetBox.call_args.args[0]
+            assert netbox_config.remove_unmanaged_types is True
             _, detector_kwargs = MockDetector.call_args
             assert detector_kwargs.get("remove_unmanaged_types") is True
 
@@ -747,8 +758,8 @@ class TestMain:
                 nb_dt_import.main()
         assert exc_info.value.code == 2
 
-    def test_update_with_force_resolve_conflicts(self, nb_dt_import):
-        """--update --force-resolve-conflicts sets netbox.force_resolve_conflicts=True."""
+    def test_update_with_force_resolve_conflicts_reaches_netbox_constructor(self, nb_dt_import):
+        """The resolved conflict policy reaches NetBox construction."""
         dt = [{"manufacturer": {"slug": "cisco"}, "model": "A", "slug": "a"}]
         change_entry = SimpleNamespace(manufacturer_slug="cisco", model="A", slug="a")
         report = SimpleNamespace(new_device_types=[change_entry], modified_device_types=[])
@@ -757,7 +768,7 @@ class TestMain:
             patch.object(sys, "argv", ["nb-dt-import.py", "--update", "--force-resolve-conflicts"]),
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
-            patch("nb_dt_import.ChangeDetector") as MockDetector,
+            patch("core.import_run.ChangeDetector") as MockDetector,
         ):
             mock_repo = _make_mock_repo(device_types=dt)
             mock_repo.discover_vendors.return_value = [{"name": "Cisco", "slug": "cisco"}]
@@ -769,10 +780,10 @@ class TestMain:
 
             nb_dt_import.main()
 
-            assert mock_nb.force_resolve_conflicts is True
+            assert MockNetBox.call_args.args[0].force_resolve_conflicts is True
 
-    def test_verify_images_sets_attribute(self, nb_dt_import):
-        """--verify-images propagates to netbox.verify_images = True."""
+    def test_verify_images_reaches_netbox_constructor(self, nb_dt_import):
+        """The resolved image verification flag reaches NetBox construction."""
         dt = [{"manufacturer": {"slug": "cisco"}, "model": "A", "slug": "a"}]
         change_entry = SimpleNamespace(manufacturer_slug="cisco", model="A", slug="a")
         report = SimpleNamespace(new_device_types=[change_entry], modified_device_types=[])
@@ -781,7 +792,7 @@ class TestMain:
             patch.object(sys, "argv", ["nb-dt-import.py", "--update", "--verify-images"]),
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
-            patch("nb_dt_import.ChangeDetector") as MockDetector,
+            patch("core.import_run.ChangeDetector") as MockDetector,
         ):
             mock_repo = _make_mock_repo(device_types=dt)
             mock_repo.discover_vendors.return_value = [{"name": "Cisco", "slug": "cisco"}]
@@ -793,7 +804,7 @@ class TestMain:
 
             nb_dt_import.main()
 
-            assert mock_nb.verify_images is True
+            assert MockNetBox.call_args.args[0].verify_images is True
 
     def test_missing_env_var_triggers_system_exit(self, nb_dt_import):
         """A missing mandatory environment variable exits from main()."""
@@ -807,7 +818,7 @@ class TestMain:
             with pytest.raises(SystemExit):
                 nb_dt_import.main()
 
-    def test_vendors_and_slugs_flags_log_lines(self, nb_dt_import):
+    def test_vendors_and_slugs_flags_log_lines(self, nb_dt_import, capsys):
         """--vendors and --slugs args cause their respective log lines to execute."""
         with (
             patch.object(
@@ -817,7 +828,7 @@ class TestMain:
             ),
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
-            patch("nb_dt_import.ChangeDetector") as MockDetector,
+            patch("core.import_run.ChangeDetector") as MockDetector,
         ):
             mock_repo = _make_mock_repo()
             mock_repo.discover_vendors.return_value = [{"name": "Cisco", "slug": "cisco"}]
@@ -825,7 +836,11 @@ class TestMain:
             MockNetBox.return_value = _make_mock_netbox()
             MockDetector.return_value.detect_changes.return_value = _empty_change_report()
 
-            nb_dt_import.main()  # should not raise
+            nb_dt_import.main()
+
+        output = capsys.readouterr().out
+        assert "Importing vendors: cisco" in output
+        assert "Filtering by slugs: ws-c3750" in output
 
     def test_unknown_vendors_exits_nonzero(self, nb_dt_import):
         """--vendors with no matching slug exits with code 1 instead of silently doing nothing."""
@@ -853,7 +868,7 @@ class TestMain:
             patch.object(sys, "argv", ["nb-dt-import.py", "--update"]),
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
-            patch("nb_dt_import.ChangeDetector") as MockDetector,
+            patch("core.import_run.ChangeDetector") as MockDetector,
         ):
             mock_nb = _make_mock_netbox(modules=True)
             mock_nb.filter_actionable_module_types.return_value = ([module_type], {}, [])
@@ -875,20 +890,30 @@ class TestMain:
 
     def test_modules_update_mode_logs_change_detection_section(self, nb_dt_import):
         """--update with modules=True logs the MODULE TYPE CHANGE DETECTION header."""
+        module_type = {"manufacturer": {"slug": "vendor-one"}, "model": "Module One", "slug": "module-one"}
+        change_log = [("module-one", "Module One", {}, [])]
         with (
             patch.object(sys, "argv", ["nb-dt-import.py", "--update"]),
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
-            patch("nb_dt_import.ChangeDetector") as MockDetector,
+            patch("core.import_run.ChangeDetector") as MockDetector,
         ):
             mock_nb = _make_mock_netbox(modules=True)
-            mock_nb.filter_actionable_module_types.return_value = ([], {}, [])
+            mock_nb.filter_actionable_module_types.return_value = ([], {}, change_log)
+            mock_nb.filter_new_module_types.return_value = []
             MockNetBox.return_value = mock_nb
-            MockNetBox.filter_new_module_types.return_value = []
-            MockRepo.return_value = _make_mock_repo()
+            repo = _make_mock_repo()
+            repo.discover_vendors.return_value = [{"name": "Vendor One", "slug": "vendor-one"}]
+            repo.get_devices.side_effect = lambda path, vendors=None: (
+                (["module.yaml"], []) if "modules" in path else ([], [])
+            )
+            repo.parse_files.side_effect = lambda files, slugs=None: [module_type] if files == ["module.yaml"] else []
+            MockRepo.return_value = repo
             MockDetector.return_value.detect_changes.return_value = _empty_change_report()
 
-            nb_dt_import.main()  # should not raise
+            nb_dt_import.main()
+
+        mock_nb.log_module_type_changes.assert_called_once_with(change_log)
 
     def test_settings_netbox_features_modules_logs_module_count(self, nb_dt_import):
         """When netbox.modules is True, module_added/updated counters are logged."""
@@ -920,7 +945,7 @@ class TestMain:
             patch.object(sys, "argv", ["nb-dt-import.py"]),
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
-            patch("nb_dt_import.ChangeDetector") as MockDetector,
+            patch("core.import_run.ChangeDetector") as MockDetector,
             patch("nb_dt_import.LogHandler") as MockLogHandler,
             patch("sys.stdout") as mock_stdout,
             patch("nb_dt_import.MyProgress", MockMyProgress),
@@ -955,7 +980,7 @@ class TestProcessRackTypes:
         netbox.rack_types = False
 
         rack_type = {"manufacturer": {"slug": "apc"}, "model": "AR1300", "slug": "apc-ar1300"}
-        nb_dt_import._process_rack_types(self._make_args(), netbox, handle, None, [rack_type])
+        import_run_module._process_rack_types(self._make_args(), netbox, handle, None, [rack_type])
 
         handle.log.assert_called_once()
         assert "4.1" in handle.log.call_args[0][0]
@@ -967,7 +992,7 @@ class TestProcessRackTypes:
         netbox = MagicMock()
         netbox.rack_types = True
 
-        nb_dt_import._process_rack_types(self._make_args(), netbox, handle, None, [])
+        import_run_module._process_rack_types(self._make_args(), netbox, handle, None, [])
 
         handle.log.assert_not_called()
         handle.verbose_log.assert_not_called()
@@ -987,7 +1012,7 @@ class TestProcessRackTypes:
             "slug": "apc-ar1300",
         }
 
-        nb_dt_import._process_rack_types(self._make_args(), netbox, handle, None, [rack_type])
+        import_run_module._process_rack_types(self._make_args(), netbox, handle, None, [rack_type])
 
         netbox.create_rack_types.assert_called_once()
         assert netbox.create_rack_types.call_args.args[0] == [rack_type]
@@ -1005,7 +1030,7 @@ class TestProcessRackTypes:
             "slug": "apc-ar1300",
         }
 
-        nb_dt_import._process_rack_types(self._make_args(), netbox, handle, None, [rack_type])
+        import_run_module._process_rack_types(self._make_args(), netbox, handle, None, [rack_type])
 
         log_calls = [call.args[0] for call in handle.verbose_log.call_args_list]
         assert any("No new rack types (1 unchanged)" in msg for msg in log_calls)
@@ -1020,7 +1045,7 @@ class TestEntryPoint:
     """Tests for the if __name__ == '__main__' entry point block."""
 
     def test_entry_point_calls_main_normally(self):
-        """Running the script as __main__ with mocked deps completes without error."""
+        """Running the script as __main__ constructs the repository once."""
         with (
             patch("core.repo.DTLRepo") as MockDTLRepo,
             patch("core.netbox_api.NetBox") as MockNetBox,
@@ -1030,6 +1055,8 @@ class TestEntryPoint:
 
             with patch.object(sys, "argv", ["nb-dt-import.py", "--only-new"]):
                 runpy.run_path(_NB_DT_IMPORT_PATH, run_name="__main__")
+
+        MockDTLRepo.assert_called_once()
 
     def test_entry_point_keyboard_interrupt_exits_130(self):
         """KeyboardInterrupt raised inside main() becomes SystemExit(130)."""
@@ -1084,7 +1111,7 @@ class TestPerVendorLoop:
             patch.object(sys, "argv", argv),
             patch("nb_dt_import.DTLRepo") as MockRepo,
             patch("nb_dt_import.NetBox") as MockNetBox,
-            patch("nb_dt_import.ChangeDetector") as MockDetector,
+            patch("core.import_run.ChangeDetector") as MockDetector,
         ):
             MockRepo.return_value = mock_repo
             MockNetBox.return_value = mock_nb
@@ -1255,27 +1282,6 @@ class TestPerVendorLoop:
                 "ensure_components_ready called without manufacturer_slug (global fetch triggered)"
             )
 
-    def test_empty_device_type_list_returns_before_cache_readiness(self, nb_dt_import):
-        class DeviceTypes:
-            def ensure_components_ready(self, manufacturer_slug=None):
-                raise AssertionError("empty input must not populate the component cache")
-
-        class Handle:
-            def __init__(self):
-                self.messages = []
-
-            def verbose_log(self, message):
-                self.messages.append(message)
-
-        handle = Handle()
-        config = SimpleNamespace(only_new=False)
-        netbox = SimpleNamespace(device_types=DeviceTypes())
-
-        nb_dt_import._process_device_types(config, netbox, handle, None, [], vendor_slug="cisco")
-
-        assert handle.messages == ["No device types matched filters."]
-
-
 # ---------------------------------------------------------------------------
 # _process_module_types hints and counters (lines 554-559, 572, 574-575)
 # ---------------------------------------------------------------------------
@@ -1318,7 +1324,7 @@ class TestProcessModuleTypesHints:
         mock_repo = MagicMock()
         mock_repo.get_devices.return_value = ([], [])
 
-        nb_dt_import._process_module_types(
+        import_run_module._process_module_types(
             self._make_args(only_new=False, update=False, remove_components=False),
             mock_nb,
             handle,
@@ -1367,8 +1373,11 @@ class TestLogRunSummary:
                 "rack_type_updated": 1,
             }
         )
+        mock_nb.outcomes.render_failure_report.return_value = []
+        mock_repo = SimpleNamespace(duplicate_definitions=[])
+        summary = import_run_module.RunSummary.capture(mock_nb, mock_repo, datetime.now())
 
-        nb_dt_import._log_run_summary(handle, mock_nb, datetime.now())
+        import_run_module._log_run_summary(handle, summary)
 
         logged = [call.args[0] for call in handle.log.call_args_list]
         assert any("3 rack types created" in msg for msg in logged)
@@ -1405,8 +1414,10 @@ class TestLogRunSummary:
                 "ignored": ["b.yaml"],
             }
         ]
+        mock_nb.outcomes.render_failure_report.return_value = []
+        summary = import_run_module.RunSummary.capture(mock_nb, mock_repo, datetime.now())
 
-        nb_dt_import._log_run_summary(handle, mock_nb, datetime.now(), dtl_repo=mock_repo)
+        import_run_module._log_run_summary(handle, summary)
 
         logged = [call.args[0] for call in handle.log.call_args_list]
         assert any("cisco" in msg for msg in logged)
@@ -1588,8 +1599,8 @@ class TestDirectHelpers:
         repo.get_devices.return_value = (["rack.yaml"], [])
         repo.parse_files.return_value = [{"model": "Rack"}]
 
-        with patch("nb_dt_import.os.path.isdir", return_value=True):
-            result = nb_dt_import._parse_vendor_racks(repo, "/racks", "nokia", ["rack"])
+        with patch("core.import_run.os.path.isdir", return_value=True):
+            result = import_run_module._parse_vendor_racks(repo, "/racks", "nokia", ["rack"])
 
         assert result == [{"model": "Rack"}]
         repo.get_devices.assert_called_once_with("/racks", ["nokia"])
@@ -1599,7 +1610,7 @@ class TestDirectHelpers:
         progress = MagicMock()
         progress.tasks = [SimpleNamespace(id=1, total=None, completed=3)]
 
-        nb_dt_import._finalize_task_registry(progress, {"seen": 1, "missing": 2})
+        import_run_module._finalize_task_registry(progress, {"seen": 1, "missing": 2})
 
         progress.update.assert_called_once_with(1, total=3)
         progress.stop_task.assert_called_once_with(1)
@@ -1740,7 +1751,10 @@ class TestDirectHelpers:
             "force_overwrite": True,
             "vendor_slugs": ["nokia"],
         }
-        handle.set_console.assert_called_once_with(progress.console)
+        assert handle.set_console.call_args_list == [
+            ((progress.console,),),
+            ((None,),),
+        ]
         MockExporter.return_value.run.assert_called_once_with(progress=progress)
 
     def test_run_export_diff_sends_no_vendor_filter_when_vendors_is_empty(self, nb_dt_import):
@@ -1807,7 +1821,7 @@ class TestMainAdditionalCoverage:
             patch.object(sys, "argv", ["nb-dt-import.py", "--slugs", "x"]),
             patch("nb_dt_import.DTLRepo", return_value=mock_repo),
             patch("nb_dt_import.NetBox", return_value=mock_nb),
-            patch("nb_dt_import.ChangeDetector") as MockDetector,
+            patch("core.import_run.ChangeDetector") as MockDetector,
         ):
             MockDetector.return_value.detect_changes.return_value = _empty_change_report()
             nb_dt_import.main()
@@ -1842,8 +1856,8 @@ class TestMainAdditionalCoverage:
             patch.object(sys, "argv", ["nb-dt-import.py"]),
             patch("nb_dt_import.DTLRepo", return_value=mock_repo),
             patch("nb_dt_import.NetBox", return_value=mock_nb),
-            patch("nb_dt_import.ChangeDetector") as MockDetector,
-            patch("nb_dt_import._process_device_types"),
+            patch("core.import_run.ChangeDetector") as MockDetector,
+            patch("core.import_run._process_device_types"),
             patch("sys.stdout") as mock_stdout,
             patch("nb_dt_import.get_progress_panel", return_value=_Ctx()),
         ):
@@ -1878,7 +1892,7 @@ class TestMainAdditionalCoverage:
             patch.object(sys, "argv", ["nb-dt-import.py"]),
             patch("nb_dt_import.DTLRepo", return_value=mock_repo),
             patch("nb_dt_import.NetBox", return_value=mock_nb),
-            patch("nb_dt_import._process_device_types", side_effect=RuntimeError("boom")),
+            patch("core.import_run._process_device_types", side_effect=RuntimeError("boom")),
             patch("nb_dt_import.get_progress_panel", return_value=_Ctx()),
         ):
             with pytest.raises(RuntimeError, match="boom"):
@@ -1935,10 +1949,12 @@ class TestMainAdditionalCoverage:
         assert parsed.export_diff_dir == "exports/"
         assert parsed.force_export_overwrite is True
 
-    def test_run_vendor_loop_processes_slug_fast_path_and_skips_empty_vendor(self, nb_dt_import):
-        args = SimpleNamespace(only_new=False, slugs=["x"])
+    def test_import_run_processes_slug_fast_path_and_skips_empty_vendor(self, make_config):
+        """Execution applies a resolved plan and advances past an empty plan."""
+        config = make_config(slugs=("x",))
         handle = MagicMock()
         progress = MagicMock()
+        progress.add_task.return_value = 7
         dtl_repo = _make_mock_repo()
         dtl_repo.get_devices.side_effect = lambda path, vendors=None: (
             ([f"{vendors[0]}-{path.split('/')[-1]}.yaml"], [])
@@ -1958,31 +1974,24 @@ class TestMainAdditionalCoverage:
             "module_vendors": {"cisco"},
             "rack_vendors": set(),
         }
+        vendors = [{"slug": "empty", "name": "Empty"}, {"slug": "cisco", "name": "Cisco"}]
+        dtl_repo.discover_vendors.return_value = vendors
+        dtl_repo.resolve_slug_files.return_value = slug_resolved
 
         with (
-            patch(
-                "nb_dt_import._parse_vendor_racks",
-                side_effect=[[], [{"manufacturer": {"slug": "cisco"}, "model": "R", "slug": "r"}]],
-            ),
-            patch("nb_dt_import._process_device_types") as mock_process_device_types,
-            patch("nb_dt_import._process_module_types") as mock_process_module_types,
-            patch("nb_dt_import._process_rack_types") as mock_process_rack_types,
-            patch("nb_dt_import._finalize_task_registry") as mock_finalize,
+            patch("core.import_run._process_device_types") as mock_process_device_types,
+            patch("core.import_run._process_module_types") as mock_process_module_types,
+            patch("core.import_run._process_rack_types") as mock_process_rack_types,
+            patch("core.import_run._finalize_task_registry") as mock_finalize,
         ):
-            nb_dt_import._run_vendor_loop(
-                dtl_repo=dtl_repo,
-                netbox=netbox,
-                config=args,
-                handle=handle,
-                vendors_to_process=[{"slug": "empty", "name": "Empty"}, {"slug": "cisco", "name": "Cisco"}],
-                devices_path="/tmp/devices",
-                modules_path="/tmp/modules",
-                racks_path="/tmp/rack-types",
-                slug_resolved=slug_resolved,
-                progress=progress,
-                task_registry={},
-                vendor_task_id=7,
+            run = import_run_module.ImportRun(
+                config,
+                dtl_repo,
+                netbox,
+                handle,
+                lambda _show_remaining_time: nullcontext(progress),
             )
+            run.execute()
 
         netbox.load_vendor.assert_called_once_with("cisco")
         netbox.device_types.components.begin_prefetch.assert_called_once()
@@ -2006,11 +2015,14 @@ class TestMainAdditionalCoverage:
         mock_finalize.assert_called_once_with(progress, {})
         assert any(call.args[0] == ["resolved.yaml"] for call in dtl_repo.parse_files.call_args_list)
 
-    def test_run_vendor_loop_stops_preload_in_finally_on_error(self, nb_dt_import):
-        args = SimpleNamespace(only_new=False, slugs=[])
+    def test_import_run_stops_preload_in_finally_on_error(self, make_config):
+        """Execution closes the preload and progress registry after an apply error."""
+        config = make_config()
         handle = MagicMock()
         progress = MagicMock()
+        progress.add_task.return_value = 8
         dtl_repo = _make_mock_repo()
+        dtl_repo.discover_vendors.return_value = [{"slug": "cisco", "name": "Cisco"}]
         dtl_repo.get_devices.side_effect = lambda path, vendors=None: (
             (["device.yaml"], []) if path == "/tmp/devices" else ([], [])
         )
@@ -2020,25 +2032,18 @@ class TestMainAdditionalCoverage:
         netbox = _make_mock_netbox()
 
         with (
-            patch("nb_dt_import._parse_vendor_racks", return_value=[]),
-            patch("nb_dt_import._process_device_types", side_effect=RuntimeError("boom")),
-            patch("nb_dt_import._finalize_task_registry") as mock_finalize,
+            patch("core.import_run._process_device_types", side_effect=RuntimeError("boom")),
+            patch("core.import_run._finalize_task_registry") as mock_finalize,
         ):
             with pytest.raises(RuntimeError, match="boom"):
-                nb_dt_import._run_vendor_loop(
-                    dtl_repo=dtl_repo,
-                    netbox=netbox,
-                    config=args,
-                    handle=handle,
-                    vendors_to_process=[{"slug": "cisco", "name": "Cisco"}],
-                    devices_path="/tmp/devices",
-                    modules_path="/tmp/modules",
-                    racks_path="/tmp/rack-types",
-                    slug_resolved=None,
-                    progress=progress,
-                    task_registry={},
-                    vendor_task_id=8,
+                run = import_run_module.ImportRun(
+                    config,
+                    dtl_repo,
+                    netbox,
+                    handle,
+                    lambda _show_remaining_time: nullcontext(progress),
                 )
+                run.execute()
 
         netbox.device_types.components.close.assert_called()
         mock_finalize.assert_called_once_with(progress, {})
