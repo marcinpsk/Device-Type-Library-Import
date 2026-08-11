@@ -116,18 +116,18 @@ def _check_image_url(
     upload so remote bytes never match the originals.  Use
     :func:`_is_image_hash_changed` for local-file change detection instead.
 
-    Returns "ok" only when the server returns a 2xx response *and* the Content-Type
+    Returns "present" only when the server returns a 2xx response *and* the Content-Type
     indicates an actual image.  A 2xx with a non-image Content-Type (e.g. ``text/html``
     from a login-redirect) is treated as "missing" so that files absent from the
     filesystem but still recorded in the database are re-uploaded.
 
     Returns:
+        "present": the server holds the image (2xx with an image Content-Type)
         "missing": the server returned a non-2xx response, or a 2xx but with a
                    non-image Content-Type (image not physically present / auth redirect)
-        "ok":      image exists (2xx with image Content-Type) or a network error
-                   occurred (conservative — avoids spurious re-uploads on transient
-                   failures; network error is logged at verbose level when *log_fn*
-                   is provided so operators can spot degraded runs)
+        "unknown": the request did not complete, so the server said nothing about
+                   this image.  The caller decides what to do; a failure on the wire
+                   is not evidence about the file.
 
     Args:
         base_url: NetBox base URL (e.g. "https://netbox.example.com").
@@ -139,8 +139,8 @@ def _check_image_url(
             ``nbt_…`` tokens, ``Token`` otherwise) to support all NetBox token
             types.  Auth is only sent when the URL resolves to the same host as
             *base_url*, preventing credential leakage to off-host URLs.
-        log_fn: Optional callable ``(msg: str) -> None`` invoked at verbose level
-            when a network error is swallowed.  Pass ``handle.verbose_log``.
+        log_fn: Optional callable ``(msg: str) -> None`` invoked with the transport
+            error detail.  Pass ``handle.verbose_log``.
     """
     full_url = image_url_path if image_url_path.startswith("http") else base_url.rstrip("/") + image_url_path
     headers = {}
@@ -156,20 +156,17 @@ def _check_image_url(
         response = requests.get(full_url, headers=headers, verify=(not ignore_ssl), timeout=30)
     except requests.RequestException as exc:
         if log_fn is not None:
-            log_fn(
-                f"[yellow]Network error checking image {full_url}: {exc} "
-                f"— treating as present to avoid spurious re-upload[/yellow]"
-            )
-        return "ok"
+            log_fn(f"[yellow]Network error checking image {full_url}: {exc}[/yellow]")
+        return "unknown"
     if not response.ok:
         return "missing"
     content_type = response.headers.get("Content-Type", "")
     if content_type.startswith("text/") or content_type.startswith("application/json"):
         return "missing"
-    return "ok"
+    return "present"
 
 
-def _is_image_hash_changed(local_path: str, hash_cache: dict) -> bool:
+def _is_image_hash_changed(local_path: str, hash_cache: dict, log_fn=None) -> bool:
     """Return True if the local file's SHA-256 hash differs from the cached value.
 
     The cache maps local file paths to the SHA-256 hex-digest recorded at the time
@@ -177,11 +174,15 @@ def _is_image_hash_changed(local_path: str, hash_cache: dict) -> bool:
     avoids the unreliability caused by NetBox re-encoding images on upload.
 
     Returns False when *local_path* is absent from *hash_cache* (conservative: avoids
-    re-uploading images that have never been tracked).
+    re-uploading images that have never been tracked), and when the file cannot be
+    read, which is reported through *log_fn* because a file this run cannot open is
+    also a file it cannot upload.
 
     Args:
         local_path: Absolute filesystem path to the local image file.
         hash_cache: Dict mapping local path strings to SHA-256 hex-digests.
+        log_fn: Optional callable ``(msg: str) -> None`` invoked when the file
+            cannot be read.
     """
     cached = hash_cache.get(local_path)
     if cached is None:
@@ -189,19 +190,38 @@ def _is_image_hash_changed(local_path: str, hash_cache: dict) -> bool:
     try:
         with open(local_path, "rb") as fh:
             current = hashlib.sha256(fh.read()).hexdigest()
-    except OSError:
+    except OSError as exc:
+        if log_fn is not None:
+            log_fn(f"[yellow]Cannot read image {local_path} to check for changes: {exc}[/yellow]")
         return False
     return current != cached
 
 
-def _load_image_hash_cache(path: str) -> dict:
-    """Load the image-hash cache from *path* (JSON).  Returns an empty dict on any error."""
+def _load_image_hash_cache(path: str, log_fn=None) -> dict:
+    """Load the image-hash cache from *path* (JSON), returning an empty dict when it cannot be read.
+
+    An absent file is the normal first run and stays quiet.  Anything else means the
+    run lost its record of which images it already uploaded, which is reported through
+    *log_fn*: every tracked image then reads as unchanged until it is uploaded again.
+    """
+    if path is None:
+        return {}
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
-        return data if isinstance(data, dict) else {}
-    except Exception:
+    except FileNotFoundError:
         return {}
+    except (OSError, ValueError) as exc:
+        if log_fn is not None:
+            log_fn(f"[yellow]Ignoring unreadable image hash cache {path}: {exc}[/yellow]")
+        return {}
+    if not isinstance(data, dict):
+        if log_fn is not None:
+            log_fn(
+                f"[yellow]Ignoring image hash cache {path}: expected an object, found {type(data).__name__}[/yellow]"
+            )
+        return {}
+    return data
 
 
 def _save_image_hash_cache(path: str, cache: dict) -> bool:
@@ -226,7 +246,7 @@ def _save_image_hash_cache(path: str, cache: dict) -> bool:
         os.replace(tmp_path, path)
         tmp_path = None  # successfully replaced; skip cleanup
         return True
-    except Exception:
+    except OSError:
         if tmp_path is not None:
             try:
                 os.unlink(tmp_path)
@@ -235,18 +255,20 @@ def _save_image_hash_cache(path: str, cache: dict) -> bool:
         return False
 
 
-def _store_image_hashes(cache: dict, images: dict) -> None:
+def _store_image_hashes(cache: dict, images: dict, log_fn=None) -> None:
     """Compute and store SHA-256 hashes for each local image path in *images*.
 
-    *images* maps arbitrary string keys to local file paths.  Entries that cannot
-    be read are silently skipped.  Updates *cache* in-place.
+    *images* maps arbitrary string keys to local file paths.  Updates *cache* in-place.
+    A file that cannot be read gets no entry, so the next run re-uploads it; that is
+    reported through *log_fn* rather than passed over.
     """
     for path in images.values():
         try:
             with open(path, "rb") as fh:
                 cache[path] = hashlib.sha256(fh.read()).hexdigest()
-        except OSError:
-            pass
+        except OSError as exc:
+            if log_fn is not None:
+                log_fn(f"[yellow]Cannot hash image {path}, so it will be re-uploaded next run: {exc}[/yellow]")
 
 
 def _delete_image_attachment(base_url: str, token: str, att_id: int, ignore_ssl: bool, handle) -> bool:
@@ -427,14 +449,15 @@ class NetBox:
         try:
             _cache_dir.mkdir(parents=True, exist_ok=True)
             self._image_hash_cache_path = str(_cache_dir / "image-hashes.json")
-        except OSError:
-            self.handle.verbose_log(
+        except OSError as exc:
+            self.handle.log(
                 "[yellow]Warning: could not create image hash cache directory "
-                f"({_cache_dir}); hash-based re-upload detection will be disabled "
+                f"({_cache_dir}): {exc}. Hash-based re-upload detection is disabled "
                 "for this run.[/yellow]"
             )
             self._image_hash_cache_path = None
-        self._image_hash_cache: dict = _load_image_hash_cache(self._image_hash_cache_path)
+        self._hash_cache_write_failed = False
+        self._image_hash_cache: dict = _load_image_hash_cache(self._image_hash_cache_path, log_fn=self.handle.log)
         self.connect_api()
         self.verify_compatibility()
         self.graphql = NetBoxGraphQLClient(
@@ -493,9 +516,13 @@ class NetBox:
         """Save the image hash cache and warn once if the write fails."""
         if self._image_hash_cache_path is None:
             return
-        if not _save_image_hash_cache(self._image_hash_cache_path, self._image_hash_cache):
-            self.handle.verbose_log(
-                "[yellow]Warning: failed to persist image hash cache; "
+        if _save_image_hash_cache(self._image_hash_cache_path, self._image_hash_cache):
+            return
+        if not self._hash_cache_write_failed:
+            self._hash_cache_write_failed = True
+            self.handle.log(
+                "[yellow]Warning: failed to persist image hash cache "
+                f"({self._image_hash_cache_path}); "
                 "local image edits may not be detected on the next run.[/yellow]"
             )
 
@@ -886,15 +913,20 @@ class NetBox:
             if status == "missing":
                 self.handle.verbose_log(f"{label} is missing on server for {dt.model}, will re-upload.")
                 continue  # keep in saved_images for upload
+            if status == "unknown":
+                self.handle.log(
+                    f"[yellow]Could not verify {label} on the server for {dt.model}; "
+                    "falling back to the local hash alone.[/yellow]"
+                )
             # --verify-images: Step 2 — check if local file changed since last upload
-            if _is_image_hash_changed(saved_images[image_kind], self._image_hash_cache):
+            if _is_image_hash_changed(saved_images[image_kind], self._image_hash_cache, log_fn=self.handle.log):
                 self.handle.verbose_log(f"{label} content has changed for {dt.model}, will re-upload.")
                 continue  # keep in saved_images for upload
             # Both checks passed — image is present and unchanged;
             # seed hash cache so future local edits will be detected.
             local_path = saved_images[image_kind]
             if local_path not in self._image_hash_cache:
-                _store_image_hashes(self._image_hash_cache, {image_kind: local_path})
+                _store_image_hashes(self._image_hash_cache, {image_kind: local_path}, log_fn=self.handle.log)
                 self._persist_hash_cache()
             self.handle.verbose_log(f"{label} verified OK for {dt.model}, skipping upload.")
             del saved_images[image_kind]
@@ -929,7 +961,7 @@ class NetBox:
             self._filter_images_for_upload(dt, saved_images)
             if saved_images:
                 self.device_types.upload_images(self.url, self.token, saved_images, dt.id)
-                _store_image_hashes(self._image_hash_cache, saved_images)
+                _store_image_hashes(self._image_hash_cache, saved_images, log_fn=self.handle.log)
                 self._persist_hash_cache()
 
         if only_new:
@@ -1066,7 +1098,7 @@ class NetBox:
             self.device_types.create_components(yaml_key, device_type[yaml_key], dt_id, context=src_file)
         if saved_images:
             self.device_types.upload_images(self.url, self.token, saved_images, dt_id)
-            _store_image_hashes(self._image_hash_cache, saved_images)
+            _store_image_hashes(self._image_hash_cache, saved_images, log_fn=self.handle.log)
             self._persist_hash_cache()
 
     def create_device_types(
@@ -1905,6 +1937,11 @@ class NetBox:
                             self.token,
                             log_fn=self.handle.verbose_log,
                         )
+                        if status == "unknown":
+                            self.handle.log(
+                                f"[yellow]Could not verify image '{os.path.basename(img_path)}' on the server "
+                                f"for {module_type_res.model}; falling back to the local hash alone.[/yellow]"
+                            )
                         if status == "missing":
                             self.handle.verbose_log(
                                 f"Image '{os.path.basename(img_path)}' missing on server for "
@@ -1916,7 +1953,7 @@ class NetBox:
                             if not deleted:
                                 continue
                         # Step 2: local-file hash check
-                        elif _is_image_hash_changed(img_path, self._image_hash_cache):
+                        elif _is_image_hash_changed(img_path, self._image_hash_cache, log_fn=self.handle.log):
                             self.handle.verbose_log(
                                 f"Image '{os.path.basename(img_path)}' content has changed for "
                                 f"{module_type_res.model}, re-uploading."
@@ -1930,7 +1967,7 @@ class NetBox:
                             # Verify OK: image present and hash unchanged.
                             # Seed hash cache so future local edits will be detected.
                             if img_path not in self._image_hash_cache:
-                                _store_image_hashes(self._image_hash_cache, {"image": img_path})
+                                _store_image_hashes(self._image_hash_cache, {"image": img_path}, log_fn=self.handle.log)
                                 self._persist_hash_cache()
                             self.handle.verbose_log(
                                 f"Image '{os.path.basename(img_path)}' verified OK for "
@@ -1954,7 +1991,7 @@ class NetBox:
                 self.url, self.token, img_path, "dcim.moduletype", module_type_res.id
             ):
                 existing.add(img_name)
-                _store_image_hashes(self._image_hash_cache, {"image": img_path})
+                _store_image_hashes(self._image_hash_cache, {"image": img_path}, log_fn=self.handle.log)
                 self._persist_hash_cache()
 
 

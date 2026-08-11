@@ -928,12 +928,23 @@ class TestExporterAdditionalCoverage:
         assert exporter._download_type_images(rt_item) is True
 
     def test_download_module_type_images_handles_fetch_failure(self, tmp_path):
+        from core.graphql_client import GraphQLError
+
         exporter = self._make_exporter(tmp_path)
         item = ExportItem("module-type", _make_mt(id=77), None, {}, "absent", "Nokia", "mt.yaml", "Nokia/mt")
-        exporter._get_module_image_details = MagicMock(side_effect=RuntimeError("boom"))
+        exporter._get_module_image_details = MagicMock(side_effect=GraphQLError("boom"))
 
         assert exporter._download_module_type_images(item) is False
         assert any("Could not fetch module image details" in str(call) for call in exporter.handle.log.call_args_list)
+
+    def test_download_module_type_images_does_not_swallow_a_programming_error(self, tmp_path):
+        """Only a query or transport failure is a reason to give up on the images."""
+        exporter = self._make_exporter(tmp_path)
+        item = ExportItem("module-type", _make_mt(id=77), None, {}, "absent", "Nokia", "mt.yaml", "Nokia/mt")
+        exporter._get_module_image_details = MagicMock(side_effect=TypeError("wrong argument"))
+
+        with pytest.raises(TypeError):
+            exporter._download_module_type_images(item)
 
     def test_download_module_type_images_downloads_available_attachments(self, tmp_path):
         exporter = self._make_exporter(tmp_path)

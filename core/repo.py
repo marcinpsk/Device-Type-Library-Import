@@ -678,9 +678,10 @@ class DTLRepo:
                 items_iterator = progress if progress is not None else files_list
                 results = executor.map(parse_single_file, files_list)
 
-                for _, data in zip(items_iterator, results, strict=True):
+                for _, src, data in zip(items_iterator, files_list, results, strict=True):
                     if isinstance(data, str) and data.startswith("Error:"):
-                        self.handle.verbose_log(data)
+                        # A file that will not parse is one the run cannot import, so say so.
+                        self.handle.log(f"[yellow]Skipping {src}: {data.removeprefix('Error: ')}[/yellow]")
                         continue
 
                     if slugs:

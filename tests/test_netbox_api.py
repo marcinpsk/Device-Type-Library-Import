@@ -1,3 +1,4 @@
+import os
 import threading
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -5084,12 +5085,12 @@ class TestCheckImageUrl:
         with patch("requests.get", return_value=self._image_resp(ok=False)):
             assert _check_image_url("http://nb", "/media/front.png", False) == "missing"
 
-    def test_returns_ok_when_response_ok_and_image_content_type(self):
-        """2xx with image/* Content-Type is 'ok'."""
+    def test_returns_present_when_response_ok_and_image_content_type(self):
+        """2xx with image/* Content-Type is 'present'."""
         from core.netbox_api import _check_image_url
 
         with patch("requests.get", return_value=self._image_resp(ok=True, content_type="image/png")):
-            assert _check_image_url("http://nb", "/media/front.png", False) == "ok"
+            assert _check_image_url("http://nb", "/media/front.png", False) == "present"
 
     def test_returns_missing_when_ok_but_html_content_type(self):
         """2xx with text/html means a login-redirect / missing-file error page → 'missing'."""
@@ -5105,12 +5106,12 @@ class TestCheckImageUrl:
         with patch("requests.get", return_value=self._image_resp(ok=True, content_type="application/json")):
             assert _check_image_url("http://nb", "/media/front.png", False) == "missing"
 
-    def test_returns_ok_on_network_error(self):
+    def test_a_refused_connection_is_unknown_not_present(self):
+        """A real failure on the wire says nothing about the file, so neither state applies."""
         from core.netbox_api import _check_image_url
-        import requests as _req
 
-        with patch("requests.get", side_effect=_req.RequestException("timeout")):
-            assert _check_image_url("http://nb", "/media/front.png", False) == "ok"
+        # Port 1 on loopback refuses immediately: a genuine transport failure, no mock.
+        assert _check_image_url("http://127.0.0.1:1", "/media/front.png", False) == "unknown"
 
     def test_uses_full_url_when_image_url_is_absolute(self):
         """If image_url_path starts with 'http', base_url is not prepended."""
@@ -5250,6 +5251,44 @@ class TestVerifyImagesDeviceType:
                 nb.create_device_types([device_type])
 
         nb.device_types.upload_images.assert_called_once()
+
+    def test_a_verification_that_could_not_run_is_reported(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path, mock_handle
+    ):
+        """--verify-images asked for a server check; a failed request did not deliver one."""
+        nb = self._make_nb(mock_settings, mock_handle, mock_pynetbox, graphql_client, make_device_types)
+        nb.verify_images = True
+        nb.url = "http://127.0.0.1:1"
+        nb.device_types.upload_images = MagicMock()
+
+        existing_dt = MagicMock()
+        existing_dt.id = 1
+        existing_dt.model = "Router"
+        existing_dt.manufacturer.name = "Cisco"
+        existing_dt.front_image = "/media/router.front.png"
+        nb.device_types.existing_device_types = {("cisco", "Router"): existing_dt}
+        nb.device_types.existing_device_types_by_slug = {}
+
+        dev_types_dir = tmp_path / "device-types" / "cisco"
+        dev_types_dir.mkdir(parents=True)
+        elevation_dir = tmp_path / "elevation-images" / "cisco"
+        elevation_dir.mkdir(parents=True)
+        img = elevation_dir / "router.front.png"
+        img.write_bytes(b"imgdata")
+
+        device_type = {
+            "manufacturer": {"slug": "cisco"},
+            "model": "Router",
+            "slug": "router",
+            "front_image": True,
+            "src": str(dev_types_dir / "router.yaml"),
+        }
+
+        # Port 1 on loopback refuses: a real transport failure, not a mocked one.
+        with patch("glob.glob", return_value=[str(img)]):
+            nb.create_device_types([device_type])
+
+        assert any("Could not verify Front image" in str(call) for call in mock_handle.log.call_args_list)
 
     def test_verify_images_skips_ok_image(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path, mock_handle
@@ -5464,28 +5503,141 @@ class TestNetBoxImageHelperFunctions:
         exc_msg = str(exc_info.value.args[0]) if exc_info.value.args else ""
         assert mock_settings.netbox_url in exc_msg and "Connection" in exc_msg
 
-    def test_check_image_url_logs_request_exception_when_log_fn_provided(self):
-        """RequestException must be logged at verbose level when log_fn is given."""
-        import requests as _requests
+    def test_check_image_url_reports_the_transport_error_when_log_fn_provided(self):
+        """The wire detail goes to log_fn; the verdict goes to the return value."""
         from core.netbox_api import _check_image_url
 
         logged = []
-        with patch("core.netbox_api.requests.get", side_effect=_requests.RequestException("timed out")):
-            result = _check_image_url("http://nb", "/media/img.png", False, log_fn=logged.append)
+        result = _check_image_url("http://127.0.0.1:1", "/media/img.png", False, log_fn=logged.append)
 
-        assert result == "ok"  # conservative: treat as present
-        assert any("timed out" in m or "Network error" in m for m in logged)
+        assert result == "unknown"
+        assert any("Network error" in m for m in logged)
 
     def test_check_image_url_no_log_fn_stays_silent_on_request_exception(self):
-        """When no log_fn provided, RequestException is swallowed silently."""
-        import requests as _requests
+        """Without a log_fn the error is not reported, but the verdict still says unknown."""
         from core.netbox_api import _check_image_url
 
-        with patch("core.netbox_api.requests.get", side_effect=_requests.RequestException("x")):
-            # Must not raise
-            result = _check_image_url("http://nb", "/media/img.png", False)
-        assert result == "ok"
+        assert _check_image_url("http://127.0.0.1:1", "/media/img.png", False) == "unknown"
 
+
+class TestTheImageHashCacheReportsWhatItLoses:
+    """A lost hash entry silently suppresses a re-upload, so every loss is reported."""
+
+    def _cache_path(self, tmp_path):
+        cache_dir = tmp_path / "cache" / "nb-dt-import"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        return cache_dir / "image-hashes.json"
+
+    def test_a_first_run_with_no_cache_file_says_nothing(self, mock_settings, mock_pynetbox, mock_handle, tmp_path):
+        NetBox(mock_settings, mock_handle)
+        assert not any("hash cache" in str(call) for call in mock_handle.log.call_args_list)
+
+    def test_an_uncreatable_cache_directory_disables_the_cache_out_loud(
+        self, mock_settings, mock_pynetbox, mock_handle, tmp_path
+    ):
+        """Losing the cache for a whole run suppresses every re-upload check, so it is not verbose-only."""
+        blocker = tmp_path / "not-a-dir"
+        blocker.write_text("", encoding="utf-8")
+
+        with patch.dict(os.environ, {"XDG_CACHE_HOME": str(blocker)}):
+            nb = NetBox(mock_settings, mock_handle)
+
+        assert nb._image_hash_cache_path is None
+        assert nb._image_hash_cache == {}
+        assert any("could not create image hash cache directory" in str(c) for c in mock_handle.log.call_args_list)
+
+    def test_a_disabled_cache_path_skips_the_write_entirely(self, mock_settings, mock_pynetbox, mock_handle):
+        nb = NetBox(mock_settings, mock_handle)
+        nb._image_hash_cache_path = None
+
+        nb._persist_hash_cache()
+
+        assert not any("persist image hash cache" in str(c) for c in mock_handle.log.call_args_list)
+
+    def test_a_corrupt_cache_file_is_reported_by_path(self, mock_settings, mock_pynetbox, mock_handle, tmp_path):
+        """Every tracked image reads as unchanged once the cache is gone, so it cannot be silent."""
+        path = self._cache_path(tmp_path)
+        path.write_text("{not json", encoding="utf-8")
+
+        nb = NetBox(mock_settings, mock_handle)
+
+        assert nb._image_hash_cache == {}
+        logged = " ".join(str(call) for call in mock_handle.log.call_args_list)
+        assert str(path) in logged and "unreadable image hash cache" in logged
+
+    def test_a_cache_file_holding_the_wrong_shape_is_reported(
+        self, mock_settings, mock_pynetbox, mock_handle, tmp_path
+    ):
+        path = self._cache_path(tmp_path)
+        path.write_text('["not", "an", "object"]', encoding="utf-8")
+
+        nb = NetBox(mock_settings, mock_handle)
+
+        assert nb._image_hash_cache == {}
+        assert any("expected an object" in str(call) for call in mock_handle.log.call_args_list)
+
+    def test_a_cache_that_loads_is_returned_as_is(self, tmp_path):
+        from core.netbox_api import _load_image_hash_cache
+
+        path = self._cache_path(tmp_path)
+        path.write_text('{"/img/front.png": "abc123"}', encoding="utf-8")
+
+        assert _load_image_hash_cache(str(path)) == {"/img/front.png": "abc123"}
+
+    def test_a_disabled_cache_loads_nothing_and_says_nothing(self):
+        """The cache directory already failed loudly; the read must not repeat it."""
+        from core.netbox_api import _load_image_hash_cache
+
+        logged = []
+        assert _load_image_hash_cache(None, log_fn=logged.append) == {}
+        assert logged == []
+
+    def test_the_wrong_shape_without_a_log_sink_still_yields_an_empty_cache(self, tmp_path):
+        from core.netbox_api import _load_image_hash_cache
+
+        path = self._cache_path(tmp_path)
+        path.write_text("[1, 2]", encoding="utf-8")
+
+        assert _load_image_hash_cache(str(path)) == {}
+
+    def test_an_unhashable_image_is_reported_rather_than_passed_over(
+        self, mock_settings, mock_pynetbox, mock_handle, tmp_path
+    ):
+        from core.netbox_api import _store_image_hashes
+
+        logged = []
+        cache = {}
+        _store_image_hashes(cache, {"front": str(tmp_path / "gone.png")}, log_fn=logged.append)
+
+        assert cache == {}
+        assert any("Cannot hash image" in m for m in logged)
+
+    def test_an_unreadable_image_is_reported_when_checking_for_changes(self, tmp_path):
+        import hashlib
+
+        from core.netbox_api import _is_image_hash_changed
+
+        logged = []
+        path = str(tmp_path / "gone.png")
+        cache = {path: hashlib.sha256(b"x").hexdigest()}
+
+        assert _is_image_hash_changed(path, cache, log_fn=logged.append) is False
+        assert any("Cannot read image" in m for m in logged)
+
+    def test_a_failed_cache_write_warns_once_per_run(self, mock_settings, mock_pynetbox, mock_handle, tmp_path):
+        nb = NetBox(mock_settings, mock_handle)
+        # A directory where the file belongs: os.replace onto it fails every time.
+        nb._image_hash_cache_path = str(tmp_path / "blocked")
+        (tmp_path / "blocked").mkdir()
+
+        nb._persist_hash_cache()
+        nb._persist_hash_cache()
+
+        warnings = [c for c in mock_handle.log.call_args_list if "failed to persist image hash cache" in str(c)]
+        assert len(warnings) == 1
+
+
+class TestUploadModuleTypeImagesVerify:
     """Tests for _upload_module_type_images with verify_images=True."""
 
     def _make_nb(self, mock_settings, mock_handle, mock_pynetbox):
@@ -5548,7 +5700,7 @@ class TestNetBoxImageHelperFunctions:
         nb._module_image_details = {10: {"mymodule.front": {"url": "/media/front.jpg", "att_id": None}}}
 
         with (
-            patch("core.netbox_api._check_image_url", return_value="ok"),
+            patch("core.netbox_api._check_image_url", return_value="present"),
             patch("core.netbox_api._is_image_hash_changed", return_value=True),
         ):
             nb._upload_module_type_images(mt_res, str(src), existing_images)
@@ -5563,7 +5715,7 @@ class TestNetBoxImageHelperFunctions:
         nb._module_image_details = {10: {"mymodule.front": {"url": "/media/front.jpg", "att_id": 7}}}
 
         with (
-            patch("core.netbox_api._check_image_url", return_value="ok"),
+            patch("core.netbox_api._check_image_url", return_value="present"),
             patch("core.netbox_api._is_image_hash_changed", return_value=True),
             patch("core.netbox_api._delete_image_attachment", return_value=True),
             patch("core.netbox_api._save_image_hash_cache"),
@@ -5586,7 +5738,7 @@ class TestNetBoxImageHelperFunctions:
         nb._image_hash_cache = {}
 
         with (
-            patch("core.netbox_api._check_image_url", return_value="ok"),
+            patch("core.netbox_api._check_image_url", return_value="present"),
             patch("core.netbox_api._is_image_hash_changed", return_value=False),
             patch("core.netbox_api._save_image_hash_cache") as mock_save,
         ):
@@ -5595,6 +5747,27 @@ class TestNetBoxImageHelperFunctions:
         nb.device_types.upload_image_attachment.assert_not_called()
         assert nb._image_hash_cache[str(img)] == hashlib.sha256(b"img").hexdigest()
         mock_save.assert_called_once()
+
+    def test_an_unverifiable_module_image_is_reported_and_falls_back_to_the_hash(
+        self, mock_settings, mock_pynetbox, tmp_path, mock_handle
+    ):
+        """The server said nothing about the attachment, so the run says so and uses the local hash."""
+        nb = self._make_nb(mock_settings, mock_handle, mock_pynetbox)
+        src, _img = self._make_module_files(tmp_path)
+        mt_res = MagicMock(id=10, model="X")
+        existing_images = {10: {"mymodule.front"}}
+        nb._module_image_details = {10: {"mymodule.front": {"url": "/media/front.jpg", "att_id": 7}}}
+        nb._image_hash_cache = {}
+
+        with (
+            patch("core.netbox_api._check_image_url", return_value="unknown"),
+            patch("core.netbox_api._is_image_hash_changed", return_value=True) as changed,
+            patch("core.netbox_api._save_image_hash_cache"),
+        ):
+            nb._upload_module_type_images(mt_res, str(src), existing_images)
+
+        changed.assert_called_once()
+        assert any("Could not verify image" in str(call) for call in mock_handle.log.call_args_list)
 
     def test_missing_attachment_detail_skips_upload_to_avoid_duplicates(
         self, mock_settings, mock_pynetbox, tmp_path, mock_handle
@@ -5848,7 +6021,7 @@ class TestAdditionalNetBoxCoverage:
         saved_images = {"front_image": str(image_path)}
 
         with (
-            patch("core.netbox_api._check_image_url", return_value="ok"),
+            patch("core.netbox_api._check_image_url", return_value="present"),
             patch("core.netbox_api._is_image_hash_changed", return_value=True),
         ):
             nb._filter_images_for_upload(dt, saved_images)
@@ -6263,7 +6436,7 @@ class TestRemainingCoverageBranches:
         nb._module_image_details = {10: {"mymodule.front": {"url": "/media/front.jpg", "att_id": 7}}}
 
         with (
-            patch("core.netbox_api._check_image_url", return_value="ok"),
+            patch("core.netbox_api._check_image_url", return_value="present"),
             patch("core.netbox_api._is_image_hash_changed", return_value=True),
             patch("core.netbox_api._delete_image_attachment", return_value=False),
         ):
