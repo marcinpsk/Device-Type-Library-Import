@@ -921,7 +921,8 @@ def _build_argument_parser() -> ArgumentParser:
     parser.add_argument(
         "--slugs",
         nargs="+",
-        default=settings.SLUGS,
+        # None distinguishes "not passed" from an env-provided default, which export mode ignores.
+        default=None,
         help="List of device-type slugs to import eg. ap4431 ws-c3850-24t-l",
     )
     parser.add_argument("--branch", default=settings.REPO_BRANCH, help="Git branch to use from repo")
@@ -1161,9 +1162,16 @@ def main():
     args.vendors = [
         re.sub(r"\W+", "-", v.strip().casefold()) for vendor in args.vendors for v in vendor.split(",") if v.strip()
     ]
-    args.slugs = [s.strip() for slug in args.slugs for s in slug.split(",") if s.strip()]
+    # None means --slugs was not passed, so the environment default applies.
+    slug_values = settings.SLUGS if args.slugs is None else args.slugs
+    args.slugs = [s.strip() for slug in slug_values for s in slug.split(",") if s.strip()]
 
     handle = LogHandler(args)
+
+    # An explicit --slugs is already rejected, so anything left here came from the environment.
+    if args.export_diff and args.slugs:
+        handle.log("Ignoring SLUGS from the environment: --export-diff does not filter by slug.")
+        args.slugs = []
 
     _check_env_vars(handle)
 

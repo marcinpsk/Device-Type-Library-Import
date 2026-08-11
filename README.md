@@ -4,13 +4,218 @@
 [![NetBox main](https://github.com/marcinpsk/Device-Type-Library-Import/actions/workflows/test-netbox-main.yaml/badge.svg)](https://github.com/marcinpsk/Device-Type-Library-Import/actions/workflows/test-netbox-main.yaml)
 [![NetBox](https://img.shields.io/badge/NetBox-3.2%2B_through_4.5%2B-blue)](https://netbox.dev)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org)
+[![Container image](https://img.shields.io/badge/ghcr.io-device--type--library--import-2496ED?logo=docker&logoColor=white)](https://github.com/marcinpsk/Device-Type-Library-Import/pkgs/container/device-type-library-import)
 
 This library is intended to be your friend and help you import all the device-types defined within
 the [NetBox Device Type Library Repository](https://github.com/netbox-community/devicetype-library).
 
 > **Tested working with NetBox 3.2+ through 4.5+** (weekly CI run against NetBox `main`)
 
----
+## Description
+
+This script will clone a copy of the `netbox-community/devicetype-library` repository to your
+machine to allow it to import the device types you would like without copy and pasting them
+into the NetBox UI.
+
+## How to run it
+
+There are two ways to run this tool. Both use the same code and accept the same
+[environment variables](#environment-variables) and [arguments](#arguments).
+
+| Option | Use it when | Start here |
+| --- | --- | --- |
+| 🐳 **Docker image** — `ghcr.io/marcinpsk/device-type-library-import` | You want a one-off or scheduled import with no local Python setup | [Run with Docker](#run-with-docker) |
+| 📦 **Git clone** — `uv sync` | You are developing, contributing, or want to run from source | [Run from a clone](#run-from-a-clone) |
+
+> ℹ️ **There is no PyPI package.** This tool is not published to PyPI, so `pip install nb-dt-import`
+> (or any similar name) will not get you this project. Use the container image or clone the
+> repository.
+
+### Contents
+
+- [Run with Docker](#run-with-docker)
+- [Run from a clone](#run-from-a-clone)
+- [Environment variables](#environment-variables)
+- [Arguments](#arguments)
+- [Update mode](#update-mode)
+- [Component removal](#component-removal-use-with-caution)
+- [Conflict resolution](#conflict-resolution-use-with-caution)
+- [Image verification](#image-verification---verify-images)
+- [Export mode](#export-mode)
+
+## Run with Docker
+
+Images are published to the GitHub Container Registry for `linux/amd64` and `linux/arm64`:
+
+```shell
+docker pull ghcr.io/marcinpsk/device-type-library-import:latest
+```
+
+The image is public; no `docker login` is needed to pull it.
+
+### Tags
+
+| Tag | Points at |
+| --- | --- |
+| `latest` | Newest build of the `main` branch |
+| `main` | Same as `latest` |
+| `1.7.1` | An exact release |
+| `1.7` | Newest patch release in the `1.7` series |
+| `1` | Newest release in the `1.x` series |
+
+Pin a version tag for scheduled or automated runs so an upstream change cannot alter the
+behavior of a job that already works.
+
+None of these tags is immutable: the image workflow also runs when a release is edited, which
+rebuilds and re-pushes the same version tag. Pin the digest when a run must never change:
+
+Read the digest from the tag you want, then run that digest. Substitute the `Digest:` value from
+the first command into the second:
+
+```shell
+docker buildx imagetools inspect ghcr.io/marcinpsk/device-type-library-import:1.7.1
+docker run --rm --env-file .env \
+  ghcr.io/marcinpsk/device-type-library-import@sha256:<digest>
+```
+
+### Quick start
+
+Write your NetBox URL and API token (the token needs **write rights**) into a `.env` file:
+
+```shell
+NETBOX_URL=https://netbox.example.org
+NETBOX_TOKEN=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+See [Environment variables](#environment-variables) for everything else you can set, or copy
+[`.env.example`](.env.example) from this repository as a starting point.
+
+Then run the import:
+
+```shell
+docker run --rm --env-file .env ghcr.io/marcinpsk/device-type-library-import:latest
+```
+
+Without a volume the device-type library is cloned into the container and thrown away when the
+container exits. Mount a volume at `/app/repo` to keep the clone between runs, so later runs
+only fetch new commits:
+
+```shell
+docker run --rm --env-file .env \
+  -v dtl-library:/app/repo \
+  ghcr.io/marcinpsk/device-type-library-import:latest
+```
+
+A host directory works too, but create it yourself first: Docker creates a missing bind-mount
+source as `root`, which the container cannot write to. The directory owner and the user the
+container runs as must then agree. Pick one of the two modes below, and do not combine them:
+each one breaks the other.
+
+Container-user mode, where the clone ends up owned by UID 1000 (`appuser`, the image default):
+
+```shell
+mkdir -p repo
+sudo chown 1000:1000 repo   # not needed if your host account is already UID 1000
+docker run --rm --env-file .env \
+  -v "$PWD/repo:/app/repo" \
+  ghcr.io/marcinpsk/device-type-library-import:latest
+```
+
+Host-user mode, where the clone stays owned by your own account. Leave the directory as `mkdir`
+created it and run the container as yourself:
+
+```shell
+mkdir -p repo
+docker run --rm --env-file .env --user "$(id -u):$(id -g)" \
+  -v "$PWD/repo:/app/repo" \
+  ghcr.io/marcinpsk/device-type-library-import:latest
+```
+
+### Passing arguments
+
+Append [arguments](#arguments) to the image name:
+
+```shell
+docker run --rm --env-file .env ghcr.io/marcinpsk/device-type-library-import:latest \
+  --vendors apc,juniper --update
+```
+
+Alternatively, set `VENDORS` (comma-separated) and `SLUGS` (space-separated) in your environment
+file and pass no arguments at all. `SLUGS` applies to imports only; [export runs](#export-mode)
+report that they ignore it.
+
+An argument that does not start with `-` runs as a command instead, so the image stays
+usable for debugging:
+
+```shell
+docker run --rm -it ghcr.io/marcinpsk/device-type-library-import:latest bash
+```
+
+Older images had no entrypoint, so the only way to pass a flag was to repeat the whole
+command. That form still works:
+
+```shell
+docker run --rm --env-file .env ghcr.io/marcinpsk/device-type-library-import:latest \
+  python -u nb-dt-import.py --vendors apc
+```
+
+### Docker Compose
+
+```yaml
+services:
+  nb-dt-import:
+    image: ghcr.io/marcinpsk/device-type-library-import:latest
+    env_file: .env
+    volumes:
+      - dtl-library:/app/repo
+    command: ["--update"]
+
+volumes:
+  dtl-library:
+```
+
+Run it as a one-off job:
+
+```shell
+docker compose run --rm nb-dt-import
+```
+
+### Reaching your NetBox instance
+
+The container needs network access to `NETBOX_URL`:
+
+- **NetBox on another host**: nothing to do, the default bridge network can reach it.
+- **NetBox in Docker on the same host**: attach the container to the same Docker network
+  (`--network netbox_default`) and use the NetBox service name in `NETBOX_URL`.
+- **NetBox on the host itself**: `--network host` is the simplest option on Linux. It also
+  works when NetBox listens only on `127.0.0.1`.
+
+  `host.docker.internal` works too, but needs care on Linux. Docker Desktop on macOS and
+  Windows provides the name automatically; on Linux it does not exist unless you add
+  `--add-host host.docker.internal:host-gateway`, and it then resolves to the bridge gateway
+  address, not to loopback. NetBox must therefore listen on an address the bridge can reach.
+  A server bound only to `127.0.0.1`, including a Compose port published as
+  `127.0.0.1:8000:8000`, refuses the connection.
+
+### Notes
+
+- `--env-file` is parsed by Docker, not by `python-dotenv`. Quotes are **not** stripped, so write
+  `NETBOX_TOKEN=abc123` and not `NETBOX_TOKEN="abc123"`.
+- Private or self-signed NetBox certificates: mount your CA bundle into the container and set
+  `REQUESTS_CA_BUNDLE` to its path, for example
+  `-v /etc/ssl/certs/my-ca.pem:/ca.pem:ro -e REQUESTS_CA_BUNDLE=/ca.pem`.
+- [`--verify-images`](#image-verification---verify-images) keeps a hash cache in
+  `/home/appuser/.cache/nb-dt-import`. Mount a volume there if you want the cache to survive
+  between runs.
+
+### Building the image yourself
+
+```shell
+docker build -t nb-dt-import .
+docker run --rm --env-file .env nb-dt-import
+```
+
+## Run from a clone
 
 > ⚠️ **direnv users** — This repo ships a `.envrc.example` file.  If you use
 > [direnv](https://direnv.net/), **review the file before enabling it**:
@@ -23,14 +228,6 @@ the [NetBox Device Type Library Repository](https://github.com/netbox-community/
 >
 > The file exclusively loads variables from `.env` into your shell and runs
 > `uv sync` to keep dependencies up to date.  Your `.envrc` is git-ignored.
-
-## Description
-
-This script will clone a copy of the `netbox-community/devicetype-library` repository to your
-machine to allow it to import the device types you would like without copy and pasting them
-into the NetBox UI.
-
-## Getting Started
 
 1. Install dependencies with `uv`:
 
@@ -67,6 +264,8 @@ and device, creating anything that is missing from NetBox while skipping entries
 | `REPO_URL` | | community library | Git URL of the device-type library to clone |
 | `REPO_BRANCH` | | `master` | Branch to check out |
 | `REPO_PATH` | | `./repo` | Local path where the library is cloned. Accepts absolute or relative paths. |
+| `VENDORS` | | all | Comma-separated vendors to import (same effect as `--vendors`) |
+| `SLUGS` | | all | Space-separated device-type slug substrings (same effect as `--slugs`) |
 | `IGNORE_SSL_ERRORS` | | `False` | Set `True` to skip TLS verification (dev only) |
 | `GRAPHQL_PAGE_SIZE` | | `5000` | Items per GraphQL page |
 | `PRELOAD_THREADS` | | `8` | Threads for concurrent component preloading |
@@ -122,6 +321,9 @@ uv run nb-dt-import.py --vendors "Palo Alto" --slugs 440
 | `--remove-unmanaged-types` | off | Also delete components whose entire YAML section is missing (e.g. NetBox has interfaces but YAML defines none). Requires `--remove-components`. **Aggressive.** |
 | `--force-resolve-conflicts` | off | Automatically resolve NetBox constraint failures during `--update`. **Destructive.** See below. |
 | `--verify-images` | off | Verify images recorded in NetBox are physically present on the server. Uses an HTTP presence check per image and a local SHA-256 cache to detect local file changes (does not hash the remote file). Re-uploads any image that is missing on the server or whose local file has changed. Useful after recreating a devcontainer or updating local image files. **Makes one HTTP request per image.** |
+| `--export-diff` | off | Export device, module, and rack types that NetBox holds but the local repo does not, or that differ, as DTL-compatible YAML plus images. Does **not** run the import pipeline. See [Export mode](#export-mode). |
+| `--export-diff-dir` | `extra/` | Directory the export writes to. Only meaningful with `--export-diff`. |
+| `--force-export-overwrite` | off | Overwrite files in the export directory that differ from what would be generated from NetBox. Without it, changed files are skipped with a warning. Only meaningful with `--export-diff`. |
 
 #### Update Mode
 
@@ -232,6 +434,48 @@ uv run nb-dt-import.py --vendors nokia --verify-images
   still knows about images, but the files are gone
 - After replacing a local image file with a higher-quality version and wanting NetBox to pick
   it up
+
+#### Export Mode
+
+`--export-diff` runs in the opposite direction to every other mode: instead of importing the
+repo into NetBox, it writes out the device, module, and rack types that NetBox holds but the
+local repo does not, or that differ from it, as DTL-compatible YAML plus images. It does not
+run the import pipeline at all, so nothing in NetBox is modified.
+
+The comparison needs the local library, and export mode neither clones nor updates it: only an
+import does that. Point `REPO_PATH` at a checkout, or run an import first. An export over a
+missing library stops with an error instead of reporting every type in NetBox as absent from it.
+
+```shell
+uv run nb-dt-import.py --export-diff
+uv run nb-dt-import.py --export-diff --vendors nokia --export-diff-dir extra/
+```
+
+Files that already exist and differ are skipped with a warning. Add
+`--force-export-overwrite` to replace them.
+
+The export directory is relative to the working directory, which is `/app` in the container.
+A `docker run --rm` therefore writes to `/app/extra` and discards it on exit. Mount a host
+directory to keep the output, creating it first and matching the ownership to whichever
+[mode](#run-with-docker) you use for the library volume. Container-user mode:
+
+```shell
+mkdir -p extra
+sudo chown 1000:1000 extra   # not needed if your host account is already UID 1000
+docker run --rm --env-file .env \
+  -v dtl-library:/app/repo \
+  -v "$PWD/extra:/app/extra" \
+  ghcr.io/marcinpsk/device-type-library-import:latest --export-diff
+```
+
+Because it is an export, the import-only flags are rejected rather than ignored:
+`--update`, `--only-new`, `--remove-components`, `--remove-unmanaged-types`, `--slugs`,
+`--verify-images`, and `--force-resolve-conflicts` all exit with an error. `--vendors` still
+works, and narrows the export to those manufacturers.
+
+`SLUGS` in the environment is a default for imports, not an explicit flag, so an export reports
+that it is ignoring the value and continues. The same environment file therefore works for both
+modes.
 
 We're happy about any pull requests!
 

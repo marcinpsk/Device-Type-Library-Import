@@ -29,10 +29,13 @@ COPY *.py ./
 
 COPY core/ core/
 
-RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
+COPY docker-entrypoint.sh /usr/local/bin/
+
+# repo/ is pre-created so a volume mounted there inherits appuser ownership instead of root
+RUN mkdir -p /app/repo && useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
-# Set the command
-# venv is already on PATH, no need for `uv run` overhead
-# -u for unbuffered stdout/stderr (important for Docker logging)
-CMD ["python", "-u", "nb-dt-import.py"]
+# The entrypoint sends flags to the importer and runs anything else as a command.
+# venv is already on PATH, no need for `uv run` overhead.
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD []

@@ -377,7 +377,7 @@ class DTLRepo:
     def __init__(self, args, repo_path, exception_handler):
         """Initialize repository management, updating an existing clone or creating a new one.
 
-        If the target path already exists as a directory, the repository will be updated from
+        If the target path already holds a Git clone, the repository will be updated from
         its configured remote; otherwise the provided URL is validated and a new clone is
         created. The initializer sets instance attributes used by other methods (handler,
         supported YAML extensions, URL, repo path, branch, repo reference, and current
@@ -407,7 +407,9 @@ class DTLRepo:
         if not is_path_valid:
             self.handle.exception("InvalidRepoPath", self.repo_path, path_error)
 
-        if os.path.isdir(self.repo_path):
+        # Test for .git, not the directory itself: a mounted-but-empty volume must still clone.
+        # exists(), not isdir(): worktrees and submodules hold .git as a file.
+        if os.path.exists(os.path.join(self.repo_path, ".git")):
             # Repo exists; pull from existing remote (pull_repo validates origin URL)
             self.pull_repo()
         else:

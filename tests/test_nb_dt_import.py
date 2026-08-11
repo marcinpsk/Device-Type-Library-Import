@@ -1,7 +1,9 @@
 import importlib.util
 import os
+import re
 import runpy
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -1144,6 +1146,19 @@ class TestPerVendorLoop:
 
         mock_nb.load_vendor.assert_not_called()
 
+    def test_slugs_from_the_environment_still_filter_an_import(self, nb_dt_import, monkeypatch):
+        """The --slugs sentinel default must not drop the SLUGS environment default for imports."""
+        monkeypatch.setattr(nb_dt_import.settings, "SLUGS", ["env-slug"])
+        mock_nb = _make_mock_netbox()
+        mock_repo = _make_mock_repo()
+        mock_repo.discover_vendors.return_value = [{"name": "APC", "slug": "apc"}]
+        mock_repo.get_devices.return_value = (["file.yaml"], [])
+        mock_repo.parse_files.return_value = []
+
+        self._run_main(["nb-dt-import.py"], mock_repo, mock_nb, nb_dt_import)
+
+        assert mock_repo.parse_files.call_args.kwargs["slugs"] == ["env-slug"]
+
     def test_vendor_with_matching_slug_is_processed(self, nb_dt_import):
         """Vendor whose slug matches parsed files does call load_vendor."""
         mock_nb = _make_mock_netbox()
@@ -1436,6 +1451,44 @@ class TestExportDiffFlags:
         assert result.returncode == 2
         assert "--export-diff" in result.stderr
 
+    def test_export_diff_runs_with_slugs_set_in_the_environment(self):
+        """SLUGS in the environment is an import default, not an explicit --slugs, so export runs."""
+        import os
+        import subprocess
+
+        # Blank the NetBox variables so the run stops at the env check and reaches no server.
+        env = {
+            **os.environ,
+            "SLUGS": "ap4431",
+            "REPO_URL": "https://example.com/devicetype-library.git",
+            "NETBOX_URL": "",
+            "NETBOX_TOKEN": "",
+        }
+        result = subprocess.run(
+            ["uv", "run", "--native-tls", "nb-dt-import.py", "--export-diff"],
+            capture_output=True,
+            text=True,
+            cwd=_PROJECT_ROOT,
+            env=env,
+        )
+        assert "--slugs is an import-only flag" not in result.stderr
+        # Reaching the env-var check proves argument validation let the run through.
+        assert 'Environment variable "NETBOX_URL" is not set' in result.stderr
+        assert "Ignoring SLUGS from the environment" in result.stdout
+
+    def test_export_diff_still_rejects_an_explicit_slugs_flag(self):
+        """Passing --slugs on the command line stays an error, environment default or not."""
+        import subprocess
+
+        result = subprocess.run(
+            ["uv", "run", "--native-tls", "nb-dt-import.py", "--export-diff", "--slugs", "ap4431"],
+            capture_output=True,
+            text=True,
+            cwd=_PROJECT_ROOT,
+        )
+        assert result.returncode == 2
+        assert "--slugs is an import-only flag" in result.stderr
+
 
 class TestDirectHelpers:
     """Tests for direct helper functions and custom progress columns."""
@@ -1572,6 +1625,7 @@ class TestDirectHelpers:
             "--force-resolve-conflicts is an import-only flag and cannot be used with --export-diff"
         )
 
+    def test_run_export_diff_wires_up_exporter(self, nb_dt_import):
         """_run_export_diff wires up Exporter with progress panel and console."""
         handle = MagicMock()
         progress = MagicMock()
@@ -1596,9 +1650,32 @@ class TestDirectHelpers:
         ):
             nb_dt_import._run_export_diff(nb_dt_import.settings, handle, args)
 
-        MockExporter.assert_called_once()
+        assert MockExporter.call_args.kwargs == {
+            "settings": nb_dt_import.settings,
+            "handle": handle,
+            "export_dir": "extra",
+            "force_overwrite": True,
+            "vendor_slugs": ["nokia"],
+        }
         handle.set_console.assert_called_once_with(progress.console)
         MockExporter.return_value.run.assert_called_once_with(progress=progress)
+
+    def test_run_export_diff_sends_no_vendor_filter_when_vendors_is_empty(self, nb_dt_import):
+        """An empty --vendors must reach the exporter as None, not as an empty list."""
+        args = SimpleNamespace(
+            export_diff_dir="extra",
+            force_export_overwrite=False,
+            vendors=[],
+            show_remaining_time=False,
+        )
+
+        with (
+            patch("nb_dt_import.get_progress_panel", return_value=nullcontext(None)),
+            patch("core.export.Exporter") as MockExporter,
+        ):
+            nb_dt_import._run_export_diff(nb_dt_import.settings, MagicMock(), args)
+
+        assert MockExporter.call_args.kwargs["vendor_slugs"] is None
 
 
 class TestMainAdditionalCoverage:
@@ -1616,6 +1693,19 @@ class TestMainAdditionalCoverage:
         mock_run_export.assert_called_once()
         MockRepo.assert_not_called()
         MockNetBox.assert_not_called()
+
+    def test_main_clears_environment_slugs_before_running_the_export(self, nb_dt_import, monkeypatch, capsys):
+        """The export must receive no slug filter, and must say it dropped the environment value."""
+        monkeypatch.setattr(nb_dt_import.settings, "SLUGS", ["env-slug"])
+        with (
+            patch.object(sys, "argv", ["nb-dt-import.py", "--export-diff"]),
+            patch("nb_dt_import._run_export_diff") as mock_run_export,
+        ):
+            nb_dt_import.main()
+
+        args = mock_run_export.call_args.args[2]
+        assert args.slugs == []
+        assert "Ignoring SLUGS from the environment" in capsys.readouterr().out
 
     def test_main_uses_slug_fast_path_device_files(self, nb_dt_import):
         mock_repo = _make_mock_repo()
@@ -1877,3 +1967,42 @@ class TestMainAdditionalCoverage:
 
         netbox.device_types.stop_component_preload.assert_called_once_with("job-2", progress=progress)
         mock_finalize.assert_called_once_with(progress, {})
+
+
+class TestReadmeArgumentCoverage:
+    """The README arguments table and the argparse parser must not drift apart."""
+
+    README_HEADING = "#### All Arguments"
+
+    @classmethod
+    def _documented_flags(cls):
+        """Return the ``--flags`` in the Argument column of the README's All Arguments table."""
+        readme = Path(__file__).resolve().parents[1] / "README.md"
+        lines = readme.read_text(encoding="utf-8").splitlines()
+        starts = [i for i, line in enumerate(lines) if line.strip() == cls.README_HEADING]
+        assert starts, f"README.md has no '{cls.README_HEADING}' heading; update README_HEADING"
+        start = starts[0]
+        end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith("#")), len(lines))
+        rows = [line for line in lines[start:end] if line.lstrip().startswith("|")]
+        # First cell only: descriptions cross-reference other flags and would mask a missing row.
+        first_cells = [row.strip().strip("|").split("|")[0] for row in rows]
+        return set(re.findall(r"`(--[\w-]+)`", "\n".join(first_cells)))
+
+    @staticmethod
+    def _parser_flags(nb_dt_import):
+        """Return the long options the real parser defines; argparse exposes no public accessor."""
+        parser = nb_dt_import._build_argument_parser()
+        return {
+            option
+            for action in parser._actions
+            for option in action.option_strings
+            if option.startswith("--") and option != "--help"
+        }
+
+    def test_every_parser_flag_is_documented(self, nb_dt_import):
+        missing = self._parser_flags(nb_dt_import) - self._documented_flags()
+        assert not missing, f"CLI flags missing from the README arguments table: {sorted(missing)}"
+
+    def test_table_documents_no_removed_flags(self, nb_dt_import):
+        stale = self._documented_flags() - self._parser_flags(nb_dt_import)
+        assert not stale, f"README arguments table documents flags the parser no longer defines: {sorted(stale)}"

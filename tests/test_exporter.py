@@ -347,6 +347,50 @@ class TestCanonMfrSlug:
         assert _canon_mfr_slug({}) == ""
 
 
+class TestExporterRequiresTheLibrary:
+    """The export compares NetBox against the library, so an absent library is not an empty one."""
+
+    def test_run_fails_before_querying_netbox_when_the_repo_holds_no_library(self, tmp_path):
+        """A fresh container has an empty /app/repo, which used to read as 'NetBox has everything'."""
+        settings = _make_settings(tmp_path)
+        (tmp_path / "repo").mkdir()
+        exporter = Exporter(settings, _make_handle(), str(tmp_path / "extra"), False, None)
+        exporter.graphql = MagicMock()
+
+        with pytest.raises(FileNotFoundError) as err:
+            exporter.run()
+
+        message = str(err.value)
+        assert str(tmp_path / "repo") in message
+        assert "device-types" in message
+        # The message has to name a way out, not only the missing path.
+        assert "run an import first" in message
+
+        exporter.graphql.get_device_types.assert_not_called()
+
+    def test_run_fails_when_the_repo_path_does_not_exist_at_all(self, tmp_path):
+        settings = _make_settings(tmp_path)
+        exporter = Exporter(settings, _make_handle(), str(tmp_path / "extra"), False, None)
+        exporter.graphql = MagicMock()
+
+        with pytest.raises(FileNotFoundError):
+            exporter.run()
+
+    def test_run_accepts_a_library_holding_only_one_of_the_three_type_dirs(self, tmp_path):
+        """A vendor-filtered or partial checkout is still a real library, so it must not be rejected."""
+        settings = _make_settings(tmp_path)
+        (tmp_path / "repo" / "module-types").mkdir(parents=True)
+        exporter = Exporter(settings, _make_handle(), str(tmp_path / "extra"), False, None)
+        exporter.graphql = MagicMock()
+        exporter.graphql.get_device_types = MagicMock(return_value=({}, {}))
+        exporter.graphql.get_module_types = MagicMock(return_value={})
+        exporter.graphql.get_rack_types = MagicMock(return_value={})
+
+        exporter.run()
+
+        exporter.graphql.get_device_types.assert_called_once()
+
+
 class TestExporterDirWritable:
     """Tests for export directory writability checks."""
 
@@ -531,7 +575,7 @@ class TestManifestConsistency:
         from core.export_manifest import load_manifest
 
         settings = _make_settings(tmp_path)
-        (tmp_path / "repo").mkdir(parents=True)
+        (tmp_path / "repo" / "device-types").mkdir(parents=True)
         export_dir = tmp_path / "extra"
         exporter = Exporter(settings, _make_handle(), str(export_dir), False, None)
         # Patch _download_image to simulate failure (returns None)
@@ -552,7 +596,7 @@ class TestManifestConsistency:
         from core.export_manifest import load_manifest
 
         settings = _make_settings(tmp_path)
-        (tmp_path / "repo").mkdir(parents=True)
+        (tmp_path / "repo" / "device-types").mkdir(parents=True)
         export_dir = tmp_path / "extra"
         exporter = Exporter(settings, _make_handle(), str(export_dir), False, None)
         # First call: _SKIP (already exists); second call: hash string (success)
@@ -574,7 +618,7 @@ class TestManifestConsistency:
         from core.export_manifest import load_manifest
 
         settings = _make_settings(tmp_path)
-        (tmp_path / "repo").mkdir(parents=True)
+        (tmp_path / "repo" / "device-types").mkdir(parents=True)
         export_dir = tmp_path / "extra"
         exporter = Exporter(settings, _make_handle(), str(export_dir), False, None)
         # First call: hash (success); second call: None (failure)
@@ -695,7 +739,7 @@ class TestExporterAdditionalCoverage:
 
     def _make_exporter(self, tmp_path, force_overwrite=False):
         settings = _make_settings(tmp_path)
-        (tmp_path / "repo").mkdir(parents=True, exist_ok=True)
+        (tmp_path / "repo" / "device-types").mkdir(parents=True, exist_ok=True)
         return Exporter(settings, _make_handle(), str(tmp_path / "extra"), force_overwrite, None)
 
     def test_get_module_image_details_is_cached(self, tmp_path):

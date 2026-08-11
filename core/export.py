@@ -31,6 +31,9 @@ from core.netbox_api import IMAGE_EXTENSIONS, _build_auth_header
 
 _SKIP = object()  # sentinel: image already exists, no download needed
 
+# Top-level directories that make a checkout a device-type library.
+_LIBRARY_TYPE_DIRS = ("device-types", "module-types", "rack-types")
+
 # Maps Content-Type to a canonical extension for extension-less attachments.
 _CONTENT_TYPE_EXT = {
     "image/png": ".png",
@@ -217,6 +220,7 @@ class Exporter:
     def run(self, progress=None) -> None:
         """Run the export-diff workflow."""
         self._module_image_details = None
+        self._verify_repo_available()
         self._verify_export_dir_writable()
         manifest_path = self.export_dir / ".export-manifest.json"
         manifest = load_manifest(manifest_path)
@@ -465,6 +469,16 @@ class Exporter:
         )
 
     # ── Directory helpers ────────────────────────────────────────────────────
+
+    def _verify_repo_available(self) -> None:
+        """Raise FileNotFoundError when the library is absent, which would otherwise read as an empty one."""
+        if any((self.repo_path / name).is_dir() for name in _LIBRARY_TYPE_DIRS):
+            return
+        raise FileNotFoundError(
+            f"No device-type library found at {self.repo_path}: expected at least one of "
+            f"{', '.join(_LIBRARY_TYPE_DIRS)}. Export mode does not clone the library. "
+            "Clone it to that path, or run an import first, which clones it for you."
+        )
 
     def _verify_export_dir_writable(self) -> None:
         """Raise PermissionError if export dir cannot be created or written to."""
