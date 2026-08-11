@@ -3,6 +3,7 @@ import os
 import re
 import runpy
 import sys
+from contextlib import nullcontext
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -1649,9 +1650,32 @@ class TestDirectHelpers:
         ):
             nb_dt_import._run_export_diff(nb_dt_import.settings, handle, args)
 
-        MockExporter.assert_called_once()
+        assert MockExporter.call_args.kwargs == {
+            "settings": nb_dt_import.settings,
+            "handle": handle,
+            "export_dir": "extra",
+            "force_overwrite": True,
+            "vendor_slugs": ["nokia"],
+        }
         handle.set_console.assert_called_once_with(progress.console)
         MockExporter.return_value.run.assert_called_once_with(progress=progress)
+
+    def test_run_export_diff_sends_no_vendor_filter_when_vendors_is_empty(self, nb_dt_import):
+        """An empty --vendors must reach the exporter as None, not as an empty list."""
+        args = SimpleNamespace(
+            export_diff_dir="extra",
+            force_export_overwrite=False,
+            vendors=[],
+            show_remaining_time=False,
+        )
+
+        with (
+            patch("nb_dt_import.get_progress_panel", return_value=nullcontext(None)),
+            patch("core.export.Exporter") as MockExporter,
+        ):
+            nb_dt_import._run_export_diff(nb_dt_import.settings, MagicMock(), args)
+
+        assert MockExporter.call_args.kwargs["vendor_slugs"] is None
 
 
 class TestMainAdditionalCoverage:
