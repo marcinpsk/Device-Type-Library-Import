@@ -2,6 +2,25 @@
 
 <!-- version list -->
 
+## v1.7.2 (2026-08-11)
+
+### Bug Fixes
+
+- Report the netbox response body on graphql http errors and retry 500 (#108, [`b098300`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/b098300f85d4b367d734f654395aea67095fdc12))
+
+
+### Chores
+
+- **deps**: Bump ruff from 0.16.1 to 0.16.2 in the python-deps group (#109, [`382c095`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/382c095f2197776f1ca4385db9fbde7c890c1f77))
+- **deps**: Bump gitpython from 3.1.57 to 3.1.58 (#105, [`1953b53`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/1953b5334806a718856bd2a144e150baec7dd593))
+- **deps**: Bump ruff from 0.16.0 to 0.16.1 in the python-deps group (#104, [`c2d2528`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/c2d2528ca5f6bb5e1abbcad744625e311c1a001f))
+
+
+
+### Contributors
+
+@dependabot[bot], @marcinpsk
+
 ## v1.7.1 (2026-08-03)
 
 ### Bug Fixes
