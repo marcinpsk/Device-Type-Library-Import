@@ -6603,12 +6603,12 @@ class TestVerifyComponentCacheIntegrity:
 
 
 class TestPreloadAllComponentsIntegrityCheckError:
-    """preload_all_components skips integrity check gracefully when get_module_types raises."""
+    """preload_all_components skips the integrity check only for a rejected query shape."""
 
-    def test_get_module_types_raises_does_not_propagate(
+    def test_get_module_types_transport_error_propagates(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types
     ):
-        """When get_module_types raises, no exception propagates and _global_preload_done is True."""
+        """Any failure other than a schema rejection must reach the caller, guard unfinished."""
         from unittest.mock import patch as _patch
 
         mock_nb_api = mock_pynetbox.api.return_value
@@ -6616,14 +6616,10 @@ class TestPreloadAllComponentsIntegrityCheckError:
 
         with _patch.object(dt, "_preload_global"):
             with _patch.object(dt.graphql, "get_module_types", side_effect=RuntimeError("network error")):
-                # Should not raise
-                dt.preload_all_components(manufacturer_slug="cisco")
+                with pytest.raises(RuntimeError, match="network error"):
+                    dt.preload_all_components(manufacturer_slug="cisco")
 
-        assert dt._global_preload_done is True
-        # Warning was logged
-        dt.handle.log.assert_called()
-        warning_call = dt.handle.log.call_args_list[-1][0][0]
-        assert "WARNING" in warning_call
+        assert dt._global_preload_done is False
 
 
 # ---------------------------------------------------------------------------
@@ -8357,3 +8353,86 @@ class TestImageUploadErrorDetail:
         # The text is still reported, just neutralised.
         assert "\\r\\n" in logged
         assert "FORGED" in logged
+
+
+@pytest.mark.real_http
+class TestPreloadIntegrityGuard:
+    """The cache truncation guard must survive a transport failure.
+
+    Driven against a real HTTP server so the failure, the retry policy and the raised
+    exception type are the production ones.
+    """
+
+    @staticmethod
+    def _serve(module_type_response):
+        """Answer component queries with empty lists and the module-type query with *module_type_response*."""
+        import json as _json
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+                if "module_type_list" in body:
+                    status, payload = module_type_response
+                else:
+                    key = next((k for k in _ALL_COMPONENT_KEYS if k in body), "unknown_list")
+                    status, payload = 200, _json.dumps({"data": {key: []}})
+                encoded = payload.encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+
+            def log_message(self, *args):
+                """Silence the default stderr access log."""
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return f"http://127.0.0.1:{server.server_port}", server
+
+    @staticmethod
+    def _device_types(url, handle):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        return DeviceTypes(
+            MagicMock(),
+            handle,
+            MagicMock(),
+            False,
+            False,
+            graphql=NetBoxGraphQLClient(url, "token", page_size=10),
+            max_threads=2,
+        )
+
+    def test_transport_failure_does_not_skip_the_truncation_guard(self):
+        """A failed request must not silently disable the check that catches truncated results."""
+        from core.graphql_client import GraphQLError
+
+        url, server = self._serve((403, '{"detail": "forbidden"}'))
+        handle = MagicMock()
+        try:
+            device_types = self._device_types(url, handle)
+            with pytest.raises(GraphQLError):
+                device_types.preload_all_components(manufacturer_slug="acme")
+        finally:
+            server.shutdown()
+
+        logged = " ".join(str(call) for call in handle.log.call_args_list)
+        assert "integrity check skipped" not in logged
+        assert device_types._global_preload_done is False
+
+    def test_schema_rejection_skips_the_guard_with_a_warning(self):
+        """A server that cannot answer the query shape may skip the check, and says so."""
+        import json as _json
+
+        rejection = _json.dumps({"errors": [{"message": "Cannot query field 'weight' on type 'ModuleTypeType'."}]})
+        url, server = self._serve((200, rejection))
+        handle = MagicMock()
+        try:
+            device_types = self._device_types(url, handle)
+            device_types.preload_all_components(manufacturer_slug="acme")
+        finally:
+            server.shutdown()
+
+        logged = " ".join(str(call) for call in handle.log.call_args_list)
+        assert "integrity check skipped" in logged

@@ -1,5 +1,9 @@
 """Tests for the NetBox GraphQL client module (TDD - tests written first)."""
 
+import ast
+import pathlib
+import textwrap
+
 import pytest
 from unittest.mock import MagicMock
 import requests
@@ -891,11 +895,13 @@ class TestGetModuleTypeImageDetails:
         assert result[43]["detail"] == {"att_id": 3, "url": "http://example.com/detail.jpg"}
 
     def test_fallback_on_graphql_error(self, mocker):
-        """When filtered query fails, falls back to fetch-all + Python filter by object_type."""
-        from core.graphql_client import GraphQLError
+        """When NetBox rejects the filter syntax, falls back to fetch-all + Python filter by object_type."""
+        from core.graphql_client import GraphQLSchemaError
 
         client = self._make_client()
-        error = GraphQLError("Field 'filters' not found")
+        # A rejected filter argument reaches this path as GraphQLSchemaError; a transport
+        # failure stays a plain GraphQLError and must not reach the fallback.
+        error = GraphQLSchemaError("Field 'filters' not found")
 
         fallback_items = [
             {
@@ -2198,3 +2204,426 @@ class TestErrorHierarchy:
 
         with pytest.raises(GraphQLError):
             raise GraphQLCountMismatchError("page cap exceeded")
+
+
+@pytest.mark.real_http
+class TestHTTPErrorReporting:
+    """HTTP failures are reported against a real server, so the response body is real too."""
+
+    @staticmethod
+    def _serve(responses):
+        """Run a local HTTP server that replies with each (status, body) in *responses*.
+
+        The final entry repeats once the list is exhausted.  Returns (url, server, calls)
+        where *calls* is a mutable list recording how many requests arrived.
+        """
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        calls = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                index = min(len(calls), len(responses) - 1)
+                calls.append(index)
+                status, body = responses[index]
+                payload = body.encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                """Silence the default stderr access log."""
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return f"http://127.0.0.1:{server.server_port}", server, calls
+
+    def _client(self, url):
+        return NetBoxGraphQLClient(url, "token", page_size=10)
+
+    def test_server_error_reports_the_response_body(self):
+        from core.graphql_client import GraphQLError
+
+        url, server, _ = self._serve([(500, "IntegrityError at /graphql/: connection lost")])
+        try:
+            client = self._client(url)
+            with pytest.raises(GraphQLError) as excinfo:
+                client.query("{ manufacturer_list { id } }", _retries=0)
+        finally:
+            server.shutdown()
+
+        assert "IntegrityError at /graphql/: connection lost" in str(excinfo.value)
+
+    def test_server_error_body_is_truncated(self):
+        from core.graphql_client import GraphQLError
+
+        url, server, _ = self._serve([(500, "E" * 5000)])
+        try:
+            client = self._client(url)
+            with pytest.raises(GraphQLError) as excinfo:
+                client.query("{ manufacturer_list { id } }", _retries=0)
+        finally:
+            server.shutdown()
+
+        message = str(excinfo.value)
+        assert "truncated" in message
+        assert "E" * 1000 in message
+        assert "E" * 1001 not in message
+
+    def test_forbidden_error_reports_both_the_hint_and_the_body(self):
+        from core.graphql_client import GraphQLError
+
+        url, server, _ = self._serve([(403, "GraphQL access is disabled")])
+        try:
+            client = self._client(url)
+            with pytest.raises(GraphQLError) as excinfo:
+                client.query("{ manufacturer_list { id } }", _retries=0)
+        finally:
+            server.shutdown()
+
+        message = str(excinfo.value)
+        assert "Verify that your API token has the required permissions" in message
+        assert "GraphQL access is disabled" in message
+
+    def test_transient_server_error_is_retried(self):
+        """A NetBox 500 during a database restart must not abort a long run."""
+        url, server, calls = self._serve(
+            [(500, "database is starting up"), (200, '{"data": {"manufacturer_list": []}}')]
+        )
+        try:
+            client = self._client(url)
+            result = client.query("{ manufacturer_list { id } }")
+        finally:
+            server.shutdown()
+
+        assert result == {"manufacturer_list": []}
+        assert len(calls) == 2
+
+    def test_persistent_server_error_still_reports_the_body(self):
+        from core.graphql_client import GraphQLError
+
+        url, server, calls = self._serve([(500, "ProgrammingError: relation does not exist")])
+        try:
+            client = self._client(url)
+            with pytest.raises(GraphQLError) as excinfo:
+                client.query("{ manufacturer_list { id } }", _retries=1)
+        finally:
+            server.shutdown()
+
+        assert "ProgrammingError: relation does not exist" in str(excinfo.value)
+        assert len(calls) == 2
+
+
+@pytest.mark.real_http
+@pytest.mark.usefixtures("no_retry_backoff")
+class TestComponentFallbackClassification:
+    """The front_port_templates tier fallback must react to schema errors, not to transport failures."""
+
+    EMPTY_PAGE = '{"data": {"front_port_template_list": []}}'
+    SCHEMA_ERROR = '{"errors": [{"message": "Cannot query field \'mappings\' on type \'FrontPortTemplateType\'."}]}'
+
+    @staticmethod
+    def _serve(reply_for_tier):
+        """Serve front-port queries, dispatching on which field tier the query uses.
+
+        *reply_for_tier* maps "T1"/"T2"/"T3" to a body string, or to None meaning
+        "close the connection without responding" (a transport failure).  Returns
+        (url, server, attempts) where *attempts* records the tier of each request.
+        """
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        attempts = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+                if "mappings {" in raw:
+                    tier = "T1"
+                elif "rear_port_position" in raw:
+                    tier = "T2"
+                else:
+                    tier = "T3"
+                attempts.append(tier)
+
+                body = reply_for_tier.get(tier)
+                if body is None:
+                    self.close_connection = True
+                    return
+                payload = body.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                """Silence the default stderr access log."""
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return f"http://127.0.0.1:{server.server_port}", server, attempts
+
+    def test_transport_failure_does_not_fall_back_to_older_field_tiers(self):
+        """A dropped connection means "try again", not "this NetBox lacks mappings"."""
+        from core.graphql_client import GraphQLError
+
+        url, server, attempts = self._serve({"T1": None, "T2": self.EMPTY_PAGE, "T3": self.EMPTY_PAGE})
+        try:
+            client = NetBoxGraphQLClient(url, "token", page_size=10)
+            with pytest.raises(GraphQLError):
+                client.get_component_templates("front_port_templates")
+        finally:
+            server.shutdown()
+
+        assert set(attempts) == {"T1"}, f"transport failure triggered a schema fallback: {attempts}"
+
+    def test_resolver_failure_does_not_fall_back_to_older_field_tiers(self):
+        """An execution error carries a path and partial data; the schema is fine, so do not downgrade."""
+        from core.graphql_client import GraphQLError, GraphQLSchemaError
+
+        resolver_failure = (
+            '{"data": {"front_port_template_list": [{"name": "FP1", "mappings": null}]}, '
+            '"errors": [{"message": "Resolver failed", '
+            '"path": ["front_port_template_list", 0, "mappings"]}]}'
+        )
+        url, server, attempts = self._serve({"T1": resolver_failure, "T2": self.EMPTY_PAGE})
+        try:
+            client = NetBoxGraphQLClient(url, "token", page_size=10)
+            with pytest.raises(GraphQLError) as excinfo:
+                client.get_component_templates("front_port_templates")
+        finally:
+            server.shutdown()
+
+        assert set(attempts) == {"T1"}, f"resolver failure triggered a schema fallback: {attempts}"
+        assert not isinstance(excinfo.value, GraphQLSchemaError)
+
+    def test_schema_error_still_falls_back_to_the_older_field_tier(self):
+        url, server, attempts = self._serve({"T1": self.SCHEMA_ERROR, "T2": self.EMPTY_PAGE})
+        try:
+            client = NetBoxGraphQLClient(url, "token", page_size=10)
+            result = client.get_component_templates("front_port_templates")
+        finally:
+            server.shutdown()
+
+        assert result == []
+        assert "T1" in attempts and "T2" in attempts
+
+
+@pytest.mark.real_http
+@pytest.mark.usefixtures("no_retry_backoff")
+class TestImageAttachmentFallbackClassification:
+    """The image-attachment filter fallback must react to schema errors, not to transport failures."""
+
+    FILTERED_MARKER = "filters:"
+    EMPTY_PAGE = '{"data": {"image_attachment_list": []}}'
+    SCHEMA_ERROR = '{"errors": [{"message": "Unknown argument \'filters\' on field \'image_attachment_list\'."}]}'
+
+    @classmethod
+    def _serve(cls, filtered_body, unfiltered_body):
+        """Serve the filtered and unfiltered attachment queries, recording which arrived.
+
+        A body of None means "close the connection without responding".
+        """
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        attempts = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0))).decode()
+                kind = "filtered" if cls.FILTERED_MARKER in raw else "unfiltered"
+                attempts.append(kind)
+                body = filtered_body if kind == "filtered" else unfiltered_body
+                if body is None:
+                    self.close_connection = True
+                    return
+                payload = body.encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                """Silence the default stderr access log."""
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return f"http://127.0.0.1:{server.server_port}", server, attempts
+
+    @pytest.mark.parametrize("method", ["get_module_type_images", "get_module_type_image_details"])
+    def test_transport_failure_does_not_trigger_the_unfiltered_fallback(self, method):
+        """Falling back on a dropped connection replaces one filtered query with a whole-table scan."""
+        from core.graphql_client import GraphQLError
+
+        url, server, attempts = self._serve(None, self.EMPTY_PAGE)
+        try:
+            client = NetBoxGraphQLClient(url, "token", page_size=10)
+            with pytest.raises(GraphQLError):
+                getattr(client, method)()
+        finally:
+            server.shutdown()
+
+        assert set(attempts) == {"filtered"}, f"transport failure triggered the unfiltered fallback: {attempts}"
+
+    @pytest.mark.parametrize("method", ["get_module_type_images", "get_module_type_image_details"])
+    def test_schema_error_still_triggers_the_unfiltered_fallback(self, method):
+        url, server, attempts = self._serve(self.SCHEMA_ERROR, self.EMPTY_PAGE)
+        try:
+            client = NetBoxGraphQLClient(url, "token", page_size=10)
+            getattr(client, method)()
+        finally:
+            server.shutdown()
+
+        assert "filtered" in attempts and "unfiltered" in attempts
+
+
+class TestErrorHandlingStandards:
+    """Guard the defect class where a broad catch turns a failure into a silent downgrade."""
+
+    BASE_ERROR = "GraphQLError"
+
+    @classmethod
+    def _local_names_for_base_error(cls, tree):
+        """Return every local name bound to the base error, following import aliases."""
+        names = {cls.BASE_ERROR}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                names.update(a.asname for a in node.names if a.name == cls.BASE_ERROR and a.asname)
+        return names
+
+    @classmethod
+    def _catches_base_error(cls, handler, names):
+        """Report whether *handler* catches the base error, aliased or module-qualified."""
+        caught = handler.type.elts if isinstance(handler.type, ast.Tuple) else [handler.type]
+        return any(
+            (isinstance(c, ast.Name) and c.id in names) or (isinstance(c, ast.Attribute) and c.attr == cls.BASE_ERROR)
+            for c in caught
+        )
+
+    @classmethod
+    def _handlers(cls, tree):
+        """Yield (handler, names) for every except clause that names an exception type."""
+        names = cls._local_names_for_base_error(tree)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ExceptHandler) and node.type is not None:
+                yield node, names
+
+    @staticmethod
+    def _terminates(handler):
+        """Report whether the handler cannot fall through to the code after it."""
+        last = handler.body[-1]
+        if isinstance(last, (ast.Raise, ast.Return)):
+            return True
+        call = last.value if isinstance(last, ast.Expr) else None
+        if not isinstance(call, ast.Call):
+            return False
+        # Bare `system_exit(...)`/`exit(...)`, or a qualified `sys.exit(...)`/`os._exit(...)`.
+        if isinstance(call.func, ast.Name):
+            return call.func.id in {"system_exit", "exit", "quit"}
+        return isinstance(call.func, ast.Attribute) and call.func.attr in {"exit", "_exit"}
+
+    def test_the_guard_sees_every_terminating_handler(self):
+        """A handler that raises, returns or exits does not fall through, however it is spelled."""
+        source = textwrap.dedent(
+            """
+            try:
+                a()
+            except E:
+                raise
+            try:
+                b()
+            except E:
+                return None
+            try:
+                c()
+            except E:
+                system_exit("boom")
+            try:
+                d()
+            except E:
+                sys.exit(1)
+            try:
+                e()
+            except E:
+                os._exit(1)
+            try:
+                f()
+            except E:
+                log("carrying on")
+            """
+        )
+        handlers = [n for n in ast.walk(ast.parse(source)) if isinstance(n, ast.ExceptHandler)]
+        assert [self._terminates(h) for h in handlers] == [True, True, True, True, True, False]
+
+    def test_the_guard_sees_aliased_and_qualified_catches(self):
+        """An import alias or a module-qualified name must not defeat the two guards below."""
+        source = textwrap.dedent(
+            """
+            from core.graphql_client import GraphQLError as GQLError
+            from core import graphql_client
+
+            try:
+                a()
+            except GQLError:
+                pass
+            try:
+                b()
+            except graphql_client.GraphQLError:
+                pass
+            try:
+                c()
+            except graphql_client.GraphQLSchemaError:
+                pass
+            """
+        )
+        tree = ast.parse(source)
+        assert [self._catches_base_error(h, n) for h, n in self._handlers(tree)] == [True, True, False]
+
+    def test_client_never_catches_the_base_graphql_error(self):
+        """Three separate fallbacks caught GraphQLError and downgraded the query on any failure.
+
+        Only GraphQLSchemaError says the server rejected the query. The base class also
+        covers transport and execution failures, where downgrading returns incomplete data.
+        """
+        import core.graphql_client
+
+        source = pathlib.Path(core.graphql_client.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        offenders = [h.lineno for h, names in self._handlers(tree) if self._catches_base_error(h, names)]
+
+        assert not offenders, (
+            f"core/graphql_client.py catches GraphQLError at line(s) {offenders}. "
+            "Catch GraphQLSchemaError to react to a rejected query, or let the error "
+            "propagate to the retry. Catching the base class also swallows transport and "
+            "execution failures, which silently downgrades the query and returns "
+            "incomplete data."
+        )
+
+    def test_consumers_never_continue_after_catching_the_base_graphql_error(self):
+        """A consumer may catch GraphQLError to fail loudly, never to carry on.
+
+        netbox_api skipped the cache truncation guard whenever the vendor id fetch failed,
+        so a dropped connection turned into an unguarded import.
+        """
+        import core.netbox_api
+
+        source = pathlib.Path(core.netbox_api.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        offenders = [
+            h.lineno
+            for h, names in self._handlers(tree)
+            if self._catches_base_error(h, names) and not self._terminates(h)
+        ]
+
+        assert not offenders, (
+            f"core/netbox_api.py catches GraphQLError and continues at line(s) {offenders}. "
+            "A failed request is not evidence about the data: catch GraphQLSchemaError to "
+            "react to a rejected query shape, or let the error propagate. Continuing turns a "
+            "transport failure into a disabled correctness guard."
+        )

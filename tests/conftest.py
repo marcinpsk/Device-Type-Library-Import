@@ -64,8 +64,10 @@ def mock_graphql_requests(request):
     Patches ``requests.Session`` in ``core.graphql_client`` so any client created
     during a test uses a mock session.  Returns empty lists for all GraphQL
     list queries by default.
+
+    Tests marked ``real_http`` drive a local server instead and get no patching.
     """
-    if request.node.get_closest_marker("integration"):
+    if request.node.get_closest_marker("integration") or request.node.get_closest_marker("real_http"):
         yield None
         return
     with patch("core.graphql_client.requests.Session") as MockSession:
@@ -83,6 +85,13 @@ def mock_graphql_requests(request):
         }
         mock_session.post.return_value = response
         yield mock_session.post
+
+
+@pytest.fixture
+def no_retry_backoff():
+    """Drop the client's 1+2+4s retry back-off, leaving the retry count and error type intact."""
+    with patch("core.graphql_client.time.sleep"):
+        yield
 
 
 @pytest.fixture

@@ -29,6 +29,16 @@ class GraphQLCountMismatchError(GraphQLError):
     """
 
 
+class GraphQLSchemaError(GraphQLError):
+    """Raised when NetBox answers 200 but rejects the query itself.
+
+    Only the server's schema can produce this, so it is the one failure that tells
+    a caller a field is unsupported.  Transport failures must stay a plain
+    :class:`GraphQLError`: they say nothing about the schema and retrying is the
+    right response.
+    """
+
+
 class DotDict(dict):
     """Dict subclass that supports attribute access, matching pynetbox Record patterns.
 
@@ -143,6 +153,29 @@ COMPONENT_TEMPLATE_FIELDS = {
 # in the query to correctly cache module bays owned by module types.
 _NO_MODULE_TYPE = {"device_bay_templates"}
 
+# NetBox returns the real cause (a database error, a plugin traceback) in the response body,
+# so it is worth reporting. Django error pages can be large, hence the cap.
+_MAX_ERROR_BODY_CHARS = 1000
+
+# 500 is included because NetBox returns it while its database is restarting or out of
+# connections, which is transient during a long paginated run.
+_RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
+
+
+def _response_body_detail(response):
+    """Return the response body as a suffix for an error message, truncated and stripped."""
+    if response is None:
+        return ""
+    try:
+        body = response.text.strip()
+    except Exception:  # pragma: no cover - a body that cannot be decoded is not worth failing on
+        return ""
+    if not body:
+        return ""
+    if len(body) > _MAX_ERROR_BODY_CHARS:
+        body = f"{body[:_MAX_ERROR_BODY_CHARS]}… (truncated)"
+    return f"\nResponse body: {body}"
+
 
 class NetBoxGraphQLClient:
     """Client for querying NetBox via its GraphQL API.
@@ -237,18 +270,20 @@ class NetBoxGraphQLClient:
                 body = response.json()
             except requests.exceptions.HTTPError as exc:
                 status = exc.response.status_code if exc.response is not None else None
+                detail = _response_body_detail(exc.response)
                 if status == 403:
                     raise GraphQLError(
                         f"403 Forbidden from {self.graphql_url}\n"
                         "Hint: Verify that your API token has the required permissions "
                         "and that GraphQL is enabled in the NetBox configuration."
+                        f"{detail}"
                     ) from exc
-                if status in {429, 502, 503, 504} and attempt < _retries:
+                if status in _RETRYABLE_STATUSES and attempt < _retries:
                     backoff = 2**attempt
                     time.sleep(backoff)
                     continue
-                # Non-transient HTTP errors are not retried.
-                raise GraphQLError(str(exc)) from exc
+                # Non-transient HTTP errors, and retryable ones that ran out of attempts.
+                raise GraphQLError(f"{exc}{detail}") from exc
             except requests.RequestException as exc:
                 if attempt < _retries:
                     backoff = 2**attempt
@@ -259,8 +294,14 @@ class NetBoxGraphQLClient:
                 raise GraphQLError(f"Invalid JSON response from NetBox GraphQL endpoint: {exc}") from exc
 
             if "errors" in body:
-                messages = "; ".join(e.get("message", str(e)) for e in body["errors"])
-                raise GraphQLError(messages)
+                errors = body["errors"]
+                messages = "; ".join(e.get("message", str(e)) for e in errors)
+                # An execution error carries the response path of the field whose resolver
+                # failed, and arrives with partial data. The schema was fine, so it must not
+                # look like an unsupported field to callers that downgrade their query.
+                if any(isinstance(e, dict) and "path" in e for e in errors):
+                    raise GraphQLError(messages)
+                raise GraphQLSchemaError(messages)
 
             return body.get("data", {})
 
@@ -588,10 +629,10 @@ class NetBoxGraphQLClient:
         """
         try:
             items = self.query_all(query, list_key="image_attachment_list")
-        except GraphQLError as e:
-            if isinstance(e, GraphQLCountMismatchError):
-                raise
-            # Fallback: fetch all attachments and filter in Python
+        except GraphQLSchemaError:
+            # Older NetBox rejects the ContentTypeFilter syntax: fetch all attachments and
+            # filter in Python. Only a schema rejection may trigger this, since the fallback
+            # scans every attachment in the install.
             fallback_query = """
             query($pagination: OffsetPaginationInput) {
               image_attachment_list(pagination: $pagination) {
@@ -649,9 +690,8 @@ class NetBoxGraphQLClient:
         """
         try:
             items = self.query_all(query, list_key="image_attachment_list")
-        except GraphQLError as e:
-            if isinstance(e, GraphQLCountMismatchError):
-                raise
+        except GraphQLSchemaError:
+            # Same fallback as get_module_type_images, restricted to schema rejections.
             fallback_query = """
             query($pagination: OffsetPaginationInput) {
               image_attachment_list(pagination: $pagination) {
@@ -751,15 +791,16 @@ class NetBoxGraphQLClient:
         #   Tier 1: mappings { ... }       (NetBox 4.5+)
         #   Tier 2: rear_port_position     (<4.5 direct scalar field)
         #   Tier 3: neither                (future: field removed entirely)
+        # Only a schema rejection means the tier is unsupported. Transport failures
+        # propagate: falling back on those queries an older tier against a server that
+        # supports the newer one, silently dropping the mappings data.
         original_exc = last_exc = None
         for variant in field_variants:
             try:
                 return self.query_all(
                     _build_query(variant), list_key=list_key, on_page=on_page, variables=extra_variables
                 )
-            except GraphQLError as exc:
-                if isinstance(exc, GraphQLCountMismatchError):
-                    raise
+            except GraphQLSchemaError as exc:
                 last_exc = exc
                 if original_exc is None:
                     original_exc = exc
