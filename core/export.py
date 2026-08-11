@@ -476,8 +476,8 @@ class Exporter:
             return
         raise FileNotFoundError(
             f"No device-type library found at {self.repo_path}: expected at least one of "
-            f"{', '.join(_LIBRARY_TYPE_DIRS)}. Clone or mount the library before exporting, "
-            "otherwise every type in NetBox counts as missing from it."
+            f"{', '.join(_LIBRARY_TYPE_DIRS)}. Export mode does not clone the library. "
+            "Clone it to that path, or run an import first, which clones it for you."
         )
 
     def _verify_export_dir_writable(self) -> None:

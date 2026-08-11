@@ -357,8 +357,14 @@ class TestExporterRequiresTheLibrary:
         exporter = Exporter(settings, _make_handle(), str(tmp_path / "extra"), False, None)
         exporter.graphql = MagicMock()
 
-        with pytest.raises(FileNotFoundError, match="device-types"):
+        with pytest.raises(FileNotFoundError) as err:
             exporter.run()
+
+        message = str(err.value)
+        assert str(tmp_path / "repo") in message
+        assert "device-types" in message
+        # The message has to name a way out, not only the missing path.
+        assert "run an import first" in message
 
         exporter.graphql.get_device_types.assert_not_called()
 
