@@ -7,7 +7,8 @@ updates:
       interval: "weekly"
       day: "monday"
     commit-message:
-      prefix: "chore(ci)"
+      prefix: "chore"
+      include: "scope"
     groups:
       github-actions:
         patterns:
@@ -19,7 +20,8 @@ updates:
       interval: "weekly"
       day: "tuesday"
     commit-message:
-      prefix: "chore(deps)"
+      prefix: "chore"
+      include: "scope"
     groups:
       python-deps:
         patterns:
@@ -31,7 +33,8 @@ updates:
       interval: "weekly"
       day: "wednesday"
     commit-message:
-      prefix: "chore(docker)"
+      prefix: "chore"
+      include: "scope"
     groups:
       docker-deps:
         patterns:
