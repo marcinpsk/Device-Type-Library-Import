@@ -8355,17 +8355,13 @@ class TestImageUploadErrorDetail:
         assert "FORGED" in logged
 
 
+@pytest.mark.real_http
 class TestPreloadIntegrityGuard:
     """The cache truncation guard must survive a transport failure.
 
     Driven against a real HTTP server so the failure, the retry policy and the raised
     exception type are the production ones.
     """
-
-    @pytest.fixture(autouse=True)
-    def mock_graphql_requests(self):
-        """Override the global session mock so these tests drive a real HTTP server."""
-        yield None
 
     @staticmethod
     def _serve(module_type_response):

@@ -2206,13 +2206,9 @@ class TestErrorHierarchy:
             raise GraphQLCountMismatchError("page cap exceeded")
 
 
+@pytest.mark.real_http
 class TestHTTPErrorReporting:
     """HTTP failures are reported against a real server, so the response body is real too."""
-
-    @pytest.fixture(autouse=True)
-    def mock_graphql_requests(self):
-        """Override the global session mock so these tests drive a real HTTP server."""
-        yield None
 
     @staticmethod
     def _serve(responses):
@@ -2321,24 +2317,13 @@ class TestHTTPErrorReporting:
         assert len(calls) == 2
 
 
+@pytest.mark.real_http
+@pytest.mark.usefixtures("no_retry_backoff")
 class TestComponentFallbackClassification:
     """The front_port_templates tier fallback must react to schema errors, not to transport failures."""
 
     EMPTY_PAGE = '{"data": {"front_port_template_list": []}}'
     SCHEMA_ERROR = '{"errors": [{"message": "Cannot query field \'mappings\' on type \'FrontPortTemplateType\'."}]}'
-
-    @pytest.fixture(autouse=True)
-    def mock_graphql_requests(self):
-        """Override the global session mock so these tests drive a real HTTP server."""
-        yield None
-
-    @pytest.fixture(autouse=True)
-    def no_retry_backoff(self):
-        """Drop the 1+2+4s production back-off; the retry count and error type are unchanged."""
-        from unittest.mock import patch
-
-        with patch("core.graphql_client.time.sleep"):
-            yield
 
     @staticmethod
     def _serve(reply_for_tier):
@@ -2428,25 +2413,14 @@ class TestComponentFallbackClassification:
         assert "T1" in attempts and "T2" in attempts
 
 
+@pytest.mark.real_http
+@pytest.mark.usefixtures("no_retry_backoff")
 class TestImageAttachmentFallbackClassification:
     """The image-attachment filter fallback must react to schema errors, not to transport failures."""
 
     FILTERED_MARKER = "filters:"
     EMPTY_PAGE = '{"data": {"image_attachment_list": []}}'
     SCHEMA_ERROR = '{"errors": [{"message": "Unknown argument \'filters\' on field \'image_attachment_list\'."}]}'
-
-    @pytest.fixture(autouse=True)
-    def mock_graphql_requests(self):
-        """Override the global session mock so these tests drive a real HTTP server."""
-        yield None
-
-    @pytest.fixture(autouse=True)
-    def no_retry_backoff(self):
-        """Drop the 1+2+4s production back-off; the retry count and error type are unchanged."""
-        from unittest.mock import patch
-
-        with patch("core.graphql_client.time.sleep"):
-            yield
 
     @classmethod
     def _serve(cls, filtered_body, unfiltered_body):

@@ -72,6 +72,7 @@ testpaths = [
 norecursedirs = ["tests/integration"]
 markers = [
   "integration: end-to-end tests that require a live NetBox instance (set NETBOX_URL + NETBOX_TOKEN)",
+  "real_http: drives a local HTTP server, so the GraphQL session mock is not applied",
 ]
 
 [tool.coverage.run]
