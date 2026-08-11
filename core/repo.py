@@ -374,7 +374,7 @@ class DTLRepo:
     for locating YAML device and module type files, and exposes a parallel file parser.
     """
 
-    def __init__(self, args, repo_path, exception_handler):
+    def __init__(self, config, exception_handler):
         """Initialize repository management, updating an existing clone or creating a new one.
 
         If the target path already holds a Git clone, the repository will be updated from
@@ -384,10 +384,7 @@ class DTLRepo:
         working directory).
 
         Args:
-            args: An object with `url` (str) and `branch` (str) attributes specifying the
-                remote repository URL and branch to use.
-            repo_path (str): Filesystem path where the repository should be cloned or where
-                an existing clone is located.
+            config (RunConfig): Supplies `repo_url`, `repo_branch`, and `repo_path`.
             exception_handler: An object exposing `exception(name, context, message)` used
                 to report validation and Git errors.
         """
@@ -397,9 +394,9 @@ class DTLRepo:
         # Populated by parse_files; consumed by the run summary so users can fix upstream.
         # Each entry: {"manufacturer": str, "model": str, "kept": str, "ignored": [str, ...]}
         self.duplicate_definitions = []
-        self.url = args.url
-        self.repo_path = repo_path
-        self.branch = args.branch
+        self.url = config.repo_url
+        self.repo_path = config.repo_path
+        self.branch = config.repo_branch
         self.repo = None
         self.cwd = os.getcwd()
 

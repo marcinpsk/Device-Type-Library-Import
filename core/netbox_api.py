@@ -313,23 +313,18 @@ _MODULE_TYPE_SCHEMA_EXCLUDE = {"manufacturer", "model", "attribute_data", "profi
 
 
 @lru_cache(maxsize=1)
-def _load_module_type_properties():
+def _load_module_type_properties(repo_path):
     """Load module type scalar properties from the schema, falling back to hardcoded list.
 
     The result is cached after the first call, which happens after the repo checkout
     so the schema files are available.
     """
-    try:
-        from core import settings as _settings
-
-        props = load_properties_for_type(
-            os.path.join(_settings.REPO_PATH, "schema"),
-            "moduletype",
-            exclude=_MODULE_TYPE_SCHEMA_EXCLUDE,
-        )
-        return props if props else list(_MODULE_TYPE_PROPERTIES_FALLBACK)
-    except (ImportError, AttributeError):
-        return list(_MODULE_TYPE_PROPERTIES_FALLBACK)
+    props = load_properties_for_type(
+        os.path.join(repo_path, "schema"),
+        "moduletype",
+        exclude=_MODULE_TYPE_SCHEMA_EXCLUDE,
+    )
+    return props if props else list(_MODULE_TYPE_PROPERTIES_FALLBACK)
 
 
 # Sentinel used to distinguish "attribute missing from record" from a genuine
@@ -407,11 +402,11 @@ def _count_actionable_component_changes(changes, remove_components):
 class NetBox:
     """Interface to the NetBox API for importing device and module types."""
 
-    def __init__(self, settings, handle):
+    def __init__(self, config, handle):
         """Initialize NetBox API connection, verify version compatibility, and load manufacturers/device types.
 
         Args:
-            settings: Settings module with NETBOX_URL, NETBOX_TOKEN, IGNORE_SSL_ERRORS, and NETBOX_FEATURES.
+            config (RunConfig): Supplies the NetBox URL, token, TLS choice, and tuning values.
             handle (LogHandler): Logging handler for progress and error messages.
         """
         self.counter = Counter(
@@ -431,11 +426,12 @@ class NetBox:
             device_types_failed=0,
         )
         self.outcomes = OutcomeRegistry()
-        self.url = settings.NETBOX_URL
-        self.token = settings.NETBOX_TOKEN
+        self.url = config.netbox_url
+        self.token = config.netbox_token
+        self.repo_path = config.repo_path
         self.handle = handle
         self.netbox = None
-        self.ignore_ssl = settings.IGNORE_SSL_ERRORS
+        self.ignore_ssl = config.ignore_ssl_errors
         self.modules = False
         self.new_filters = False
         self.m2m_front_ports = False  # True for NetBox >= 4.5 (M2M port mappings)
@@ -467,7 +463,7 @@ class NetBox:
             self.token,
             self.ignore_ssl,
             log_handler=self.handle,
-            page_size=settings.GRAPHQL_PAGE_SIZE,
+            page_size=config.graphql_page_size,
         )
         try:
             self.existing_manufacturers = self.get_manufacturers()
@@ -482,7 +478,8 @@ class NetBox:
                 self.new_filters,
                 graphql=self.graphql,
                 m2m_front_ports=self.m2m_front_ports,
-                max_threads=settings.PRELOAD_THREADS,
+                repo_path=config.repo_path,
+                max_threads=config.preload_threads,
             )
         except Exception as e:
             system_exit(f"Error initializing device types: {e}")
@@ -1439,7 +1436,7 @@ class NetBox:
                 image_changed = True
 
             changed_fields_info = []
-            for f in _load_module_type_properties():
+            for f in _load_module_type_properties(self.repo_path):
                 if f not in module_type:
                     continue
                 nb_val = getattr(existing_module, f, _MISSING)
@@ -1509,7 +1506,7 @@ class NetBox:
                 *updated* is True when at least one field was actually patched.
         """
         updates = {}
-        for field in _load_module_type_properties():
+        for field in _load_module_type_properties(self.repo_path):
             if field not in curr_mt:
                 continue
             current_value = getattr(module_type_res, field, _MISSING)
@@ -2100,6 +2097,7 @@ class DeviceTypes:
         new_filters,
         *,
         graphql,
+        repo_path,
         m2m_front_ports=False,
         max_threads=8,
     ):
@@ -2115,6 +2113,7 @@ class DeviceTypes:
             ignore_ssl (bool): Whether SSL certificate verification is disabled.
             new_filters (bool): Whether to use updated filter parameter names (NetBox >= 4.1).
             graphql (NetBoxGraphQLClient): GraphQL client for read queries.
+            repo_path (str): Local library checkout, used to read the module-type schema.
             m2m_front_ports (bool): Whether NetBox uses the 4.5+ M2M port mapping model.
             max_threads (int): Maximum number of concurrent threads for component preloading.
         """
@@ -2124,6 +2123,7 @@ class DeviceTypes:
         self.ignore_ssl = ignore_ssl
         self.new_filters = new_filters
         self.graphql = graphql
+        self.repo_path = repo_path
         self.m2m_front_ports = m2m_front_ports
         self.max_threads = max_threads
         self.cached_components = {}

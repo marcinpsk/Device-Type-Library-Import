@@ -1,9 +1,12 @@
 """Tests for core/export.py — Exporter class."""
 
+from dataclasses import replace
+
 import pytest
 from unittest.mock import MagicMock, patch
 import yaml
 
+from core.config import RunConfig
 from core.export import (
     ExportItem,
     Exporter,
@@ -34,12 +37,17 @@ class _Stub:
 
 
 def _make_settings(tmp_path):
-    s = MagicMock()
-    s.NETBOX_URL = "http://localhost:8000/"
-    s.NETBOX_TOKEN = "test-token"
-    s.IGNORE_SSL_ERRORS = False
-    s.REPO_PATH = str(tmp_path / "repo")
-    return s
+    """Build a real RunConfig, so the exporter reads the same value the CLI hands it."""
+    return RunConfig(
+        netbox_url="http://localhost:8000/",
+        netbox_token="test-token",
+        ignore_ssl_errors=False,
+        graphql_page_size=5000,
+        preload_threads=8,
+        repo_url="https://example.com/repo.git",
+        repo_branch="master",
+        repo_path=str(tmp_path / "repo"),
+    )
 
 
 def _make_handle():
@@ -345,6 +353,18 @@ class TestCanonMfrSlug:
 
     def test_empty_dict_returns_empty(self):
         assert _canon_mfr_slug({}) == ""
+
+
+class TestExporterHonoursTheConfiguredPageSize:
+    """A server that caps GraphQL page size caps it for export too, not only for import."""
+
+    def test_the_graphql_client_is_built_with_the_configured_page_size(self, tmp_path):
+        """GRAPHQL_PAGE_SIZE exists because a server rejected the default; export hits that server too."""
+        settings = replace(_make_settings(tmp_path), graphql_page_size=250)
+
+        exporter = Exporter(settings, _make_handle(), str(tmp_path / "extra"), False, None)
+
+        assert exporter.graphql.DEFAULT_PAGE_SIZE == 250
 
 
 class TestExporterRequiresTheLibrary:

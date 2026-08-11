@@ -1,7 +1,11 @@
 """Structural checks on the test suite itself."""
 
 import ast
+import os
 import pathlib
+import shutil
+import subprocess
+import sys
 import tomllib
 
 _TESTS_DIR = pathlib.Path(__file__).resolve().parent
@@ -51,6 +55,31 @@ def test_the_scan_follows_pytest_discovery(tmp_path):
     found = _discover(tmp_path, _DEFAULT_PYTHON_FILES, [tmp_path / "skipped"])
 
     assert [p.name for p in found] == ["second_test.py", "test_first.py"]
+
+
+def test_integration_collection_reads_credentials_from_a_local_env_file(tmp_path):
+    """The integration package skips on absent credentials, so it has to see the ones in .env.
+
+    Runs the real conftest under a real pytest, because the skip is decided during
+    collection and only a full collection run proves the ordering.
+    """
+    package = tmp_path / "integration"
+    package.mkdir()
+    shutil.copy(_TESTS_DIR / "integration" / "conftest.py", package / "conftest.py")
+    (package / ".env").write_text("NETBOX_URL=http://example.invalid\nNETBOX_TOKEN=token\n", encoding="utf-8")
+    (package / "test_marker.py").write_text("def test_marker():\n    pass\n", encoding="utf-8")
+
+    env = {k: v for k, v in os.environ.items() if k not in ("NETBOX_URL", "NETBOX_TOKEN")}
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", str(package), "-q", "-p", "no:cacheprovider"],
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=tmp_path,
+        timeout=120,
+    )
+
+    assert "1 passed" in result.stdout, result.stdout + result.stderr
 
 
 def test_no_test_function_contains_an_orphaned_docstring():

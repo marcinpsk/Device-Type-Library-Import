@@ -10,6 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from core import config as config_module
+
 
 def _dt_sort_key(d):
     return (
@@ -32,7 +34,14 @@ def nb_dt_import():
 
 def test_log_run_mode_reports_default_non_update_behavior(nb_dt_import):
     handle = MagicMock()
-    args = SimpleNamespace(only_new=False, update=False, remove_components=False)
+    args = SimpleNamespace(
+        only_new=False,
+        update=False,
+        remove_components=False,
+        remove_unmanaged_types=False,
+        force_resolve_conflicts=False,
+        verify_images=False,
+    )
 
     nb_dt_import.log_run_mode(handle, args)
 
@@ -44,7 +53,14 @@ def test_log_run_mode_reports_default_non_update_behavior(nb_dt_import):
 
 def test_log_run_mode_reports_update_and_remove_enabled(nb_dt_import):
     handle = MagicMock()
-    args = SimpleNamespace(only_new=False, update=True, remove_components=True)
+    args = SimpleNamespace(
+        only_new=False,
+        update=True,
+        remove_components=True,
+        remove_unmanaged_types=False,
+        force_resolve_conflicts=False,
+        verify_images=False,
+    )
 
     nb_dt_import.log_run_mode(handle, args)
 
@@ -55,7 +71,14 @@ def test_log_run_mode_reports_update_and_remove_enabled(nb_dt_import):
 
 def test_log_run_mode_reports_update_without_remove_components(nb_dt_import):
     handle = MagicMock()
-    args = SimpleNamespace(only_new=False, update=True, remove_components=False)
+    args = SimpleNamespace(
+        only_new=False,
+        update=True,
+        remove_components=False,
+        remove_unmanaged_types=False,
+        force_resolve_conflicts=False,
+        verify_images=False,
+    )
 
     nb_dt_import.log_run_mode(handle, args)
 
@@ -66,7 +89,14 @@ def test_log_run_mode_reports_update_without_remove_components(nb_dt_import):
 
 def test_log_run_mode_reports_only_new_enabled(nb_dt_import):
     handle = MagicMock()
-    args = SimpleNamespace(only_new=True, update=False, remove_components=False)
+    args = SimpleNamespace(
+        only_new=True,
+        update=False,
+        remove_components=False,
+        remove_unmanaged_types=False,
+        force_resolve_conflicts=False,
+        verify_images=False,
+    )
 
     nb_dt_import.log_run_mode(handle, args)
 
@@ -772,6 +802,7 @@ class TestMain:
             patch("nb_dt_import.DTLRepo"),
             patch("nb_dt_import.NetBox"),
             patch.dict(os.environ, {}, clear=True),
+            patch("core.config.load_dotenv"),
         ):
             with pytest.raises(SystemExit):
                 nb_dt_import.main()
@@ -1148,7 +1179,7 @@ class TestPerVendorLoop:
 
     def test_slugs_from_the_environment_still_filter_an_import(self, nb_dt_import, monkeypatch):
         """The --slugs sentinel default must not drop the SLUGS environment default for imports."""
-        monkeypatch.setattr(nb_dt_import.settings, "SLUGS", ["env-slug"])
+        monkeypatch.setenv("SLUGS", "env-slug")
         mock_nb = _make_mock_netbox()
         mock_repo = _make_mock_repo()
         mock_repo.discover_vendors.return_value = [{"name": "APC", "slug": "apc"}]
@@ -1157,7 +1188,7 @@ class TestPerVendorLoop:
 
         self._run_main(["nb-dt-import.py"], mock_repo, mock_nb, nb_dt_import)
 
-        assert mock_repo.parse_files.call_args.kwargs["slugs"] == ["env-slug"]
+        assert mock_repo.parse_files.call_args.kwargs["slugs"] == ("env-slug",)
 
     def test_vendor_with_matching_slug_is_processed(self, nb_dt_import):
         """Vendor whose slug matches parsed files does call load_vendor."""
@@ -1453,28 +1484,15 @@ class TestExportDiffFlags:
 
     def test_export_diff_runs_with_slugs_set_in_the_environment(self):
         """SLUGS in the environment is an import default, not an explicit --slugs, so export runs."""
-        import os
-        import subprocess
+        from core.config import resolve_run_config
 
-        # Blank the NetBox variables so the run stops at the env check and reaches no server.
-        env = {
-            **os.environ,
-            "SLUGS": "ap4431",
-            "REPO_URL": "https://example.com/devicetype-library.git",
-            "NETBOX_URL": "",
-            "NETBOX_TOKEN": "",
-        }
-        result = subprocess.run(
-            ["uv", "run", "--native-tls", "nb-dt-import.py", "--export-diff"],
-            capture_output=True,
-            text=True,
-            cwd=_PROJECT_ROOT,
-            env=env,
+        config = resolve_run_config(
+            ["--export-diff"],
+            {"SLUGS": "ap4431", "NETBOX_URL": "http://nb", "NETBOX_TOKEN": "t"},
         )
-        assert "--slugs is an import-only flag" not in result.stderr
-        # Reaching the env-var check proves argument validation let the run through.
-        assert 'Environment variable "NETBOX_URL" is not set' in result.stderr
-        assert "Ignoring SLUGS from the environment" in result.stdout
+
+        assert config.slugs == ()
+        assert "Ignoring SLUGS from the environment" in config.notices[0]
 
     def test_export_diff_still_rejects_an_explicit_slugs_flag(self):
         """Passing --slugs on the command line stays an error, environment default or not."""
@@ -1532,7 +1550,7 @@ class TestDirectHelpers:
             force_resolve_conflicts=True,
         )
 
-        nb_dt_import._validate_argument_combinations(parser, args)
+        config_module._validate_flag_combinations(parser, args)
 
         parser.error.assert_called_once_with("--force-resolve-conflicts requires --update")
 
@@ -1547,7 +1565,7 @@ class TestDirectHelpers:
             force_resolve_conflicts=False,
         )
 
-        nb_dt_import._validate_argument_combinations(parser, args)
+        config_module._validate_flag_combinations(parser, args)
 
         parser.error.assert_called_once_with("--remove-unmanaged-types requires --remove-components")
 
@@ -1564,7 +1582,7 @@ class TestDirectHelpers:
         )
 
         with pytest.raises(SystemExit):
-            nb_dt_import._validate_argument_combinations(parser, args)
+            config_module._validate_flag_combinations(parser, args)
 
         parser.error.assert_called_once_with(
             "--remove-unmanaged-types is an import-only flag and cannot be used with --export-diff"
@@ -1584,7 +1602,7 @@ class TestDirectHelpers:
             verify_images=False,
         )
         with pytest.raises(SystemExit):
-            nb_dt_import._validate_argument_combinations(parser, args)
+            config_module._validate_flag_combinations(parser, args)
         parser.error.assert_called_once_with("--slugs is an import-only flag and cannot be used with --export-diff")
 
     def test_validate_argument_combinations_blocks_verify_images_with_export_diff(self, nb_dt_import):
@@ -1601,7 +1619,7 @@ class TestDirectHelpers:
             verify_images=True,
         )
         with pytest.raises(SystemExit):
-            nb_dt_import._validate_argument_combinations(parser, args)
+            config_module._validate_flag_combinations(parser, args)
         parser.error.assert_called_once_with(
             "--verify-images is an import-only flag and cannot be used with --export-diff"
         )
@@ -1620,7 +1638,7 @@ class TestDirectHelpers:
             verify_images=False,
         )
         with pytest.raises(SystemExit):
-            nb_dt_import._validate_argument_combinations(parser, args)
+            config_module._validate_flag_combinations(parser, args)
         parser.error.assert_called_once_with(
             "--force-resolve-conflicts is an import-only flag and cannot be used with --export-diff"
         )
@@ -1648,10 +1666,10 @@ class TestDirectHelpers:
             patch("nb_dt_import.get_progress_panel", return_value=_Ctx()),
             patch("core.export.Exporter") as MockExporter,
         ):
-            nb_dt_import._run_export_diff(nb_dt_import.settings, handle, args)
+            nb_dt_import._run_export_diff(args, handle)
 
         assert MockExporter.call_args.kwargs == {
-            "settings": nb_dt_import.settings,
+            "config": args,
             "handle": handle,
             "export_dir": "extra",
             "force_overwrite": True,
@@ -1673,7 +1691,7 @@ class TestDirectHelpers:
             patch("nb_dt_import.get_progress_panel", return_value=nullcontext(None)),
             patch("core.export.Exporter") as MockExporter,
         ):
-            nb_dt_import._run_export_diff(nb_dt_import.settings, MagicMock(), args)
+            nb_dt_import._run_export_diff(args, MagicMock())
 
         assert MockExporter.call_args.kwargs["vendor_slugs"] is None
 
@@ -1696,15 +1714,15 @@ class TestMainAdditionalCoverage:
 
     def test_main_clears_environment_slugs_before_running_the_export(self, nb_dt_import, monkeypatch, capsys):
         """The export must receive no slug filter, and must say it dropped the environment value."""
-        monkeypatch.setattr(nb_dt_import.settings, "SLUGS", ["env-slug"])
+        monkeypatch.setenv("SLUGS", "env-slug")
         with (
             patch.object(sys, "argv", ["nb-dt-import.py", "--export-diff"]),
             patch("nb_dt_import._run_export_diff") as mock_run_export,
         ):
             nb_dt_import.main()
 
-        args = mock_run_export.call_args.args[2]
-        assert args.slugs == []
+        config = mock_run_export.call_args.args[0]
+        assert config.slugs == ()
         assert "Ignoring SLUGS from the environment" in capsys.readouterr().out
 
     def test_main_uses_slug_fast_path_device_files(self, nb_dt_import):
@@ -1806,7 +1824,7 @@ class TestMainAdditionalCoverage:
         mock_nb.device_types.stop_component_preload.assert_called_with("job-2", progress=progress)
 
     def test_build_argument_parser_sets_expected_defaults_and_flags(self, nb_dt_import):
-        parser = nb_dt_import._build_argument_parser()
+        parser = config_module.build_argument_parser({})
 
         defaults = parser.parse_args([])
         parsed = parser.parse_args(
@@ -1892,7 +1910,7 @@ class TestMainAdditionalCoverage:
             nb_dt_import._run_vendor_loop(
                 dtl_repo=dtl_repo,
                 netbox=netbox,
-                args=args,
+                config=args,
                 handle=handle,
                 vendors_to_process=[{"slug": "empty", "name": "Empty"}, {"slug": "cisco", "name": "Cisco"}],
                 devices_path="/tmp/devices",
@@ -1953,7 +1971,7 @@ class TestMainAdditionalCoverage:
                 nb_dt_import._run_vendor_loop(
                     dtl_repo=dtl_repo,
                     netbox=netbox,
-                    args=args,
+                    config=args,
                     handle=handle,
                     vendors_to_process=[{"slug": "cisco", "name": "Cisco"}],
                     devices_path="/tmp/devices",
@@ -1991,7 +2009,7 @@ class TestReadmeArgumentCoverage:
     @staticmethod
     def _parser_flags(nb_dt_import):
         """Return the long options the real parser defines; argparse exposes no public accessor."""
-        parser = nb_dt_import._build_argument_parser()
+        parser = config_module.build_argument_parser({})
         return {
             option
             for action in parser._actions

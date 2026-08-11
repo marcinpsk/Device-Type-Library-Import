@@ -1,6 +1,6 @@
 """Export-diff feature: export NetBox types absent from or differing vs. the local repo.
 
-Entry point: ``Exporter(settings, handle, export_dir, force_overwrite, vendor_slugs).run()``
+Entry point: ``Exporter(config, handle, export_dir, force_overwrite, vendor_slugs).run()``
 """
 
 import hashlib
@@ -193,21 +193,22 @@ def _is_subset(sub: Any, sup: Any) -> bool:
 class Exporter:
     """Exports NetBox device/module/rack types to a local directory in DTL format."""
 
-    def __init__(self, settings, handle, export_dir: str, force_overwrite: bool, vendor_slugs: Optional[List[str]]):
-        """Initialize the Exporter with settings and configuration."""
-        self.settings = settings
+    def __init__(self, config, handle, export_dir: str, force_overwrite: bool, vendor_slugs: Optional[List[str]]):
+        """Initialize the Exporter from the resolved run configuration."""
+        self.config = config
         self.handle = handle
         self.export_dir = Path(export_dir)
         self.force_overwrite = force_overwrite
         self.vendor_slugs = vendor_slugs  # None means all vendors
-        self.repo_path = Path(settings.REPO_PATH)
-        self.base_url = settings.NETBOX_URL.rstrip("/")
-        self.token = settings.NETBOX_TOKEN
-        self.ignore_ssl = settings.IGNORE_SSL_ERRORS
+        self.repo_path = Path(config.repo_path)
+        self.base_url = config.netbox_url.rstrip("/")
+        self.token = config.netbox_token
+        self.ignore_ssl = config.ignore_ssl_errors
         self.graphql = NetBoxGraphQLClient(
-            url=settings.NETBOX_URL,
-            token=settings.NETBOX_TOKEN,
-            ignore_ssl=settings.IGNORE_SSL_ERRORS,
+            url=config.netbox_url,
+            token=config.netbox_token,
+            ignore_ssl=config.ignore_ssl_errors,
+            page_size=config.graphql_page_size,
         )
         self._module_image_details: Optional[dict] = None
 

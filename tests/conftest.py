@@ -2,6 +2,28 @@ import os
 import pytest
 from unittest.mock import MagicMock, patch
 
+from core.config import RunConfig
+
+
+@pytest.fixture
+def make_config():
+    """Build a real RunConfig, so tests exercise the value the CLI actually produces."""
+
+    def _factory(**overrides):
+        base = {
+            "netbox_url": "http://mock-netbox",
+            "netbox_token": "mock-token",
+            "ignore_ssl_errors": False,
+            "graphql_page_size": 5000,
+            "preload_threads": 8,
+            "repo_url": "https://example.com/repo.git",
+            "repo_branch": "master",
+            "repo_path": "/tmp/repo",
+        }
+        return RunConfig(**{**base, **overrides})
+
+    return _factory
+
 
 @pytest.fixture(autouse=True)
 def reset_graphql_clamping_warned(mock_env_vars, request):
