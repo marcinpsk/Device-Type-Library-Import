@@ -9,15 +9,21 @@ When ``NETBOX_URL`` or ``NETBOX_TOKEN`` are absent every test in the package is
 marked as skipped during collection, so the suite shows "s" markers instead of
 errors.
 
-Note: the env check reads ``os.environ``, which ``core.config.resolve_run_config()``
-populates from any local ``.env``.  So a developer with a configured ``.env`` will have these
-tests run even with the shell vars unset; the skip path fires only in a clean
-checkout (e.g. CI before its real ``NETBOX_*`` vars are exported).
+Note: the env check reads ``os.environ``, so this module loads any local ``.env``
+first.  Nothing else does it during collection: the CLI loads it inside
+``core.config.resolve_run_config()``, which pytest never calls.  A developer with a
+configured ``.env`` therefore runs these tests with the shell vars unset; the skip
+path fires only in a clean checkout (e.g. CI before its real ``NETBOX_*`` vars are
+exported).
 """
 
 import os
 
 import pytest
+from dotenv import load_dotenv
+
+# At import, so the values are in os.environ before pytest_collection_modifyitems reads them.
+load_dotenv()
 
 
 def pytest_collection_modifyitems(items):

@@ -7,8 +7,15 @@ import sys
 
 import pytest
 
+from core.config import resolve_run_config
+
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
 _ENTRY = _ROOT / "nb-dt-import.py"
+
+
+def _resolve(**env):
+    """Resolve a config from an explicit environment, so the ambient one cannot change the answer."""
+    return resolve_run_config(argv=[], env={"NETBOX_URL": "http://netbox.local", "NETBOX_TOKEN": "token", **env})
 
 
 def _run_cli(*argv, **env_overrides):
@@ -53,3 +60,19 @@ class TestOptionalVariablesUseTheirDefault:
         result = _run_cli("--export-diff", REPO_URL="")
 
         assert 'Environment variable "REPO_URL" is not set' not in result.stdout + result.stderr
+
+
+class TestRepoPathHasOneResolution:
+    """Whoever re-derives this path by hand gets a different one, and reads a directory with no schema."""
+
+    @pytest.mark.parametrize("value", [None, "", "   "])
+    def test_an_unusable_repo_path_falls_back_to_the_default(self, value):
+        """A blank value is what an .env line with nothing after the '=' produces."""
+        config = _resolve() if value is None else _resolve(REPO_PATH=value)
+
+        assert config.repo_path == str(_ROOT / "repo")
+
+    def test_an_explicit_repo_path_is_taken_as_given(self, tmp_path):
+        config = _resolve(REPO_PATH=str(tmp_path))
+
+        assert config.repo_path == str(tmp_path)
