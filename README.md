@@ -69,10 +69,13 @@ behavior of a job that already works.
 None of these tags is immutable: the image workflow also runs when a release is edited, which
 rebuilds and re-pushes the same version tag. Pin the digest when a run must never change:
 
+Read the digest from the tag you want, then run that digest. Substitute the `Digest:` value from
+the first command into the second:
+
 ```shell
 docker buildx imagetools inspect ghcr.io/marcinpsk/device-type-library-import:1.7.1
 docker run --rm --env-file .env \
-  ghcr.io/marcinpsk/device-type-library-import@sha256:b27ee7c0…
+  ghcr.io/marcinpsk/device-type-library-import@sha256:<digest>
 ```
 
 ### Quick start
@@ -103,20 +106,30 @@ docker run --rm --env-file .env \
   ghcr.io/marcinpsk/device-type-library-import:latest
 ```
 
-A host directory works too, but create it yourself first and give UID 1000 (`appuser`, the user
-the container runs as) write access. Docker creates a missing bind-mount source as `root`, and
-`mkdir` on a host account that is not UID 1000 has the same effect:
+A host directory works too, but create it yourself first: Docker creates a missing bind-mount
+source as `root`, which the container cannot write to. The directory owner and the user the
+container runs as must then agree. Pick one of the two modes below, and do not combine them:
+each one breaks the other.
+
+Container-user mode, where the clone ends up owned by UID 1000 (`appuser`, the image default):
 
 ```shell
 mkdir -p repo
-sudo chown 1000:1000 repo   # skip if your host account is already UID 1000
+sudo chown 1000:1000 repo   # not needed if your host account is already UID 1000
 docker run --rm --env-file .env \
   -v "$PWD/repo:/app/repo" \
   ghcr.io/marcinpsk/device-type-library-import:latest
 ```
 
-To keep the files owned by your host account instead, run the container as your own user with
-`--user "$(id -u):$(id -g)"`.
+Host-user mode, where the clone stays owned by your own account. Leave the directory as `mkdir`
+created it and run the container as yourself:
+
+```shell
+mkdir -p repo
+docker run --rm --env-file .env --user "$(id -u):$(id -g)" \
+  -v "$PWD/repo:/app/repo" \
+  ghcr.io/marcinpsk/device-type-library-import:latest
+```
 
 ### Passing arguments
 
@@ -439,11 +452,12 @@ Files that already exist and differ are skipped with a warning. Add
 
 The export directory is relative to the working directory, which is `/app` in the container.
 A `docker run --rm` therefore writes to `/app/extra` and discards it on exit. Mount a host
-directory to keep the output, creating it first for the same reason as the library volume:
+directory to keep the output, creating it first and matching the ownership to whichever
+[mode](#run-with-docker) you use for the library volume. Container-user mode:
 
 ```shell
 mkdir -p extra
-sudo chown 1000:1000 extra   # skip if your host account is already UID 1000
+sudo chown 1000:1000 extra   # not needed if your host account is already UID 1000
 docker run --rm --env-file .env -v "$PWD/extra:/app/extra" \
   ghcr.io/marcinpsk/device-type-library-import:latest --export-diff
 ```
