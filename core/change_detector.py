@@ -6,6 +6,7 @@ in the repository and existing data in NetBox, supporting the --update workflow.
 
 import os
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, List, Optional
 from enum import Enum
 
@@ -95,40 +96,26 @@ _DEVICE_TYPE_PROPERTIES_FALLBACK = [
 _DEVICE_TYPE_SCHEMA_EXCLUDE = {"manufacturer", "model", "slug", "front_image", "rear_image"}
 
 
-def _load_device_type_properties():
+def _load_device_type_properties(repo_path):
     """Load device type scalar properties from the schema, falling back to hardcoded list."""
-    try:
-        from core import settings as _settings
-
-        props = load_properties_for_type(
-            os.path.join(_settings.REPO_PATH, "schema"),
-            "devicetype",
-            exclude=_DEVICE_TYPE_SCHEMA_EXCLUDE,
-        )
-        return props if props else list(_DEVICE_TYPE_PROPERTIES_FALLBACK)
-    except (ImportError, AttributeError):
-        return list(_DEVICE_TYPE_PROPERTIES_FALLBACK)
+    props = load_properties_for_type(
+        os.path.join(repo_path, "schema"),
+        "devicetype",
+        exclude=_DEVICE_TYPE_SCHEMA_EXCLUDE,
+    )
+    return props if props else list(_DEVICE_TYPE_PROPERTIES_FALLBACK)
 
 
-_CACHED_DEVICE_TYPE_PROPERTIES = None
-
-
-def get_device_type_properties():
-    """Lazily resolve and cache the device-type schema properties.
+@lru_cache(maxsize=1)
+def get_device_type_properties(repo_path):
+    """Resolve and cache the device-type schema properties.
 
     Resolved at first call rather than at import time so the schema lookup
     sees a populated repo even when ``change_detector`` is imported before
     the repo is cloned (e.g., test bootstrap, fresh CI environments).
     """
-    global _CACHED_DEVICE_TYPE_PROPERTIES
-    if _CACHED_DEVICE_TYPE_PROPERTIES is None:
-        _CACHED_DEVICE_TYPE_PROPERTIES = _load_device_type_properties()
-    return _CACHED_DEVICE_TYPE_PROPERTIES
+    return _load_device_type_properties(repo_path)
 
-
-# Backwards-compatible eager constant.  Prefer ``get_device_type_properties()``
-# in code paths that may run before the repo schema is available.
-DEVICE_TYPE_PROPERTIES = _load_device_type_properties()
 
 # Sentinel used to distinguish "attribute missing from record" from a genuine
 # None/null value returned by NetBox.  When a property is in the schema-derived
@@ -244,7 +231,7 @@ class ChangeDetector:
         """
         changes = []
 
-        for prop in get_device_type_properties():
+        for prop in get_device_type_properties(self.device_types.repo_path):
             # Only compare properties explicitly present in YAML;
             # an omitted property means the YAML doesn't manage it,
             # matching the component semantics (absent key != removal).

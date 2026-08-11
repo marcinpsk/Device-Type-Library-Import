@@ -3,17 +3,15 @@
 
 from datetime import datetime
 import os
-from argparse import ArgumentParser
 from contextlib import contextmanager
 
-from core import settings
+from core.config import ConfigError, resolve_run_config
 from core.netbox_api import NetBox, _fmt_connection_error
 from core.log_handler import LogHandler
 from core.repo import DTLRepo
 from core.change_detector import ChangeDetector, ChangeType, IMAGE_PROPERTIES
 from core.graphql_client import GraphQLError
 from pynetbox.core.query import RequestError as NetBoxRequestError
-import re
 import requests
 
 
@@ -358,20 +356,20 @@ def has_missing_device_images(change_report):
     return False
 
 
-def log_run_mode(handle, args):
+def log_run_mode(handle, config):
     """Log a human-readable summary of the active run-mode flags to *handle*.
 
     Args:
         handle (LogHandler): Logging handler used to emit messages.
-        args: Parsed CLI arguments; inspects ``only_new``, ``update``, and ``remove_components``.
+        config (RunConfig): inspects ``only_new``, ``update``, and ``remove_components``.
     """
-    if args.only_new:
+    if config.only_new:
         handle.log("Mode: --only-new enabled; existing device types and components will not be modified.")
-    elif args.update:
+    elif config.update:
         handle.log("Mode: --update enabled; changed properties and components on existing models will be updated.")
-        if args.remove_components:
+        if config.remove_components:
             handle.log("Mode: --remove-components enabled; missing components will be removed from existing models.")
-            if getattr(args, "remove_unmanaged_types", False):
+            if config.remove_unmanaged_types:
                 handle.log(
                     "Mode: --remove-unmanaged-types enabled; components whose entire YAML section is missing "
                     "will also be removed from existing models."
@@ -381,23 +379,23 @@ def log_run_mode(handle, args):
                 "Mode: will not remove components from existing models; use --remove-components with "
                 "--update to change this."
             )
-        if getattr(args, "force_resolve_conflicts", False):
+        if config.force_resolve_conflicts:
             handle.log(
                 "Mode: --force-resolve-conflicts enabled; constraint failures will trigger destructive "
                 "remediation when no live device references the affected type."
             )
     else:
         handle.log("Mode: --update not set; changed properties/components will not be applied (use --update).")
-    if getattr(args, "verify_images", False):
+    if config.verify_images:
         handle.log(
             "Mode: --verify-images enabled; images already recorded in NetBox will be verified via HTTP "
             "and re-uploaded if missing or content has changed."
         )
 
 
-def should_only_create_new_modules(args):
+def should_only_create_new_modules(config):
     """Return True if module processing should only create new entries and skip updates."""
-    return args.only_new or not args.update
+    return config.only_new or not config.update
 
 
 @contextmanager
@@ -433,39 +431,21 @@ def _image_progress_scope(progress, device_types, total=0):
             progress.remove_task(_img_task)
 
 
-def _check_env_vars(handle):
-    """Validate that all mandatory environment variables are set.
-
-    Calls ``handle.exception`` (which exits) for the first missing variable.
-
-    Args:
-        handle (LogHandler): Logging handler used to report and exit on error.
-    """
-    for var in settings.MANDATORY_ENV_VARS:
-        if not os.environ.get(var, "").strip():
-            handle.exception(
-                "EnvironmentError",
-                var,
-                f'Environment variable "{var}" is not set or is empty.'
-                f"\n\nMANDATORY_ENV_VARS: {str(settings.MANDATORY_ENV_VARS)}\n",
-            )
-
-
-def _log_import_filters(handle, args):
+def _log_import_filters(handle, config):
     """Log active vendor and slug filter choices to *handle*.
 
     Args:
         handle (LogHandler): Logging handler used to emit filter messages.
-        args: Parsed CLI arguments; inspects ``vendors`` and ``slugs``.
+        config (RunConfig): inspects ``vendors`` and ``slugs``.
     """
-    if args.vendors:
-        handle.log(f"Importing vendors: {', '.join(args.vendors)}")
-    if args.slugs:
-        handle.log(f"Filtering by slugs: {', '.join(args.slugs)}")
+    if config.vendors:
+        handle.log(f"Importing vendors: {', '.join(config.vendors)}")
+    if config.slugs:
+        handle.log(f"Filtering by slugs: {', '.join(config.slugs)}")
 
 
 def _process_device_types(
-    args,
+    config,
     netbox,
     handle,
     progress,
@@ -480,7 +460,7 @@ def _process_device_types(
     including cache preloading, change detection, and NetBox API calls.
 
     Args:
-        args: Parsed CLI arguments; inspects ``only_new``, ``update``, and
+        config (RunConfig): inspects ``only_new``, ``update``, and
             ``remove_components``.
         netbox (NetBox): NetBox API wrapper instance.
         handle (LogHandler): Logging handler used to emit progress messages.
@@ -494,7 +474,7 @@ def _process_device_types(
         The updated *cache_preload_job*: ``None`` if the job was consumed by
         ``preload_all_components``; otherwise the original value.
     """
-    if args.only_new:
+    if config.only_new:
         new_device_types = filter_new_device_types(
             device_types,
             netbox.device_types.existing_device_types,
@@ -536,7 +516,7 @@ def _process_device_types(
     detector = ChangeDetector(
         netbox.device_types,
         handle,
-        remove_unmanaged_types=args.remove_unmanaged_types,
+        remove_unmanaged_types=config.remove_unmanaged_types,
     )
     change_report = detector.detect_changes(
         device_types,
@@ -544,9 +524,9 @@ def _process_device_types(
     )
     detector.log_change_report(change_report)
 
-    if args.update:
+    if config.update:
         device_types_to_process = select_device_types_for_update_mode(
-            device_types, change_report, verify_images=getattr(args, "verify_images", False)
+            device_types, change_report, verify_images=config.verify_images
         )
         if device_types_to_process:
             image_total = netbox.count_device_type_images(device_types_to_process)
@@ -562,13 +542,13 @@ def _process_device_types(
                     only_new=False,
                     update=True,
                     change_report=change_report,
-                    remove_components=args.remove_components,
+                    remove_components=config.remove_components,
                 )
         else:
             handle.verbose_log("No device type changes to process.")
     else:
         device_types_to_process = select_device_types_for_default_mode(
-            device_types, change_report, verify_images=getattr(args, "verify_images", False)
+            device_types, change_report, verify_images=config.verify_images
         )
         if device_types_to_process:
             image_total = netbox.count_device_type_images(device_types_to_process)
@@ -589,11 +569,11 @@ def _process_device_types(
     return cache_preload_job
 
 
-def _process_module_types(args, netbox, handle, progress, module_types, task_registry=None):
+def _process_module_types(config, netbox, handle, progress, module_types, task_registry=None):
     """Process module types for a single vendor.
 
     Args:
-        args: Parsed CLI arguments; inspects ``only_new``, ``update``, and
+        config (RunConfig): inspects ``only_new``, ``update``, and
             ``remove_components``.
         netbox (NetBox): NetBox API wrapper instance.
         handle (LogHandler): Logging handler used to emit progress messages.
@@ -606,14 +586,14 @@ def _process_module_types(args, netbox, handle, progress, module_types, task_reg
 
     handle.verbose_log(f"{len(module_types)} Module-Types Found")
 
-    module_only_new = should_only_create_new_modules(args)
+    module_only_new = should_only_create_new_modules(config)
     existing_module_types = netbox.get_existing_module_types()
     # Always run full change detection (unless --only-new is explicitly set) so that
     # modified module types are reported even without --update.
     module_types_to_process, module_type_existing_images, changed_property_log = netbox.filter_actionable_module_types(
         module_types,
         existing_module_types,
-        only_new=args.only_new,
+        only_new=config.only_new,
     )
 
     new_module_count = len(NetBox.filter_new_module_types(module_types, existing_module_types))
@@ -632,14 +612,14 @@ def _process_module_types(args, netbox, handle, progress, module_types, task_reg
             pending_removal_components += len(removed_in_group)
 
     module_changed_count = len(changed_property_log)
-    module_unchanged_count = len(module_types) - len(module_types_to_process) if not args.only_new else 0
+    module_unchanged_count = len(module_types) - len(module_types_to_process) if not config.only_new else 0
 
     has_module_changes = new_module_count > 0 or module_changed_count > 0 or pending_removal_modules > 0
     if has_module_changes:
         handle.log("============================================================")
         handle.log("MODULE TYPE CHANGE DETECTION")
         handle.log("============================================================")
-        if args.only_new:
+        if config.only_new:
             handle.log(f"New module types: {new_module_count}")
         else:
             # Modules with only missing image attachments — handled in default mode, so
@@ -651,10 +631,10 @@ def _process_module_types(args, netbox, handle, progress, module_types, task_reg
             handle.log(f"Modified module types:  {module_changed_count}")
             if image_only_count:
                 handle.log(f"Image-only updates:     {image_only_count}")
-            if module_changed_count and not args.update:
+            if module_changed_count and not config.update:
                 handle.log("  (Run with --update to apply changes to existing module types)")
-            if pending_removal_modules and not args.remove_components:
-                remove_hint = "--remove-components" if args.update else "--update --remove-components"
+            if pending_removal_modules and not config.remove_components:
+                remove_hint = "--remove-components" if config.update else "--update --remove-components"
                 handle.log(
                     f"  (Run with {remove_hint} to remove {pending_removal_components} stale "
                     f"component(s) across {pending_removal_modules} module type(s))"
@@ -680,19 +660,19 @@ def _process_module_types(args, netbox, handle, progress, module_types, task_reg
                 only_new=module_only_new,
                 all_module_types=existing_module_types,
                 module_type_existing_images=module_type_existing_images,
-                remove_components=args.remove_components,
+                remove_components=config.remove_components,
             )
     else:
         handle.verbose_log("No module type changes to process.")
 
 
-def _process_rack_types(args, netbox, handle, progress, rack_types, task_registry=None):
+def _process_rack_types(config, netbox, handle, progress, rack_types, task_registry=None):
     """Process rack types for a single vendor.
 
     Soft-skips with a warning when the connected NetBox instance is older than 4.1.
 
     Args:
-        args: Parsed CLI arguments; inspects ``only_new``.
+        config (RunConfig): inspects ``only_new``.
         netbox (NetBox): NetBox API wrapper instance.
         handle (LogHandler): Logging handler used to emit progress messages.
         progress: Rich Progress instance for progress display, or None.
@@ -733,7 +713,7 @@ def _process_rack_types(args, netbox, handle, progress, rack_types, task_registr
                 desc="Processing Rack Types",
                 task_registry=task_registry,
             ),
-            only_new=args.only_new,
+            only_new=config.only_new,
             all_rack_types=all_rack_types,
         )
 
@@ -831,41 +811,19 @@ def _finalize_task_registry(progress, task_registry):
         progress.stop_task(task_id)
 
 
-def _validate_argument_combinations(parser, args):
-    """Apply mutual-dependency checks for CLI flags and exit via parser.error on violation."""
-    if args.export_diff and (args.update or args.only_new):
-        parser.error("--export-diff cannot be used with --update or --only-new")
-    if args.export_diff and args.remove_components:
-        parser.error("--export-diff cannot be used with --remove-components")
-    if args.export_diff and getattr(args, "remove_unmanaged_types", False):
-        parser.error("--remove-unmanaged-types is an import-only flag and cannot be used with --export-diff")
-    if args.export_diff and getattr(args, "slugs", None):
-        parser.error("--slugs is an import-only flag and cannot be used with --export-diff")
-    if args.export_diff and getattr(args, "verify_images", False):
-        parser.error("--verify-images is an import-only flag and cannot be used with --export-diff")
-    if args.export_diff and getattr(args, "force_resolve_conflicts", False):
-        parser.error("--force-resolve-conflicts is an import-only flag and cannot be used with --export-diff")
-    if args.remove_components and not args.update:
-        parser.error("--remove-components requires --update")
-    if args.remove_unmanaged_types and not args.remove_components:
-        parser.error("--remove-unmanaged-types requires --remove-components")
-    if args.force_resolve_conflicts and not args.update:
-        parser.error("--force-resolve-conflicts requires --update")
-
-
-def _apply_slug_fast_path(dtl_repo, args, vendors_to_process, handle):
+def _apply_slug_fast_path(dtl_repo, config, vendors_to_process, handle):
     """Use upstream slug indexes to pre-resolve files and narrow the vendor list.
 
-    When ``args.slugs`` is set and the DTL index files (``known-*.json``, or legacy
+    When ``config.slugs`` is set and the DTL index files (``known-*.json``, or legacy
     ``known-*.pickle``) are present, resolves exactly which device-type files match the
     requested slugs and restricts ``vendors_to_process`` to only those vendors.  Returns a
     ``(vendors, resolved)`` pair where *resolved* is the dict returned by
     :meth:`DTLRepo.resolve_slug_files` (or ``None`` when the index is absent/unavailable).
     """
-    if not args.slugs:
+    if not config.slugs:
         return vendors_to_process, None
 
-    slug_resolved = dtl_repo.resolve_slug_files(args.slugs)
+    slug_resolved = dtl_repo.resolve_slug_files(config.slugs)
     if slug_resolved is None:
         handle.verbose_log("Slug index unavailable; falling back to full file scan.")
         return vendors_to_process, None
@@ -886,138 +844,24 @@ def _apply_slug_fast_path(dtl_repo, args, vendors_to_process, handle):
     return narrowed, slug_resolved
 
 
-def _run_export_diff(settings, handle, args):
+def _run_export_diff(config, handle):
     """Run the export-diff pipeline and return."""
     from core.export import Exporter
 
     exporter = Exporter(
-        settings=settings,
+        config=config,
         handle=handle,
-        export_dir=args.export_diff_dir,
-        force_overwrite=args.force_export_overwrite,
-        vendor_slugs=args.vendors if args.vendors else None,
+        export_dir=config.export_diff_dir,
+        force_overwrite=config.force_export_overwrite,
+        vendor_slugs=config.vendors if config.vendors else None,
     )
-    with get_progress_panel(args.show_remaining_time) as progress:
+    with get_progress_panel(config.show_remaining_time) as progress:
         if progress is not None:
             handle.set_console(progress.console)
         exporter.run(progress=progress)
 
 
-def _build_argument_parser() -> ArgumentParser:
-    """Build and return the CLI argument parser."""
-    parser = ArgumentParser(description="Import Netbox Device Types", allow_abbrev=False)
-    parser.add_argument(
-        "--vendors",
-        nargs="+",
-        default=settings.VENDORS,
-        help="List of vendors to import eg. apc cisco",
-    )
-    parser.add_argument(
-        "--url",
-        "--git",
-        default=settings.REPO_URL,
-        help="Git URL with valid Device Type YAML files",
-    )
-    parser.add_argument(
-        "--slugs",
-        nargs="+",
-        # None distinguishes "not passed" from an env-provided default, which export mode ignores.
-        default=None,
-        help="List of device-type slugs to import eg. ap4431 ws-c3850-24t-l",
-    )
-    parser.add_argument("--branch", default=settings.REPO_BRANCH, help="Git branch to use from repo")
-    parser.add_argument("--verbose", action="store_true", default=False, help="Print verbose output")
-    parser.add_argument(
-        "--show-remaining-time",
-        action="store_true",
-        default=False,
-        help="Show estimated remaining time in progress output",
-    )
-
-    mode_group = parser.add_mutually_exclusive_group()
-    mode_group.add_argument(
-        "--only-new",
-        action="store_true",
-        default=False,
-        help="Only create new devices, skip existing ones",
-    )
-    mode_group.add_argument(
-        "--update",
-        action="store_true",
-        default=False,
-        help="Update existing device types with changes from repository (add missing components, modify "
-        "changed properties)",
-    )
-    parser.add_argument(
-        "--remove-components",
-        action="store_true",
-        default=False,
-        help="Remove components from NetBox that no longer exist in YAML (use with --update). "
-        "WARNING: May affect existing device instances.",
-    )
-    parser.add_argument(
-        "--remove-unmanaged-types",
-        action="store_true",
-        default=False,
-        help=(
-            "Also remove components whose entire YAML section is missing (e.g. NetBox has interfaces "
-            "but the YAML defines no 'interfaces:' key at all). Requires --remove-components. "
-            "WARNING: Aggressive; will delete components on every type whose YAML omits that section."
-        ),
-    )
-    parser.add_argument(
-        "--force-resolve-conflicts",
-        action="store_true",
-        default=False,
-        help=(
-            "Allow destructive remediation when a NetBox business-logic constraint blocks an update "
-            "(e.g. delete blocking device-bay templates before a subdevice_role parent->child flip). "
-            "Only applied when no live device references the type. WARNING: Destructive."
-        ),
-    )
-    parser.add_argument(
-        "--verify-images",
-        action="store_true",
-        default=False,
-        help=(
-            "Verify that images recorded in the NetBox database are physically present on the server. "
-            "Uses an HTTP presence check per image and a local SHA-256 cache to detect local file "
-            "changes (does not hash or download the remote file). Re-uploads any image that is "
-            "missing on the server or whose local file has changed since the last upload. "
-            "Useful after recreating a devcontainer (media files gone but DB intact) or "
-            "when local image files have been updated. NOTE: Makes an HTTP request per image — "
-            "avoid using this in bulk runs unless necessary."
-        ),
-    )
-    parser.add_argument(
-        "--export-diff",
-        action="store_true",
-        default=False,
-        help=(
-            "Export device/module/rack types from NetBox that are absent from or differ vs. "
-            "the local repo/ directory. Writes DTL-compatible YAML files and images to the "
-            "export directory. Does not run the import pipeline."
-        ),
-    )
-    parser.add_argument(
-        "--export-diff-dir",
-        default="extra/",
-        metavar="PATH",
-        help="Directory to write exported files to (default: extra/).",
-    )
-    parser.add_argument(
-        "--force-export-overwrite",
-        action="store_true",
-        default=False,
-        help=(
-            "Overwrite files in the export directory that differ from what would be "
-            "generated from NetBox. Without this flag, changed files are skipped with a warning."
-        ),
-    )
-    return parser
-
-
-def _parse_vendor_types(dtl_repo, netbox, args, vendor, devices_path, modules_path, racks_path, slug_resolved):
+def _parse_vendor_types(dtl_repo, netbox, config, vendor, devices_path, modules_path, racks_path, slug_resolved):
     """Parse device-type, module-type, and rack-type YAML files for a single vendor.
 
     Returns a 3-tuple: (parsed_device_types, parsed_module_types, parsed_rack_types).
@@ -1027,7 +871,7 @@ def _parse_vendor_types(dtl_repo, netbox, args, vendor, devices_path, modules_pa
         parsed_device_types = dtl_repo.parse_files(device_files) if device_files else []
     else:
         device_files, _ = dtl_repo.get_devices(devices_path, [vendor["name"].casefold()])
-        parsed_device_types = dtl_repo.parse_files(device_files, slugs=args.slugs or [])
+        parsed_device_types = dtl_repo.parse_files(device_files, slugs=config.slugs or [])
 
     if netbox.modules:
         module_hint = slug_resolved["module_vendors"] if slug_resolved is not None else None
@@ -1035,7 +879,7 @@ def _parse_vendor_types(dtl_repo, netbox, args, vendor, devices_path, modules_pa
             parsed_module_types = []
         else:
             module_files, _ = dtl_repo.get_devices(modules_path, [vendor["name"].casefold()])
-            parsed_module_types = dtl_repo.parse_files(module_files, slugs=args.slugs or [])
+            parsed_module_types = dtl_repo.parse_files(module_files, slugs=config.slugs or [])
     else:
         parsed_module_types = []
 
@@ -1044,7 +888,7 @@ def _parse_vendor_types(dtl_repo, netbox, args, vendor, devices_path, modules_pa
         if rack_hint is not None and vendor["slug"] not in rack_hint:
             parsed_rack_types = []
         else:
-            parsed_rack_types = _parse_vendor_racks(dtl_repo, racks_path, vendor["name"], args.slugs or [])
+            parsed_rack_types = _parse_vendor_racks(dtl_repo, racks_path, vendor["name"], config.slugs or [])
     else:
         parsed_rack_types = []
 
@@ -1054,7 +898,7 @@ def _parse_vendor_types(dtl_repo, netbox, args, vendor, devices_path, modules_pa
 def _run_vendor_loop(
     dtl_repo,
     netbox,
-    args,
+    config,
     handle,
     vendors_to_process,
     devices_path,
@@ -1070,7 +914,7 @@ def _run_vendor_loop(
     try:
         for vendor in vendors_to_process:
             parsed_device_types, parsed_module_types, parsed_rack_types = _parse_vendor_types(
-                dtl_repo, netbox, args, vendor, devices_path, modules_path, racks_path, slug_resolved
+                dtl_repo, netbox, config, vendor, devices_path, modules_path, racks_path, slug_resolved
             )
 
             if not parsed_device_types and not parsed_module_types and not parsed_rack_types:
@@ -1081,7 +925,7 @@ def _run_vendor_loop(
             netbox.load_vendor(vendor["slug"])
             cache_preload_job = None
 
-            if (parsed_device_types or parsed_module_types) and not args.only_new:
+            if (parsed_device_types or parsed_module_types) and not config.only_new:
                 cache_preload_job = netbox.device_types.start_component_preload(
                     manufacturer_slug=vendor["slug"],
                     progress=progress,
@@ -1098,7 +942,7 @@ def _run_vendor_loop(
             _pump()
 
             cache_preload_job = _process_device_types(
-                args,
+                config,
                 netbox,
                 handle,
                 progress,
@@ -1111,7 +955,7 @@ def _run_vendor_loop(
 
             if netbox.modules:
                 _process_module_types(
-                    args,
+                    config,
                     netbox,
                     handle,
                     progress,
@@ -1121,7 +965,7 @@ def _run_vendor_loop(
                 _pump()
 
             _process_rack_types(
-                args,
+                config,
                 netbox,
                 handle,
                 progress,
@@ -1144,54 +988,51 @@ def _run_vendor_loop(
 
 
 def main():
+    """Resolve the run configuration, then run against it.
+
+    Connection failures are reported here because the resolved NetBox URL is the
+    one that was actually used, rather than a second reading of the environment.
+    """
+    try:
+        config = resolve_run_config()
+    except ConfigError as exc:
+        raise SystemExit(str(exc))
+    try:
+        return _run(config)
+    except requests.exceptions.ConnectionError as exc:
+        print(
+            f"[{datetime.now().strftime('%H:%M:%S')}] Error: {_fmt_connection_error(config.netbox_url, exc)}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+
+def _run(config):
     """Orchestrate importing device- and module-types from a Git repository into NetBox.
 
-    Parses CLI arguments, validates environment variables, clones/pulls the DTL repo,
-    parses YAML files, and creates manufacturers, device types, and module types in NetBox.
-    Reports progress and summary counters.
+    Clones or pulls the DTL repo, parses YAML files, and creates manufacturers, device
+    types, and module types in NetBox. Reports progress and summary counters.
     """
     startTime = datetime.now()
 
-    parser = _build_argument_parser()
+    handle = LogHandler(config)
+    for notice in config.notices:
+        handle.log(notice)
 
-    args = parser.parse_args()
-
-    _validate_argument_combinations(parser, args)
-
-    # Normalize arguments
-    args.vendors = [
-        re.sub(r"\W+", "-", v.strip().casefold()) for vendor in args.vendors for v in vendor.split(",") if v.strip()
-    ]
-    # None means --slugs was not passed, so the environment default applies.
-    slug_values = settings.SLUGS if args.slugs is None else args.slugs
-    args.slugs = [s.strip() for slug in slug_values for s in slug.split(",") if s.strip()]
-
-    handle = LogHandler(args)
-
-    # An explicit --slugs is already rejected, so anything left here came from the environment.
-    if args.export_diff and args.slugs:
-        handle.log("Ignoring SLUGS from the environment: --export-diff does not filter by slug.")
-        args.slugs = []
-
-    _check_env_vars(handle)
-
-    if args.export_diff:
-        _run_export_diff(settings, handle, args)
+    if config.export_diff:
+        _run_export_diff(config, handle)
         return
 
-    dtl_repo = DTLRepo(args, settings.REPO_PATH, handle)
+    dtl_repo = DTLRepo(config, handle)
 
-    # Instantiate NetBox with all required dependencies
-    # We pass settings for constants, but ideally we should pass individual config items
-    # For now, we will update NetBox to verify compatibility with this new setup
-    netbox = NetBox(settings, handle)  # handle passed explicitly
-    netbox.force_resolve_conflicts = args.force_resolve_conflicts
-    netbox.remove_unmanaged_types = args.remove_unmanaged_types
-    netbox.verify_images = args.verify_images
+    netbox = NetBox(config, handle)  # handle passed explicitly
+    netbox.force_resolve_conflicts = config.force_resolve_conflicts
+    netbox.remove_unmanaged_types = config.remove_unmanaged_types
+    netbox.verify_images = config.verify_images
 
     # Confirm effective run behavior right after compatibility checks.
-    log_run_mode(handle, args)
-    _log_import_filters(handle, args)
+    log_run_mode(handle, config)
+    _log_import_filters(handle, config)
 
     devices_path = dtl_repo.get_devices_path()
     modules_path = dtl_repo.get_modules_path()
@@ -1200,13 +1041,13 @@ def main():
     # Discover all vendors present in the repo across all three type directories.
     all_vendors = dtl_repo.discover_vendors(devices_path, modules_path, racks_path)
 
-    # Filter to the requested vendors when --vendor args are provided.
-    if args.vendors:
-        vendor_slug_filter = {v.lower() for v in args.vendors}
+    # Filter to the requested vendors when --vendor config are provided.
+    if config.vendors:
+        vendor_slug_filter = {v.lower() for v in config.vendors}
         vendors_to_process = [v for v in all_vendors if v["slug"] in vendor_slug_filter]
         if not vendors_to_process:
             handle.log(
-                f"No vendors matched --vendors: {', '.join(args.vendors)}. "
+                f"No vendors matched --vendors: {', '.join(config.vendors)}. "
                 f"Available: {', '.join(v['slug'] for v in all_vendors[:10])}"
                 f"{'...' if len(all_vendors) > 10 else ''}"
             )
@@ -1214,13 +1055,13 @@ def main():
     else:
         vendors_to_process = all_vendors
 
-    vendors_to_process, slug_resolved = _apply_slug_fast_path(dtl_repo, args, vendors_to_process, handle)
+    vendors_to_process, slug_resolved = _apply_slug_fast_path(dtl_repo, config, vendors_to_process, handle)
 
-    if args.vendors and not vendors_to_process:
-        handle.log(f"No vendors matched the combination of --vendors and --slugs: {', '.join(args.vendors)}")
+    if config.vendors and not vendors_to_process:
+        handle.log(f"No vendors matched the combination of --vendors and --slugs: {', '.join(config.vendors)}")
         raise SystemExit(1)
 
-    with get_progress_panel(args.show_remaining_time) as progress:
+    with get_progress_panel(config.show_remaining_time) as progress:
         if progress is not None:
             handle.set_console(progress.console)
         # Shared task registry for cumulative progress bars across all vendors.
@@ -1232,7 +1073,7 @@ def main():
         _run_vendor_loop(
             dtl_repo=dtl_repo,
             netbox=netbox,
-            args=args,
+            config=config,
             handle=handle,
             vendors_to_process=vendors_to_process,
             devices_path=devices_path,
@@ -1266,12 +1107,6 @@ if __name__ == "__main__":
             f"[{datetime.now().strftime('%H:%M:%S')}] Error: NetBox REST API request failed — {exc}\n"
             f"[{datetime.now().strftime('%H:%M:%S')}] Check that NetBox is reachable and"
             " the API token has the required permissions.",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
-    except requests.exceptions.ConnectionError as exc:
-        print(
-            f"[{datetime.now().strftime('%H:%M:%S')}] Error: {_fmt_connection_error(settings.NETBOX_URL, exc)}",
             file=sys.stderr,
         )
         raise SystemExit(1)

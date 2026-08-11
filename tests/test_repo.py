@@ -14,6 +14,12 @@ from core.repo import (
 )
 
 
+def _dtl_repo(config, repo_path, handle):
+    """Construct DTLRepo with *repo_path* on the config, which is where it now lives."""
+    config.repo_path = repo_path
+    return DTLRepo(config, handle)
+
+
 def _clone_present(present=True):
     """Steer only the .git probe in DTLRepo.__init__, leaving every other path check real."""
     real_exists = os.path.exists
@@ -78,8 +84,8 @@ class TestDTLRepoInit:
 
     def _make_repo(self, isdir=True, mock_repo=None):
         mock_args = MagicMock()
-        mock_args.url = "https://github.com/org/repo.git"
-        mock_args.branch = "master"
+        mock_args.repo_url = "https://github.com/org/repo.git"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
         with (
             _clone_present(isdir),
@@ -88,13 +94,13 @@ class TestDTLRepoInit:
             if mock_repo:
                 MockRepo.return_value = mock_repo
                 MockRepo.clone_from.return_value = mock_repo
-            repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            repo = _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         return repo, mock_handle
 
     def test_pulls_when_dir_exists(self):
         mock_args = MagicMock()
-        mock_args.url = "https://github.com/org/repo.git"
-        mock_args.branch = "master"
+        mock_args.repo_url = "https://github.com/org/repo.git"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
         with (
             _clone_present(),
@@ -106,14 +112,14 @@ class TestDTLRepoInit:
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         mock_git_repo.remotes.origin.fetch.assert_called_once_with(prune=True)
         mock_git_repo.git.checkout.assert_called_with("-B", "master", "origin/master")
 
     def test_clones_when_dir_missing(self):
         mock_args = MagicMock()
-        mock_args.url = "https://github.com/org/repo.git"
-        mock_args.branch = "master"
+        mock_args.repo_url = "https://github.com/org/repo.git"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
         with (
             _clone_present(False),
@@ -121,16 +127,16 @@ class TestDTLRepoInit:
         ):
             mock_cloned = MagicMock()
             MockRepo.clone_from.return_value = mock_cloned
-            DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         MockRepo.clone_from.assert_called_once()
 
     def test_invalid_url_calls_exception(self):
         mock_args = MagicMock()
-        mock_args.url = "ftp://bad.url"
-        mock_args.branch = "master"
+        mock_args.repo_url = "ftp://bad.url"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
         with _clone_present(False), patch("core.repo.Repo"):
-            DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         mock_handle.exception.assert_called_with(
             "InvalidGitURL",
             "ftp://bad.url",
@@ -174,10 +180,10 @@ class TestDTLRepoRealGit:
     def _init_dtl(self, source, target):
         """Run DTLRepo against *source* and *target*; return its exception handler for assertions."""
         mock_args = MagicMock()
-        mock_args.url = f"file://{source}"
-        mock_args.branch = "master"
+        mock_args.repo_url = f"file://{source}"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
-        DTLRepo(mock_args, str(target), mock_handle)
+        _dtl_repo(mock_args, str(target), mock_handle)
         return mock_handle
 
     def test_clones_into_existing_empty_directory(self, tmp_path):
@@ -242,8 +248,8 @@ class TestDTLRepoPathMethods:
 
     def _make_repo(self):
         mock_args = MagicMock()
-        mock_args.url = "https://github.com/org/repo.git"
-        mock_args.branch = "master"
+        mock_args.repo_url = "https://github.com/org/repo.git"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
         with (
             _clone_present(),
@@ -255,7 +261,7 @@ class TestDTLRepoPathMethods:
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            repo = _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         return repo
 
     def test_get_relative_path(self):
@@ -277,8 +283,8 @@ class TestPullRepo:
     def test_pull_repo_invalid_origin_calls_exception(self):
         """When origin URL equals configured URL and both are invalid, exception is called."""
         mock_args = MagicMock()
-        mock_args.url = "ftp://bad"
-        mock_args.branch = "master"
+        mock_args.repo_url = "ftp://bad"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
         with (
             _clone_present(),
@@ -288,14 +294,14 @@ class TestPullRepo:
             # origin URL matches configured URL → validate origin path
             mock_git_repo.remotes.origin.url = "ftp://bad"
             MockRepo.return_value = mock_git_repo
-            DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         mock_handle.exception.assert_called()
 
     def test_pull_repo_invalid_configured_url_calls_exception(self):
         """When configured REPO_URL differs from origin and is invalid, exception is called."""
         mock_args = MagicMock()
-        mock_args.url = "ftp://bad-config"
-        mock_args.branch = "master"
+        mock_args.repo_url = "ftp://bad-config"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
         with (
             _clone_present(),
@@ -304,7 +310,7 @@ class TestPullRepo:
             mock_git_repo = MagicMock()
             mock_git_repo.remotes.origin.url = "https://github.com/org/repo.git"
             MockRepo.return_value = mock_git_repo
-            DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         mock_handle.exception.assert_any_call(
             "InvalidGitURL",
             "ftp://bad-config",
@@ -314,8 +320,8 @@ class TestPullRepo:
     def test_pull_repo_updates_remote_url_when_different(self):
         """When REPO_URL differs from origin URL, the remote is updated before fetching."""
         mock_args = MagicMock()
-        mock_args.url = "https://github.com/new-org/repo.git"
-        mock_args.branch = "main"
+        mock_args.repo_url = "https://github.com/new-org/repo.git"
+        mock_args.repo_branch = "main"
         mock_handle = MagicMock()
         with (
             _clone_present(),
@@ -327,7 +333,7 @@ class TestPullRepo:
             ref.name = "origin/main"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         assert mock_git_repo.remotes.origin.method_calls[:2] == [
             call.set_url("https://github.com/new-org/repo.git"),
             call.fetch(prune=True),
@@ -336,8 +342,8 @@ class TestPullRepo:
     def test_pull_repo_branch_not_found_calls_exception(self):
         """When the configured branch does not exist on the remote, GitBranchNotFound is reported."""
         mock_args = MagicMock()
-        mock_args.url = "https://github.com/org/repo.git"
-        mock_args.branch = "missing-branch"
+        mock_args.repo_url = "https://github.com/org/repo.git"
+        mock_args.repo_branch = "missing-branch"
         mock_handle = MagicMock()
         with (
             _clone_present(),
@@ -349,13 +355,13 @@ class TestPullRepo:
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         mock_handle.exception.assert_called_with("GitBranchNotFound", "missing-branch")
 
     def test_pull_repo_git_command_error_calls_exception(self):
         mock_args = MagicMock()
-        mock_args.url = "https://github.com/org/repo.git"
-        mock_args.branch = "master"
+        mock_args.repo_url = "https://github.com/org/repo.git"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
         with (
             _clone_present(),
@@ -365,13 +371,13 @@ class TestPullRepo:
             mock_git_repo.remotes.origin.url = "https://github.com/org/repo.git"
             mock_git_repo.remotes.origin.fetch.side_effect = git_exc.GitCommandError("fetch", 1)
             MockRepo.return_value = mock_git_repo
-            DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         mock_handle.exception.assert_called()
 
     def test_pull_repo_generic_error_calls_exception(self):
         mock_args = MagicMock()
-        mock_args.url = "https://github.com/org/repo.git"
-        mock_args.branch = "master"
+        mock_args.repo_url = "https://github.com/org/repo.git"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
         with (
             _clone_present(),
@@ -381,7 +387,7 @@ class TestPullRepo:
             mock_git_repo.remotes.origin.url = "https://github.com/org/repo.git"
             mock_git_repo.remotes.origin.fetch.side_effect = RuntimeError("network error")
             MockRepo.return_value = mock_git_repo
-            DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         mock_handle.exception.assert_called()
 
 
@@ -390,28 +396,28 @@ class TestCloneRepo:
 
     def test_clone_repo_git_error_calls_exception(self):
         mock_args = MagicMock()
-        mock_args.url = "https://github.com/org/repo.git"
-        mock_args.branch = "master"
+        mock_args.repo_url = "https://github.com/org/repo.git"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
         with (
             _clone_present(False),
             patch("core.repo.Repo") as MockRepo,
         ):
             MockRepo.clone_from.side_effect = git_exc.GitCommandError("clone", 128)
-            DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         mock_handle.exception.assert_called()
 
     def test_clone_repo_generic_error_calls_exception(self):
         mock_args = MagicMock()
-        mock_args.url = "https://github.com/org/repo.git"
-        mock_args.branch = "master"
+        mock_args.repo_url = "https://github.com/org/repo.git"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
         with (
             _clone_present(False),
             patch("core.repo.Repo") as MockRepo,
         ):
             MockRepo.clone_from.side_effect = RuntimeError("failed")
-            DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         mock_handle.exception.assert_called()
 
 
@@ -421,8 +427,8 @@ class TestGetDevices:
     def _make_repo(self, tmp_path):
         (tmp_path / "repo").mkdir()
         mock_args = MagicMock()
-        mock_args.url = "https://github.com/org/repo.git"
-        mock_args.branch = "master"
+        mock_args.repo_url = "https://github.com/org/repo.git"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
         with patch("core.repo.Repo") as MockRepo:
             mock_git_repo = MagicMock()
@@ -431,7 +437,7 @@ class TestGetDevices:
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            repo = DTLRepo(mock_args, str(tmp_path / "repo"), mock_handle)
+            repo = _dtl_repo(mock_args, str(tmp_path / "repo"), mock_handle)
         return repo
 
     def test_get_devices_all_vendors(self, tmp_path):
@@ -470,8 +476,8 @@ class TestDiscoverVendors:
     def _make_repo(self, tmp_path):
         (tmp_path / "repo").mkdir()
         mock_args = MagicMock()
-        mock_args.url = "https://github.com/org/repo.git"
-        mock_args.branch = "master"
+        mock_args.repo_url = "https://github.com/org/repo.git"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
         with patch("core.repo.Repo") as MockRepo:
             mock_git_repo = MagicMock()
@@ -480,7 +486,7 @@ class TestDiscoverVendors:
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            repo = DTLRepo(mock_args, str(tmp_path / "repo"), mock_handle)
+            repo = _dtl_repo(mock_args, str(tmp_path / "repo"), mock_handle)
         return repo
 
     def test_discovers_vendors_from_single_path(self, tmp_path):
@@ -633,8 +639,8 @@ class TestParseFilesExtended:
 
     def _make_repo(self):
         mock_args = MagicMock()
-        mock_args.url = "https://github.com/org/repo.git"
-        mock_args.branch = "master"
+        mock_args.repo_url = "https://github.com/org/repo.git"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
         with (
             patch("os.path.isdir", return_value=True),
@@ -646,7 +652,7 @@ class TestParseFilesExtended:
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            repo = _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         return repo, mock_handle
 
     def test_error_files_logged_and_skipped(self):
@@ -673,14 +679,14 @@ def test_slug_format():
     # However, creating DTLRepo instance requires args, repo_path, handler.
 
     mock_args = MagicMock()
-    mock_args.url = "http://example.com"
-    mock_args.branch = "master"
+    mock_args.repo_url = "http://example.com"
+    mock_args.repo_branch = "master"
 
     mock_handle = MagicMock()
 
     # We mock 'os.path.isdir' to avoid git operations in __init__
     with patch("os.path.isdir", return_value=True), patch("core.repo.Repo"):
-        repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+        repo = _dtl_repo(mock_args, "/tmp/repo", mock_handle)
 
         assert repo.slug_format("Cisco Systems") == "cisco-systems"
         assert repo.slug_format("HP Enterprise") == "hp-enterprise"
@@ -689,12 +695,12 @@ def test_slug_format():
 
 def test_parse_files():
     mock_args = MagicMock()
-    mock_args.url = "http://example.com"
-    mock_args.branch = "master"
+    mock_args.repo_url = "http://example.com"
+    mock_args.repo_branch = "master"
     mock_handle = MagicMock()
 
     with patch("os.path.isdir", return_value=True), patch("core.repo.Repo"):
-        repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+        repo = _dtl_repo(mock_args, "/tmp/repo", mock_handle)
 
         # Mock file content
         yaml_content = """
@@ -724,12 +730,12 @@ part_number: C9300-24T-A
 
 def test_parse_files_missing_slug_does_not_crash():
     mock_args = MagicMock()
-    mock_args.url = "http://example.com"
-    mock_args.branch = "master"
+    mock_args.repo_url = "http://example.com"
+    mock_args.repo_branch = "master"
     mock_handle = MagicMock()
 
     with patch("os.path.isdir", return_value=True), patch("core.repo.Repo"):
-        repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+        repo = _dtl_repo(mock_args, "/tmp/repo", mock_handle)
 
         yaml_content = """
 manufacturer: Cisco
@@ -1173,8 +1179,8 @@ class TestGetRacksPath:
 
     def _make_repo(self):
         mock_args = MagicMock()
-        mock_args.url = "https://github.com/org/repo.git"
-        mock_args.branch = "master"
+        mock_args.repo_url = "https://github.com/org/repo.git"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
         with (
             patch("os.path.isdir", return_value=True),
@@ -1186,7 +1192,7 @@ class TestGetRacksPath:
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            repo = _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         return repo
 
     def test_get_racks_path_ends_with_rack_types(self):
@@ -1226,8 +1232,8 @@ class TestParseFilesKeyboardInterrupt:
 
     def _make_repo(self):
         mock_args = MagicMock()
-        mock_args.url = "https://github.com/org/repo.git"
-        mock_args.branch = "master"
+        mock_args.repo_url = "https://github.com/org/repo.git"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
         with (
             patch("os.path.isdir", return_value=True),
@@ -1239,7 +1245,7 @@ class TestParseFilesKeyboardInterrupt:
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            repo = _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         return repo
 
     def test_keyboard_interrupt_is_reraised(self):
@@ -1262,8 +1268,8 @@ class TestParseFilesKeyErrorDedup:
 
     def _make_repo(self):
         mock_args = MagicMock()
-        mock_args.url = "https://github.com/org/repo.git"
-        mock_args.branch = "master"
+        mock_args.repo_url = "https://github.com/org/repo.git"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
         with (
             patch("os.path.isdir", return_value=True),
@@ -1275,7 +1281,7 @@ class TestParseFilesKeyErrorDedup:
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            repo = _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         return repo
 
     def test_item_without_manufacturer_is_included_without_dedup(self):
@@ -1300,8 +1306,8 @@ class TestParseFilesDuplicateLogging:
 
     def _make_repo(self):
         mock_args = MagicMock()
-        mock_args.url = "https://github.com/org/repo.git"
-        mock_args.branch = "master"
+        mock_args.repo_url = "https://github.com/org/repo.git"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
         with (
             patch("os.path.isdir", return_value=True),
@@ -1313,7 +1319,7 @@ class TestParseFilesDuplicateLogging:
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            repo = _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         return repo, mock_handle
 
     def test_duplicate_key_logs_warning_and_records_definition(self):
@@ -1364,8 +1370,8 @@ class TestResolveSlugFiles:
 
     def _make_repo(self):
         mock_args = MagicMock()
-        mock_args.url = "https://github.com/org/repo.git"
-        mock_args.branch = "master"
+        mock_args.repo_url = "https://github.com/org/repo.git"
+        mock_args.repo_branch = "master"
         mock_handle = MagicMock()
         with (
             patch("os.path.isdir", return_value=True),
@@ -1377,7 +1383,7 @@ class TestResolveSlugFiles:
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            repo = DTLRepo(mock_args, "/tmp/repo", mock_handle)
+            repo = _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         return repo
 
     def test_returns_none_when_pickle_missing(self, tmp_path):

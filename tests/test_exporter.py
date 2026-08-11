@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 import yaml
 
+from core.config import RunConfig
 from core.export import (
     ExportItem,
     Exporter,
@@ -34,12 +35,17 @@ class _Stub:
 
 
 def _make_settings(tmp_path):
-    s = MagicMock()
-    s.NETBOX_URL = "http://localhost:8000/"
-    s.NETBOX_TOKEN = "test-token"
-    s.IGNORE_SSL_ERRORS = False
-    s.REPO_PATH = str(tmp_path / "repo")
-    return s
+    """Build a real RunConfig, so the exporter reads the same value the CLI hands it."""
+    return RunConfig(
+        netbox_url="http://localhost:8000/",
+        netbox_token="test-token",
+        ignore_ssl_errors=False,
+        graphql_page_size=5000,
+        preload_threads=8,
+        repo_url="https://example.com/repo.git",
+        repo_branch="master",
+        repo_path=str(tmp_path / "repo"),
+    )
 
 
 def _make_handle():

@@ -554,49 +554,26 @@ class TestCompareComponentPropertiesMappings:
 
 
 # ---------------------------------------------------------------------------
-# _load_device_type_properties exception fallback (lines 109-110)
+# _load_device_type_properties schema handling
 # ---------------------------------------------------------------------------
 
 
-class TestLoadDeviceTypePropertiesFallback:
-    """Tests for the exception fallback in _load_device_type_properties."""
+class TestLoadDeviceTypeProperties:
+    """The loader reads the schema under the configured repo path."""
 
-    def test_import_error_during_load_returns_fallback_list(self):
-        from unittest.mock import patch
-
+    def test_a_repo_without_a_schema_falls_back_to_the_hardcoded_list(self, tmp_path):
         from core.change_detector import (
             _DEVICE_TYPE_PROPERTIES_FALLBACK,
             _load_device_type_properties,
         )
 
-        with patch(
-            "core.change_detector.load_properties_for_type",
-            side_effect=ImportError("settings module unavailable"),
-        ):
-            result = _load_device_type_properties()
+        assert _load_device_type_properties(str(tmp_path)) == list(_DEVICE_TYPE_PROPERTIES_FALLBACK)
 
-        assert result == list(_DEVICE_TYPE_PROPERTIES_FALLBACK)
-
-    def test_attribute_error_during_load_returns_fallback_list(self):
+    def test_a_reader_failure_propagates(self):
+        """The loader used to swallow ImportError and AttributeError; nothing may silence it now."""
         from unittest.mock import patch
 
-        from core.change_detector import (
-            _DEVICE_TYPE_PROPERTIES_FALLBACK,
-            _load_device_type_properties,
-        )
-
-        with patch(
-            "core.change_detector.load_properties_for_type",
-            side_effect=AttributeError("REPO_PATH not set"),
-        ):
-            result = _load_device_type_properties()
-
-        assert result == list(_DEVICE_TYPE_PROPERTIES_FALLBACK)
-
-    def test_unexpected_exception_propagates(self):
-        """Non-import/attribute errors must not be silenced."""
         import pytest
-        from unittest.mock import patch
 
         from core.change_detector import _load_device_type_properties
 
@@ -605,7 +582,7 @@ class TestLoadDeviceTypePropertiesFallback:
             side_effect=RuntimeError("schema unavailable"),
         ):
             with pytest.raises(RuntimeError, match="schema unavailable"):
-                _load_device_type_properties()
+                _load_device_type_properties("/nonexistent")
 
 
 # ---------------------------------------------------------------------------

@@ -9,9 +9,8 @@ When ``NETBOX_URL`` or ``NETBOX_TOKEN`` are absent every test in the package is
 marked as skipped during collection, so the suite shows "s" markers instead of
 errors.
 
-Note: the env check reads ``os.environ``, which ``core.settings.load_dotenv()``
-(run when the test module is imported during collection) populates from any
-local ``.env``.  So a developer with a configured ``.env`` will have these
+Note: the env check reads ``os.environ``, which ``core.config.resolve_run_config()``
+populates from any local ``.env``.  So a developer with a configured ``.env`` will have these
 tests run even with the shell vars unset; the skip path fires only in a clean
 checkout (e.g. CI before its real ``NETBOX_*`` vars are exported).
 """
