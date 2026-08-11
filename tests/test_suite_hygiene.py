@@ -19,10 +19,12 @@ def _discover(root, patterns, pruned):
 
 def _collected_test_files():
     """Return the test files pytest collects, following python_files and norecursedirs."""
-    options = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["pytest"]["ini_options"]
+    config = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    options = config["tool"]["pytest"]["ini_options"]
     patterns = options.get("python_files", _DEFAULT_PYTHON_FILES)
     if isinstance(patterns, str):
         patterns = patterns.split()
+    # norecursedirs entries are read as paths; pytest also accepts globs, which this ignores.
     pruned = [(_ROOT / entry).resolve() for entry in options.get("norecursedirs", [])]
     return _discover(_TESTS_DIR, patterns, pruned)
 

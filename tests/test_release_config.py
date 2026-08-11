@@ -19,7 +19,9 @@ def _allowed_tags():
 def _pr_title_types():
     """Return the commit types the PR-title check accepts, from the workflow."""
     workflow = yaml.safe_load(_PR_TITLE_WORKFLOW.read_text(encoding="utf-8"))
-    step = workflow["jobs"]["conventional-commits"]["steps"][0]
+    steps = workflow["jobs"]["conventional-commits"]["steps"]
+    # Found by action rather than by position, so an added step does not silently pass this.
+    step = next(s for s in steps if s.get("uses", "").startswith("amannn/action-semantic-pull-request@"))
     return step["with"]["types"].split()
 
 
