@@ -1,5 +1,7 @@
 """Tests for core/export.py — Exporter class."""
 
+from dataclasses import replace
+
 import pytest
 from unittest.mock import MagicMock, patch
 import yaml
@@ -351,6 +353,18 @@ class TestCanonMfrSlug:
 
     def test_empty_dict_returns_empty(self):
         assert _canon_mfr_slug({}) == ""
+
+
+class TestExporterHonoursTheConfiguredPageSize:
+    """A server that caps GraphQL page size caps it for export too, not only for import."""
+
+    def test_the_graphql_client_is_built_with_the_configured_page_size(self, tmp_path):
+        """GRAPHQL_PAGE_SIZE exists because a server rejected the default; export hits that server too."""
+        settings = replace(_make_settings(tmp_path), graphql_page_size=250)
+
+        exporter = Exporter(settings, _make_handle(), str(tmp_path / "extra"), False, None)
+
+        assert exporter.graphql.DEFAULT_PAGE_SIZE == 250
 
 
 class TestExporterRequiresTheLibrary:

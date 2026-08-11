@@ -208,6 +208,7 @@ class Exporter:
             url=config.netbox_url,
             token=config.netbox_token,
             ignore_ssl=config.ignore_ssl_errors,
+            page_size=config.graphql_page_size,
         )
         self._module_image_details: Optional[dict] = None
 
