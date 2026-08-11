@@ -2,6 +2,58 @@
 
 <!-- version list -->
 
+## v1.8.0 (2026-08-11)
+
+### Bug Fixes
+
+- Document docker usage and make a mounted repo volume work (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+- Document docker usage and make a mounted repo volume work (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+- Let export runs tolerate slugs from the environment (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+- Document digest pinning and cover the export slug clearing (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+- Present the bind-mount ownership modes as alternatives (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+- Stop the export comparing netbox against an absent library (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+- Treat a worktree or submodule checkout as an existing clone (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+- Name the two ways out in the absent-library error (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+
+
+### Continuous Integration
+
+- Check the pr title parses as a conventional commit (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+- Let dependabot derive the commit scope (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+
+
+### Documentation
+
+- Correct the host.docker.internal guidance for linux (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+- Document the export-diff arguments (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+
+
+### Features
+
+- Add a container entrypoint so flags can be passed directly (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+
+
+### Refactoring
+
+- Tidy the docker volume layer and the real-git test helper (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+
+
+### Testing
+
+- Pin the git identity used by the real-git repo fixture (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+- Fail when the readme arguments table drifts from the parser (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+- Restore the lost def header that merged two tests (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+- Assert the exporter receives the parsed export options (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+- Make the docker smoke test detect a silently broken image (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+- Scan the files pytest collects, not a hand-written glob (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+- Harden the two new config guards (#107, [`8318440`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/8318440265eedb9c0b9a92f423c25c915819af60))
+
+
+
+### Contributors
+
+@marcinpsk
+
 ## v1.7.2 (2026-08-11)
 
 ### Bug Fixes
