@@ -6,6 +6,7 @@ import os
 from contextlib import contextmanager
 
 from core.config import ConfigError, resolve_run_config
+from core.errors import FatalError
 from core.netbox_api import NetBox, _fmt_connection_error
 from core.log_handler import LogHandler
 from core.repo import DTLRepo
@@ -514,6 +515,7 @@ def _process_device_types(
         netbox.device_types,
         handle,
         remove_unmanaged_types=config.remove_unmanaged_types,
+        verbose=config.verbose,
     )
     change_report = detector.detect_changes(
         device_types,
@@ -983,9 +985,29 @@ def main():
         raise SystemExit(str(exc))
     try:
         return _run(config)
+    except FatalError as exc:
+        if config.verbose and exc.stack_trace:
+            print(exc.stack_trace)
+        raise SystemExit(str(exc))
     except requests.exceptions.ConnectionError as exc:
         print(
             f"[{datetime.now().strftime('%H:%M:%S')}] Error: {_fmt_connection_error(config.netbox_url, exc)}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    except GraphQLError as exc:
+        print(
+            f"[{datetime.now().strftime('%H:%M:%S')}] Error: NetBox GraphQL request failed — {exc}\n"
+            f"[{datetime.now().strftime('%H:%M:%S')}] This may be a temporary connectivity issue. "
+            "Check that NetBox is reachable and try again.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    except NetBoxRequestError as exc:
+        print(
+            f"[{datetime.now().strftime('%H:%M:%S')}] Error: NetBox REST API request failed — {exc}\n"
+            f"[{datetime.now().strftime('%H:%M:%S')}] Check that NetBox is reachable and"
+            " the API token has the required permissions.",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -999,7 +1021,7 @@ def _run(config):
     """
     startTime = datetime.now()
 
-    handle = LogHandler(config)
+    handle = LogHandler(config.verbose)
     for notice in config.notices:
         handle.log(notice)
 
@@ -1078,19 +1100,3 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         print(f"[{datetime.now().strftime('%H:%M:%S')}] Interrupted by user (Ctrl-C). Exiting.")
         raise SystemExit(130)
-    except GraphQLError as exc:
-        print(
-            f"[{datetime.now().strftime('%H:%M:%S')}] Error: NetBox GraphQL request failed — {exc}\n"
-            f"[{datetime.now().strftime('%H:%M:%S')}] This may be a temporary connectivity issue. "
-            "Check that NetBox is reachable and try again.",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
-    except NetBoxRequestError as exc:
-        print(
-            f"[{datetime.now().strftime('%H:%M:%S')}] Error: NetBox REST API request failed — {exc}\n"
-            f"[{datetime.now().strftime('%H:%M:%S')}] Check that NetBox is reachable and"
-            " the API token has the required permissions.",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)

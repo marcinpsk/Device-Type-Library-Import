@@ -796,7 +796,7 @@ class TestMain:
             assert mock_nb.verify_images is True
 
     def test_missing_env_var_triggers_system_exit(self, nb_dt_import):
-        """A missing mandatory env var calls handle.exception which exits."""
+        """A missing mandatory environment variable exits from main()."""
         with (
             patch.object(sys, "argv", ["nb-dt-import.py", "--only-new"]),
             patch("nb_dt_import.DTLRepo"),
@@ -1462,6 +1462,37 @@ class TestEntryPointErrorHandlers:
 
         assert exc_info.value.code == 1
         assert "NetBox REST API request failed" in capsys.readouterr().err
+
+
+class TestFatalErrorPolicy:
+    """Tests for the one fatal-error rendering boundary in main()."""
+
+    def test_main_turns_a_fatal_error_into_system_exit(self, nb_dt_import, make_config, capsys):
+        from core.errors import UnknownError
+
+        error = UnknownError("Git Repository Error", stack_trace="diagnostic detail")
+        with (
+            patch.object(nb_dt_import, "resolve_run_config", return_value=make_config(verbose=False)),
+            patch.object(nb_dt_import, "_run", side_effect=error),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                nb_dt_import.main()
+
+        assert str(exc_info.value) == 'An unknown error occurred: "Git Repository Error"'
+        assert capsys.readouterr().out == ""
+
+    def test_main_prints_fatal_diagnostic_detail_only_in_verbose_mode(self, nb_dt_import, make_config, capsys):
+        from core.errors import UnknownError
+
+        error = UnknownError("NetBox API Error", stack_trace="diagnostic detail")
+        with (
+            patch.object(nb_dt_import, "resolve_run_config", return_value=make_config(verbose=True)),
+            patch.object(nb_dt_import, "_run", side_effect=error),
+        ):
+            with pytest.raises(SystemExit):
+                nb_dt_import.main()
+
+        assert capsys.readouterr().out == "diagnostic detail\n"
 
 
 class TestExportDiffFlags:

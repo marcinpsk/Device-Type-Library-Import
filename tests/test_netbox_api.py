@@ -9,7 +9,9 @@ from unittest.mock import MagicMock, patch
 from core.component_registry import BY_YAML_KEY, COMPONENT_TYPES
 from core.netbox_api import (
     NetBox,
+    NetBoxError,
     DeviceTypes,
+    SSLVerificationError,
     _delete_image_attachment,
     _FrontPortRecordWithMappings,
 )
@@ -180,6 +182,28 @@ def test_device_types_create_interfaces(mock_settings, mock_pynetbox, graphql_cl
     assert len(call_args) == 1
     assert call_args[0]["name"] == "GigabitEthernet1"
     assert call_args[0]["device_type"] == 1
+
+
+def test_create_generic_counts_the_created_list_at_the_caller(mock_pynetbox, make_device_types):
+    """The API caller owns the created count, while the sink only logs records."""
+    from collections import Counter
+    from types import SimpleNamespace
+
+    from core.log_handler import LogHandler
+
+    netbox = mock_pynetbox.api.return_value
+    created = [
+        SimpleNamespace(name="eth0", type="virtual", device_type=SimpleNamespace(id=1), id=10),
+        SimpleNamespace(name="eth1", type="virtual", device_type=SimpleNamespace(id=1), id=11),
+    ]
+    netbox.dcim.interface_templates.create.return_value = created
+    counter = Counter()
+    device_types = make_device_types(nb_api=netbox, handle=LogHandler(False), counter=counter)
+    device_types.components.record("interface_templates", "device", 1, {})
+
+    device_types._create_generic(BY_YAML_KEY["interfaces"], [{"name": "eth0"}, {"name": "eth1"}], 1)
+
+    assert counter["components_added"] == len(created)
 
 
 def test_redundant_image_upload(mock_settings, mock_pynetbox, mock_handle):
@@ -1433,15 +1457,22 @@ class TestCreateModuleBays:
 class TestConnectApiException:
     """Tests for connect_api exception handling."""
 
-    def test_exception_is_caught_and_logged(self, mock_settings, mock_pynetbox, mock_handle):
-        """When pynetbox.api raises, handle.exception should be called."""
-        mock_pynetbox.api.side_effect = Exception("connection failed")
-        # NetBox.__init__ calls connect_api; the exception should be swallowed.
-        try:
-            NetBox(mock_settings, mock_handle)
-        except Exception:
-            pass
-        mock_handle.exception.assert_called()
+    def test_connection_setup_raises_a_typed_unknown_error(self, mock_settings, mock_pynetbox):
+        """A setup failure carries its diagnostic detail to the entry point."""
+        from core.errors import UnknownError
+        from core.log_handler import LogHandler
+
+        mock_pynetbox.api.side_effect = RuntimeError("connection failed")
+        nb = NetBox.__new__(NetBox)
+        nb.url = mock_settings.netbox_url
+        nb.token = mock_settings.netbox_token
+        nb.ignore_ssl = False
+        nb.handle = LogHandler(False)
+
+        with pytest.raises(UnknownError) as exc_info:
+            nb.connect_api()
+
+        assert exc_info.value.stack_trace.args == ("connection failed",)
 
 
 # ---------------------------------------------------------------------------
@@ -5508,7 +5539,7 @@ class TestNetBoxImageHelperFunctions:
             side_effect=_requests.exceptions.ConnectionError("drop")
         )
 
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(NetBoxError) as exc_info:
             NetBox(mock_settings, mock_handle)
 
         exc_msg = str(exc_info.value.args[0]) if exc_info.value.args else ""
@@ -5810,26 +5841,28 @@ class TestAdditionalNetBoxCoverage:
 
         assert _load_image_hash_cache(str(cache_file)) == {}
 
-    def test_init_exits_on_graphql_error_from_get_manufacturers(self, mock_settings, mock_pynetbox, mock_handle):
+    def test_init_raises_typed_graphql_error_from_get_manufacturers(self, mock_settings, mock_pynetbox, mock_handle):
         from core.graphql_client import GraphQLError
 
         mock_pynetbox.api.return_value.version = "3.5"
 
         with patch.object(NetBox, "get_manufacturers", side_effect=GraphQLError("bad query")):
-            with pytest.raises(SystemExit, match="GraphQL error: bad query"):
+            with pytest.raises(NetBoxError, match="GraphQL error: bad query"):
                 NetBox(mock_settings, mock_handle)
 
-    def test_init_exits_when_device_types_initialization_fails(self, mock_settings, mock_pynetbox, mock_handle):
+    def test_init_raises_typed_error_when_device_types_initialization_fails(
+        self, mock_settings, mock_pynetbox, mock_handle
+    ):
         mock_pynetbox.api.return_value.version = "3.5"
 
         with (
             patch.object(NetBox, "get_manufacturers", return_value=[]),
             patch("core.netbox_api.DeviceTypes", side_effect=RuntimeError("boom")),
         ):
-            with pytest.raises(SystemExit, match="Error initializing device types: boom"):
+            with pytest.raises(NetBoxError, match="Error initializing device types: boom"):
                 NetBox(mock_settings, mock_handle)
 
-    def test_verify_compatibility_exits_on_proxy_error(self, mock_settings, mock_handle):
+    def test_verify_compatibility_raises_typed_proxy_error(self, mock_settings, mock_handle):
         import requests
 
         class BadAPI:
@@ -5842,8 +5875,27 @@ class TestAdditionalNetBoxCoverage:
         nb.handle = mock_handle
         nb.netbox = BadAPI()
 
-        with pytest.raises(SystemExit, match="Proxy error while connecting to NetBox"):
+        with pytest.raises(NetBoxError, match="Proxy error while connecting to NetBox"):
             nb.verify_compatibility()
+
+    def test_verify_compatibility_raises_the_ssl_catalogue_error(self, mock_settings, mock_handle):
+        import requests
+
+        class BadAPI:
+            @property
+            def version(self):
+                raise requests.exceptions.SSLError("certificate verify failed")
+
+        nb = NetBox.__new__(NetBox)
+        nb.url = mock_settings.netbox_url
+        nb.ignore_ssl = False
+        nb.handle = mock_handle
+        nb.netbox = BadAPI()
+
+        with pytest.raises(SSLVerificationError) as exc_info:
+            nb.verify_compatibility()
+
+        assert str(exc_info.value).startswith("SSL verification failed. IGNORE_SSL_ERRORS is False.")
 
     def test_verify_compatibility_formats_request_error_details(self, mock_settings, mock_handle):
         import pynetbox as real_pynb
@@ -5864,7 +5916,7 @@ class TestAdditionalNetBoxCoverage:
         nb.handle = mock_handle
         nb.netbox = BadAPI()
 
-        with pytest.raises(SystemExit) as exc_info:
+        with pytest.raises(NetBoxError) as exc_info:
             nb.verify_compatibility()
 
         message = str(exc_info.value)

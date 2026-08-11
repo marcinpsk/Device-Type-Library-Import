@@ -1,62 +1,35 @@
-import pytest
 from types import SimpleNamespace
+from inspect import signature
 from unittest.mock import MagicMock, patch
 
 from core.log_handler import LogHandler
+from core.graphql_client import NetBoxGraphQLClient
+from core.netbox_api import DeviceTypes, NetBox
+from core.repo import DTLRepo
 
 
-class TestException:
-    """Tests for LogHandler.exception() error handling and SystemExit behaviour."""
+class TestConfiguration:
+    """Tests for the sink's explicit verbose flag."""
 
-    def test_environment_error_exits(self):
-        handle = LogHandler(SimpleNamespace(verbose=False))
-        with pytest.raises(SystemExit) as exc_info:
-            handle.exception("EnvironmentError", "NETBOX_URL")
-        assert "NETBOX_URL" in str(exc_info.value)
+    def test_constructor_takes_a_plain_verbose_flag(self):
+        handle = LogHandler(True)
 
-    def test_ssl_error_exits(self):
-        handle = LogHandler(SimpleNamespace(verbose=False))
-        with pytest.raises(SystemExit):
-            handle.exception("SSLError", "False")
+        assert handle.verbose is True
+        assert not hasattr(handle, "args")
+        assert not hasattr(handle, "exception")
 
-    def test_git_command_error_exits(self):
-        handle = LogHandler(SimpleNamespace(verbose=False))
-        with pytest.raises(SystemExit):
-            handle.exception("GitCommandError", "my-repo")
-
-    def test_git_invalid_repo_exits(self):
-        handle = LogHandler(SimpleNamespace(verbose=False))
-        with pytest.raises(SystemExit):
-            handle.exception("GitInvalidRepositoryError", "my-repo")
-
-    def test_invalid_git_url_exits(self):
-        handle = LogHandler(SimpleNamespace(verbose=False))
-        with pytest.raises(SystemExit):
-            handle.exception("InvalidGitURL", "ftp://bad")
-
-    def test_generic_exception_exits(self):
-        handle = LogHandler(SimpleNamespace(verbose=False))
-        with pytest.raises(SystemExit):
-            handle.exception("Exception", "something bad")
-
-    def test_verbose_prints_stack_trace(self):
-        handle = LogHandler(SimpleNamespace(verbose=True))
-        with patch("builtins.print") as mock_print, pytest.raises(SystemExit):
-            handle.exception("Exception", "err", stack_trace="Traceback...")
-        mock_print.assert_called_once_with("Traceback...")
-
-    def test_verbose_false_does_not_print_stack_trace(self):
-        handle = LogHandler(SimpleNamespace(verbose=False))
-        with patch("builtins.print") as mock_print, pytest.raises(SystemExit):
-            handle.exception("Exception", "err", stack_trace="Traceback...")
-        mock_print.assert_not_called()
+    def test_consumers_use_one_parameter_name_for_the_sink(self):
+        assert list(signature(DTLRepo).parameters)[1] == "handle"
+        assert list(signature(NetBox).parameters)[1] == "handle"
+        assert list(signature(DeviceTypes).parameters)[1] == "handle"
+        assert "handle" in signature(NetBoxGraphQLClient).parameters
 
 
 class TestSetConsole:
     """Tests for TestSetConsole."""
 
     def test_set_console_stores_instance(self):
-        handle = LogHandler(SimpleNamespace(verbose=False))
+        handle = LogHandler(False)
         console = MagicMock()
         handle.set_console(console)
         assert handle.console is console
@@ -66,7 +39,7 @@ class TestEmit:
     """Tests for TestEmit."""
 
     def test_emit_uses_console_print_when_set(self):
-        handle = LogHandler(SimpleNamespace(verbose=False))
+        handle = LogHandler(False)
         console = MagicMock()
         handle.console = console
         with patch.object(handle, "_timestamp", return_value="00:00:00"):
@@ -74,7 +47,7 @@ class TestEmit:
         console.print.assert_called_once_with("[00:00:00] test message", markup=False)
 
     def test_emit_uses_builtin_print_when_no_console(self):
-        handle = LogHandler(SimpleNamespace(verbose=False))
+        handle = LogHandler(False)
         with (
             patch.object(handle, "_timestamp", return_value="00:00:00"),
             patch("builtins.print") as mock_print,
@@ -83,7 +56,7 @@ class TestEmit:
         mock_print.assert_called_once_with("[00:00:00] test message")
 
     def test_emit_defers_when_in_progress_group(self):
-        handle = LogHandler(SimpleNamespace(verbose=False))
+        handle = LogHandler(False)
         handle.start_progress_group()
         console = MagicMock()
         handle.console = console
@@ -92,7 +65,7 @@ class TestEmit:
         console.print.assert_not_called()
 
     def test_end_progress_group_uses_console(self):
-        handle = LogHandler(SimpleNamespace(verbose=False))
+        handle = LogHandler(False)
         console = MagicMock()
         handle.console = console
         handle.start_progress_group()
@@ -106,7 +79,7 @@ class TestEndProgressGroupEdgeCases:
     """Tests for TestEndProgressGroupEdgeCases."""
 
     def test_end_at_zero_depth_is_noop(self):
-        handle = LogHandler(SimpleNamespace(verbose=False))
+        handle = LogHandler(False)
         handle.end_progress_group()
         assert handle._defer_depth == 0
 
@@ -115,7 +88,7 @@ class TestVerboseLog:
     """Tests for TestVerboseLog."""
 
     def test_verbose_logs_when_enabled(self):
-        handle = LogHandler(SimpleNamespace(verbose=True))
+        handle = LogHandler(True)
         with (
             patch.object(handle, "_timestamp", return_value="00:00:00"),
             patch("builtins.print") as mock_print,
@@ -124,61 +97,35 @@ class TestVerboseLog:
         mock_print.assert_called_once_with("[00:00:00] verbose message")
 
     def test_verbose_does_not_log_when_disabled(self):
-        handle = LogHandler(SimpleNamespace(verbose=False))
+        handle = LogHandler(False)
         with patch("builtins.print") as mock_print:
             handle.verbose_log("should not appear")
         mock_print.assert_not_called()
 
 
-class TestLogDevicePortsCreated:
-    """Tests for TestLogDevicePortsCreated."""
+class TestLogPortsCreated:
+    """Tests for logging created ports for either parent type."""
 
-    def test_returns_count(self):
-        handle = LogHandler(SimpleNamespace(verbose=False))
-        ports = []
-        for i in range(2):
-            # No `type` attr → exercises the `hasattr(port, 'type')` else-branch.
-            p = SimpleNamespace(name=f"port{i}", device_type=SimpleNamespace(id=1), id=i)
-            ports.append(p)
-        result = handle.log_device_ports_created(ports, "Interface")
-        assert result == 2
-
-    def test_returns_zero_for_none(self):
-        handle = LogHandler(SimpleNamespace(verbose=False))
-        assert handle.log_device_ports_created(None) == 0
-
-    def test_verbose_logs_each_port(self):
-        handle = LogHandler(SimpleNamespace(verbose=True))
+    def test_device_port_logging_does_not_return_a_count(self):
+        handle = LogHandler(True)
         port = SimpleNamespace(name="eth0", type="virtual", device_type=SimpleNamespace(id=5), id=10)
         with patch.object(handle, "_emit") as mock_emit:
-            handle.log_device_ports_created([port], "Interface")
-        assert mock_emit.called
+            result = handle.log_ports_created([port], "device", "Interface")
 
+        assert result is None
+        mock_emit.assert_called_once()
 
-class TestLogModulePortsCreated:
-    """Tests for TestLogModulePortsCreated."""
-
-    def test_returns_count(self):
-        handle = LogHandler(SimpleNamespace(verbose=False))
-        # No `type` attr → exercises the `hasattr(port, 'type')` else-branch.
-        port = SimpleNamespace(name="port", module_type=SimpleNamespace(id=1), id=1)
-        result = handle.log_module_ports_created([port], "Interface")
-        assert result == 1
-
-    def test_returns_zero_for_none(self):
-        handle = LogHandler(SimpleNamespace(verbose=False))
-        assert handle.log_module_ports_created(None) == 0
-
-    def test_verbose_logs_each_port(self):
-        handle = LogHandler(SimpleNamespace(verbose=True))
+    def test_module_port_logging_uses_the_module_parent(self):
+        handle = LogHandler(True)
         port = SimpleNamespace(name="xe-0/0/0", type="10gbase-x-sfpp", module_type=SimpleNamespace(id=3), id=7)
         with patch.object(handle, "_emit") as mock_emit:
-            handle.log_module_ports_created([port], "Interface")
-        assert mock_emit.called
+            handle.log_ports_created([port], "module", "Interface")
+
+        assert " - 3 - 7" in mock_emit.call_args.args[0]
 
 
 def test_progress_group_buffers_logs_until_end():
-    handle = LogHandler(SimpleNamespace(verbose=False))
+    handle = LogHandler(False)
 
     with (
         patch.object(handle, "_timestamp", return_value="12:00:00"),
@@ -194,7 +141,7 @@ def test_progress_group_buffers_logs_until_end():
 
 
 def test_progress_group_supports_nested_blocks():
-    handle = LogHandler(SimpleNamespace(verbose=False))
+    handle = LogHandler(False)
 
     with (
         patch.object(handle, "_timestamp", return_value="12:00:00"),

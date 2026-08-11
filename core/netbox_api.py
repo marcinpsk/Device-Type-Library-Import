@@ -10,7 +10,6 @@ import time
 import pynetbox
 import requests
 import os
-from sys import exit as system_exit
 import glob
 from pathlib import Path
 
@@ -25,6 +24,7 @@ from core.component_registry import (
     MODULE_TYPE_COMPONENTS,
 )
 from core.formatting import log_property_diffs
+from core.errors import FatalError, UnknownError
 from core.graphql_client import GraphQLError, NetBoxGraphQLClient
 from core.normalization import values_equal
 from core.outcomes import EntityKind, Outcome, OutcomeRegistry
@@ -33,6 +33,22 @@ from core.update_failure_resolver import (
     FailureKind,
     classify_device_type_update_failure,
 )
+
+
+class SSLVerificationError(FatalError):
+    """A TLS certificate verification failure."""
+
+    def __init__(self, ignore_ssl_errors: bool, stack_trace=None):
+        """Report the active TLS verification setting."""
+        super().__init__(
+            f"SSL verification failed. IGNORE_SSL_ERRORS is {ignore_ssl_errors}. "
+            "Set IGNORE_SSL_ERRORS to True if you want to ignore this error. EXITING.",
+            stack_trace,
+        )
+
+
+class NetBoxError(FatalError):
+    """A fatal error reported by the NetBox integration."""
 
 
 def _build_auth_header(token):
@@ -430,6 +446,7 @@ class NetBox:
         self.url = config.netbox_url
         self.token = config.netbox_token
         self.repo_path = config.repo_path
+        self.verbose = config.verbose
         self.handle = handle
         self.netbox = None
         self.ignore_ssl = config.ignore_ssl_errors
@@ -464,13 +481,13 @@ class NetBox:
             self.url,
             self.token,
             self.ignore_ssl,
-            log_handler=self.handle,
+            handle=self.handle,
             page_size=config.graphql_page_size,
         )
         try:
             self.existing_manufacturers = self.get_manufacturers()
         except GraphQLError as e:
-            system_exit(f"GraphQL error: {e}")
+            raise NetBoxError(f"GraphQL error: {e}") from e
         try:
             self.device_types = DeviceTypes(
                 self.netbox,
@@ -484,7 +501,7 @@ class NetBox:
                 max_threads=config.preload_threads,
             )
         except Exception as e:
-            system_exit(f"Error initializing device types: {e}")
+            raise NetBoxError(f"Error initializing device types: {e}") from e
         self._change_detector: ChangeDetector | None = None
 
     @property
@@ -495,6 +512,7 @@ class NetBox:
                 self.device_types,
                 self.handle,
                 remove_unmanaged_types=self.remove_unmanaged_types,
+                verbose=self.verbose,
             )
         return self._change_detector
 
@@ -537,7 +555,7 @@ class NetBox:
                 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
                 self.netbox.http_session.verify = False
         except Exception as e:
-            self.handle.exception("Exception", "NetBox API Error", e)
+            raise UnknownError("NetBox API Error", e) from e
 
     def get_api(self):
         """Return the underlying pynetbox API instance."""
@@ -557,15 +575,17 @@ class NetBox:
         # Strip non-numeric suffixes (e.g. "4.1-beta") before converting to int.
         try:
             nb_version = self.netbox.version
+        except requests.exceptions.SSLError as e:
+            raise SSLVerificationError(self.ignore_ssl, e) from e
         except requests.exceptions.ProxyError as e:
-            system_exit(
+            raise NetBoxError(
                 f"Proxy error while connecting to NetBox at {self.url}: {e}\n"
                 f"Hint: If NetBox is running locally, ensure that the NETBOX_URL host "
                 f"is included in your 'no_proxy' / 'NO_PROXY' environment variable "
                 f"(both with and without brackets for IPv6, e.g. '::1,[::1]')."
-            )
+            ) from e
         except requests.exceptions.ConnectionError as e:
-            system_exit(_fmt_connection_error(self.url, e))
+            raise NetBoxError(_fmt_connection_error(self.url, e)) from e
         except pynetbox.core.query.RequestError as e:
             endpoint = getattr(e, "base", self.url)
             status = getattr(e.req, "status_code", "?") if hasattr(e, "req") else "?"
@@ -576,7 +596,7 @@ class NetBox:
             if body:
                 msg += f"\nResponse body (may be from an intermediate proxy):\n{body}"
             msg += f"\nHint: Verify that {self.url} is reachable and not blocked by a proxy."
-            system_exit(msg)
+            raise NetBoxError(msg) from e
         _raw = [int(re.sub(r"\D.*", "", x.strip()) or "0") for x in nb_version.split(".")]
         version_split = (_raw + [0, 0])[:2]  # pad to (major, minor) to guard against single-component strings
 
@@ -2069,7 +2089,7 @@ class DeviceTypes:
     def __init__(
         self,
         netbox,
-        exception_handler,
+        handle,
         counter,
         ignore_ssl,
         new_filters,
@@ -2086,7 +2106,7 @@ class DeviceTypes:
 
         Args:
             netbox: Connected pynetbox API instance.
-            exception_handler (LogHandler): Handler for logging and error reporting.
+            handle (LogHandler): Sink for creation and error messages.
             counter (Counter): Shared operation counter updated during creation.
             ignore_ssl (bool): Whether SSL certificate verification is disabled.
             new_filters (bool): Whether to use updated filter parameter names (NetBox >= 4.1).
@@ -2096,7 +2116,7 @@ class DeviceTypes:
             max_threads (int): Maximum number of concurrent threads for component preloading.
         """
         self.netbox = netbox
-        self.handle = exception_handler
+        self.handle = handle
         self.counter = counter
         self.ignore_ssl = ignore_ssl
         self.new_filters = new_filters
@@ -2107,7 +2127,7 @@ class DeviceTypes:
         self.components = ComponentCache(
             netbox,
             graphql,
-            exception_handler,
+            handle,
             new_filters,
             max_threads,
             wrap_record=_FrontPortRecordWithMappings,
@@ -2193,12 +2213,8 @@ class DeviceTypes:
         if to_create:
             try:
                 created = _retry_on_connection_error(endpoint.create, to_create)
-                if parent_type == "device":
-                    count = self.handle.log_device_ports_created(created, component_name)
-                    self.counter.update({"components_added": count})
-                else:
-                    count = self.handle.log_module_ports_created(created, component_name)
-                    self.counter.update({"components_added": count})
+                self.handle.log_ports_created(created, parent_type, component_name)
+                self.counter.update({"components_added": len(created)})
 
                 self.components.invalidate(cache_name, parent_type, parent_id)
             except pynetbox.RequestError as excep:

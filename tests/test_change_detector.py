@@ -255,8 +255,7 @@ class TestLogChangeReport:
         dt_instance.existing_device_types_by_slug = {}
         dt_instance.components = _cache()
         handle = MagicMock()
-        handle.args = SimpleNamespace(verbose=verbose)
-        return ChangeDetector(dt_instance, handle)
+        return ChangeDetector(dt_instance, handle, verbose=verbose)
 
     def test_empty_report_logs_nothing(self):
         """An all-zero report (no new, no modified, no unchanged) should be silent."""
@@ -602,7 +601,6 @@ class TestLogChangeReportNoModified:
 
     def test_logs_zero_modified_when_only_new_types_exist(self):
         handle = MagicMock()
-        handle.args.verbose = False
         detector = ChangeDetector(MagicMock(), handle)
         report = ChangeReport(new_device_types=[DeviceTypeChange("cisco", "X", "x", is_new=True)])
 
@@ -610,6 +608,26 @@ class TestLogChangeReportNoModified:
 
         logged = [call.args[0] for call in handle.log.call_args_list]
         assert "Modified device types: 0" in logged
+
+    def test_non_verbose_hint_uses_the_explicit_flag(self):
+        from core.log_handler import LogHandler
+
+        messages = []
+
+        class RecordingConsole:
+            """Record messages emitted by a real log handler."""
+
+            def print(self, message, markup=False):
+                messages.append((message, markup))
+
+        handle = LogHandler(False)
+        handle.set_console(RecordingConsole())
+        detector = ChangeDetector(MagicMock(), handle, verbose=False)
+        report = ChangeReport(modified_device_types=[DeviceTypeChange("cisco", "X", "x")])
+
+        detector.log_change_report(report)
+
+        assert any("use --verbose" in message for message, _markup in messages)
 
 
 class TestCompareDeviceTypePropertiesMissingAttribute:

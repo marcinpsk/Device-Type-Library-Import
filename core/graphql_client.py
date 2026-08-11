@@ -135,14 +135,14 @@ class NetBoxGraphQLClient:
         or raise the server's ``MAX_PAGE_SIZE`` setting to match.
     """
 
-    def __init__(self, url, token, ignore_ssl=False, log_handler=None, page_size=5000):
+    def __init__(self, url, token, ignore_ssl=False, handle=None, page_size=5000):
         """Store connection parameters for later use in :meth:`query`.
 
         Args:
             url: Base URL of the NetBox instance.
             token: API authentication token.
             ignore_ssl: If True, skip SSL certificate verification.
-            log_handler: Optional :class:`~log_handler.LogHandler` used to emit
+            handle: Optional :class:`~log_handler.LogHandler` used to emit
                 warnings (e.g. server-side page-size clamping).  Falls back to
                 ``print`` when not provided.
             page_size: Default number of items per GraphQL page
@@ -153,7 +153,7 @@ class NetBoxGraphQLClient:
         self.graphql_url = f"{self.url}/graphql/"
         self.token = token
         self.ignore_ssl = ignore_ssl
-        self._log_handler = log_handler
+        self._handle = handle
 
         self._session = requests.Session()
         # v2 tokens start with "nbt_" prefix (format: nbt_<key>.<secret>);
@@ -313,8 +313,8 @@ class NetBoxGraphQLClient:
                             f"will be slower than expected. Consider raising "
                             f"MAX_PAGE_SIZE on your NetBox server."
                         )
-                        if self._log_handler is not None:
-                            self._log_handler.log(msg)
+                        if self._handle is not None:
+                            self._handle.log(msg)
                         else:
                             print(msg)
 

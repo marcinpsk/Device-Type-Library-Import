@@ -132,7 +132,7 @@ IMAGE_PROPERTIES = ["front_image", "rear_image"]
 class ChangeDetector:
     """Detects changes between YAML device types and NetBox cached data."""
 
-    def __init__(self, device_types_instance, handle, remove_unmanaged_types: bool = False):
+    def __init__(self, device_types_instance, handle, remove_unmanaged_types: bool = False, *, verbose: bool = False):
         """Initialize the change detector.
 
         Args:
@@ -142,9 +142,11 @@ class ChangeDetector:
                 YAML section is missing (not just those listed in an empty/partial section).
                 Only honoured when callers also pass ``remove_components=True`` to the
                 applier; this flag controls *detection*, not application.
+            verbose: Show the hint about --verbose only when it is off.
         """
         self.device_types = device_types_instance
         self.handle = handle
+        self.verbose = verbose
         self.remove_unmanaged_types = remove_unmanaged_types
 
     def detect_changes(self, device_types: List[dict], progress=None) -> ChangeReport:
@@ -570,7 +572,7 @@ class ChangeDetector:
             self.handle.log("MODIFIED DEVICE TYPES:")
             for dt in report.modified_device_types:
                 self._log_modified_device_details(dt)
-            if not self.handle.args.verbose:
+            if not self.verbose:
                 self.handle.log("  (use --verbose for property diffs and component names)")
         else:
             self.handle.log("Modified device types: 0")

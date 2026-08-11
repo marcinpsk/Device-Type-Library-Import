@@ -106,6 +106,15 @@ class TestDotDict:
 class TestNetBoxGraphQLClient:
     """Tests for NetBoxGraphQLClient initialization and configuration."""
 
+    def test_logging_dependency_uses_the_common_handle_name(self):
+        from core.graphql_client import NetBoxGraphQLClient
+        from core.log_handler import LogHandler
+
+        handle = LogHandler(False)
+        client = NetBoxGraphQLClient("http://netbox.local", "tok", handle=handle)
+
+        assert client._handle is handle
+
     def test_init_stores_config(self):
         from core.graphql_client import NetBoxGraphQLClient
 
@@ -381,7 +390,7 @@ class TestGraphQLQueryAll:
 
         from core.graphql_client import NetBoxGraphQLClient
 
-        client = NetBoxGraphQLClient("http://netbox.local", "tok", log_handler=FakeLog())
+        client = NetBoxGraphQLClient("http://netbox.local", "tok", handle=FakeLog())
         result = client.query_all(
             "query($p: OffsetPaginationInput) { device_type_list(pagination: $p) { id } }",
             list_key="device_type_list",
@@ -421,7 +430,7 @@ class TestGraphQLQueryAll:
 
         from core.graphql_client import NetBoxGraphQLClient
 
-        client = NetBoxGraphQLClient("http://netbox.local", "tok", log_handler=FakeLog())
+        client = NetBoxGraphQLClient("http://netbox.local", "tok", handle=FakeLog())
         client.query_all(
             "query($p: OffsetPaginationInput) { device_type_list(pagination: $p) { id } }",
             list_key="device_type_list",
@@ -1269,10 +1278,10 @@ class TestQueryAllOnPage:
 
 
 class TestQueryAllClampingPrintFallback:
-    """Tests for the print() fallback in query_all when no log_handler is set."""
+    """Tests for the print() fallback in query_all when no handle is set."""
 
-    def test_clamping_warning_uses_print_when_no_log_handler(self, mock_post, capsys):
-        """When log_handler is None the clamping warning goes to stdout via print()."""
+    def test_clamping_warning_uses_print_when_no_handle(self, mock_post, capsys):
+        """When handle is None the clamping warning goes to stdout via print()."""
         pages = [
             [{"id": "1"}, {"id": "2"}],
             [{"id": "3"}, {"id": "4"}],
@@ -1289,7 +1298,7 @@ class TestQueryAllClampingPrintFallback:
 
         from core.graphql_client import NetBoxGraphQLClient
 
-        client = NetBoxGraphQLClient("http://netbox.local", "tok")  # no log_handler
+        client = NetBoxGraphQLClient("http://netbox.local", "tok")
         result = client.query_all(
             "query($p: OffsetPaginationInput) { device_type_list(pagination: $p) { id } }",
             list_key="device_type_list",

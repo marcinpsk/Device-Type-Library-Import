@@ -622,7 +622,7 @@ class Exporter:
                     self.graphql.url,
                     self.graphql.token,
                     self.graphql.ignore_ssl,
-                    self.graphql._log_handler,
+                    self.graphql._handle,
                     self.graphql.DEFAULT_PAGE_SIZE,
                 )
                 _thread_local.graphql = client
