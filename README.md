@@ -442,6 +442,10 @@ repo into NetBox, it writes out the device, module, and rack types that NetBox h
 local repo does not, or that differ from it, as DTL-compatible YAML plus images. It does not
 run the import pipeline at all, so nothing in NetBox is modified.
 
+The comparison needs the local library, and export mode neither clones nor updates it: only an
+import does that. Point `REPO_PATH` at a checkout, or run an import first. An export over a
+missing library stops with an error instead of reporting every type in NetBox as absent from it.
+
 ```shell
 uv run nb-dt-import.py --export-diff
 uv run nb-dt-import.py --export-diff --vendors nokia --export-diff-dir extra/
@@ -458,7 +462,9 @@ directory to keep the output, creating it first and matching the ownership to wh
 ```shell
 mkdir -p extra
 sudo chown 1000:1000 extra   # not needed if your host account is already UID 1000
-docker run --rm --env-file .env -v "$PWD/extra:/app/extra" \
+docker run --rm --env-file .env \
+  -v dtl-library:/app/repo \
+  -v "$PWD/extra:/app/extra" \
   ghcr.io/marcinpsk/device-type-library-import:latest --export-diff
 ```
 
