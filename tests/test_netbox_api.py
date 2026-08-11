@@ -607,16 +607,6 @@ class TestNetBoxConnectApi:
         nb = NetBox(mock_settings, mock_handle)
         assert nb.netbox.http_session.verify is False
 
-    def test_get_api_returns_netbox(self, mock_settings, mock_pynetbox, mock_handle):
-        mock_pynetbox.api.return_value.version = "3.5"
-        nb = NetBox(mock_settings, mock_handle)
-        assert nb.get_api() is nb.netbox
-
-    def test_get_counter_returns_counter(self, mock_settings, mock_pynetbox, mock_handle):
-        mock_pynetbox.api.return_value.version = "3.5"
-        nb = NetBox(mock_settings, mock_handle)
-        assert nb.get_counter() is nb.counter
-
 
 class TestCreateManufacturersError:
     """Tests for TestCreateManufacturersError."""
@@ -4699,68 +4689,6 @@ class TestBuildLinkRearPortsEdgeCases:
         log_calls = [str(c) for c in mock_handle.log.call_args_list]
         assert any("only first mapping applied" in c for c in log_calls)
         assert any("MyDevice" in c for c in log_calls)
-
-
-# ---------------------------------------------------------------------------
-# _module_type_has_missing_components (lines 770-782)
-# ---------------------------------------------------------------------------
-
-
-class TestModuleTypeHasMissingComponents:
-    """Tests for NetBox._module_type_has_missing_components()."""
-
-    def test_returns_false_when_no_components_in_yaml(
-        self, mock_settings, mock_pynetbox, make_device_types, mock_handle
-    ):
-        """Returns False when the module type dict has no components under the key."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "3.5"
-
-        nb = NetBox(mock_settings, mock_handle)
-        module_type = {}  # no "interfaces" key
-        existing_module = MagicMock()
-        existing_module.id = 99
-
-        result = nb._module_type_has_missing_components(module_type, existing_module, ["interfaces"])
-
-        assert result is False
-
-    def test_returns_true_when_component_missing(self, mock_settings, mock_pynetbox, make_device_types, mock_handle):
-        """Returns True when a YAML-defined component name is absent from the cache."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "3.5"
-
-        nb = NetBox(mock_settings, mock_handle)
-        # Pre-populate cache with an empty interface set for module 42.
-        nb.device_types.components.record("interface_templates", "module", 42, {})
-
-        module_type = {"interfaces": [{"name": "xe-0/0/0"}]}
-        existing_module = MagicMock()
-        existing_module.id = 42
-
-        result = nb._module_type_has_missing_components(module_type, existing_module, ["interfaces"])
-
-        assert result is True
-
-    def test_returns_false_when_all_components_present(
-        self, mock_settings, mock_pynetbox, make_device_types, mock_handle
-    ):
-        """Returns False when all YAML-defined components exist in the cache."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "3.5"
-
-        nb = NetBox(mock_settings, mock_handle)
-        existing_iface = MagicMock()
-        existing_iface.name = "xe-0/0/0"
-        nb.device_types.components.record("interface_templates", "module", 42, {"xe-0/0/0": existing_iface})
-
-        module_type = {"interfaces": [{"name": "xe-0/0/0"}]}
-        existing_module = MagicMock()
-        existing_module.id = 42
-
-        result = nb._module_type_has_missing_components(module_type, existing_module, ["interfaces"])
-
-        assert result is False
 
 
 # ---------------------------------------------------------------------------

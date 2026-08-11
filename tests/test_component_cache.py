@@ -633,31 +633,6 @@ class TestFetching:
 
         assert isinstance(cache.entries("front_port_templates", "device", 1)["fp0"], Wrapped)
 
-    def test_a_rest_only_endpoint_is_read_over_rest(self, monkeypatch):
-        import core.component_cache as module
-
-        monkeypatch.setattr(module, "REST_ONLY_ENDPOINTS", frozenset({"interface_templates"}))
-        endpoint = FakeEndpoint([Record("eth0", device_type=1)])
-        netbox = FakeNetBox({"interface_templates": endpoint})
-        graphql = FakeGraphQL()
-        cache = make_cache(netbox=netbox, graphql=graphql)
-
-        cache.ensure_ready()
-
-        assert set(cache.entries("interface_templates", "device", 1)) == {"eth0"}
-        assert "interface_templates" not in graphql.endpoints_seen
-
-    def test_a_rest_only_endpoint_with_no_records_reports_no_progress(self, monkeypatch):
-        import core.component_cache as module
-
-        monkeypatch.setattr(module, "REST_ONLY_ENDPOINTS", frozenset({"interface_templates"}))
-        netbox = FakeNetBox({"interface_templates": FakeEndpoint([])})
-        cache = make_cache(netbox=netbox)
-
-        cache.ensure_ready()
-
-        assert cache.ready is True
-
     def test_records_arrive_unwrapped_when_no_wrapper_is_given(self):
         graphql = FakeGraphQL({"front_port_templates": [Record("fp0", device_type=1)]})
         cache = make_cache(graphql=graphql)
@@ -768,13 +743,3 @@ class TestVendorGuards:
 
         chunks = [call["device_type_id"] for call in cache.netbox.endpoints["interface_templates"].count_calls]
         assert [len(chunk) for chunk in chunks] == [100, 100, 50]
-
-    def test_a_rest_only_endpoint_is_not_compared_with_itself(self, monkeypatch):
-        import core.component_cache as module
-
-        monkeypatch.setattr(module, "REST_ONLY_ENDPOINTS", frozenset({"interface_templates"}))
-        cache = self._cache_for({}, counts={"interface_templates": 99})
-
-        cache.ensure_ready(manufacturer_slug="cisco", device_type_ids={1})
-
-        assert cache.netbox.endpoints["interface_templates"].count_calls == []

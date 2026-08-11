@@ -557,14 +557,6 @@ class NetBox:
         except Exception as e:
             raise UnknownError("NetBox API Error", e) from e
 
-    def get_api(self):
-        """Return the underlying pynetbox API instance."""
-        return self.netbox
-
-    def get_counter(self):
-        """Return the shared operation counter."""
-        return self.counter
-
     def verify_compatibility(self):
         """Check the connected NetBox version and configure feature flags accordingly.
 
@@ -1371,22 +1363,6 @@ class NetBox:
                 self.handle.verbose_log(f"      - {len(removed)} component(s) present in NetBox but absent from YAML")
                 for comp in removed:
                     self.handle.verbose_log(f"        - {comp.component_type}: {comp.component_name}")
-
-    def _module_type_has_missing_components(self, module_type, existing_module, component_keys):
-        """Return True if any YAML-defined components are absent from the existing module type in NetBox."""
-        for component_key in component_keys:
-            components = module_type.get(component_key)
-            if not components:
-                continue
-            endpoint_name = BY_YAML_KEY[component_key].endpoint
-            endpoint = getattr(self.netbox.dcim, endpoint_name)
-            existing_components = self.device_types.components.get(
-                endpoint_name, "module", existing_module.id, endpoint
-            )
-            requested_names = {c.get("name") for c in components if c.get("name")}
-            if any(name not in existing_components for name in requested_names):
-                return True
-        return False
 
     def filter_actionable_module_types(self, module_types, all_module_types, only_new=False):
         """Determine which module types need to be created or updated in NetBox.
