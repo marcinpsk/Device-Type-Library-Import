@@ -1,3 +1,5 @@
+import os
+
 import pytest
 from unittest.mock import MagicMock, call, mock_open, patch
 from git import Actor, Repo as GitRepo, exc as git_exc
@@ -10,6 +12,15 @@ from core.repo import (
     validate_git_url,
     normalize_port_mappings,
 )
+
+
+def _clone_present(present=True):
+    """Steer only the .git probe in DTLRepo.__init__, leaving every other path check real."""
+    real_exists = os.path.exists
+    return patch(
+        "os.path.exists",
+        side_effect=lambda p: present if str(p).endswith(".git") else real_exists(p),
+    )
 
 
 class TestValidateGitUrl:
@@ -71,7 +82,7 @@ class TestDTLRepoInit:
         mock_args.branch = "master"
         mock_handle = MagicMock()
         with (
-            patch("os.path.isdir", return_value=isdir),
+            _clone_present(isdir),
             patch("core.repo.Repo") as MockRepo,
         ):
             if mock_repo:
@@ -86,7 +97,7 @@ class TestDTLRepoInit:
         mock_args.branch = "master"
         mock_handle = MagicMock()
         with (
-            patch("os.path.isdir", return_value=True),
+            _clone_present(),
             patch("core.repo.Repo") as MockRepo,
         ):
             mock_git_repo = MagicMock()
@@ -105,7 +116,7 @@ class TestDTLRepoInit:
         mock_args.branch = "master"
         mock_handle = MagicMock()
         with (
-            patch("os.path.isdir", return_value=False),
+            _clone_present(False),
             patch("core.repo.Repo") as MockRepo,
         ):
             mock_cloned = MagicMock()
@@ -118,7 +129,7 @@ class TestDTLRepoInit:
         mock_args.url = "ftp://bad.url"
         mock_args.branch = "master"
         mock_handle = MagicMock()
-        with patch("os.path.isdir", return_value=False), patch("core.repo.Repo"):
+        with _clone_present(False), patch("core.repo.Repo"):
             DTLRepo(mock_args, "/tmp/repo", mock_handle)
         mock_handle.exception.assert_called_with(
             "InvalidGitURL",
@@ -137,6 +148,12 @@ class TestDTLRepoRealGit:
     def mock_git_repo(self):
         """Override the global autouse git mock so these tests exercise real git."""
         yield None
+
+    @pytest.fixture(autouse=True)
+    def clear_ambient_git_env(self, monkeypatch):
+        """Drop git's per-command variables: a hook runner exports GIT_DIR for the outer repo."""
+        for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"):
+            monkeypatch.delenv(var, raising=False)
 
     @classmethod
     def _commit(cls, repo, path, message):
@@ -197,6 +214,28 @@ class TestDTLRepoRealGit:
         mock_handle.exception.assert_not_called()
         assert (target / "device-types" / "TestVendor" / "second.yaml").is_file()
 
+    def test_pulls_when_target_is_a_git_worktree(self, tmp_path):
+        """A worktree holds .git as a file, so testing for a .git directory would clone over it."""
+        source = tmp_path / "source"
+        source.mkdir()
+        self._make_source_repo(source)
+
+        clone = tmp_path / "clone"
+        clone.mkdir()
+        self._init_dtl(source, clone)
+        # Park the clone on another branch so the worktree below can hold master.
+        clone_repo = GitRepo(clone)
+        clone_repo.git.checkout("-b", "parked")
+
+        worktree = tmp_path / "worktree"
+        clone_repo.git.worktree("add", str(worktree), "master")
+        assert (worktree / ".git").is_file(), "a worktree must have .git as a file for this test to mean anything"
+
+        mock_handle = self._init_dtl(source, worktree)
+
+        mock_handle.exception.assert_not_called()
+        assert (worktree / "device-types" / "TestVendor" / "device.yaml").is_file()
+
 
 class TestDTLRepoPathMethods:
     """Tests for DTLRepo path helper methods (get_relative_path, get_absolute_path, etc.)."""
@@ -207,7 +246,7 @@ class TestDTLRepoPathMethods:
         mock_args.branch = "master"
         mock_handle = MagicMock()
         with (
-            patch("os.path.isdir", return_value=True),
+            _clone_present(),
             patch("core.repo.Repo") as MockRepo,
         ):
             mock_git_repo = MagicMock()
@@ -242,7 +281,7 @@ class TestPullRepo:
         mock_args.branch = "master"
         mock_handle = MagicMock()
         with (
-            patch("os.path.isdir", return_value=True),
+            _clone_present(),
             patch("core.repo.Repo") as MockRepo,
         ):
             mock_git_repo = MagicMock()
@@ -259,7 +298,7 @@ class TestPullRepo:
         mock_args.branch = "master"
         mock_handle = MagicMock()
         with (
-            patch("os.path.isdir", return_value=True),
+            _clone_present(),
             patch("core.repo.Repo") as MockRepo,
         ):
             mock_git_repo = MagicMock()
@@ -279,7 +318,7 @@ class TestPullRepo:
         mock_args.branch = "main"
         mock_handle = MagicMock()
         with (
-            patch("os.path.isdir", return_value=True),
+            _clone_present(),
             patch("core.repo.Repo") as MockRepo,
         ):
             mock_git_repo = MagicMock()
@@ -301,7 +340,7 @@ class TestPullRepo:
         mock_args.branch = "missing-branch"
         mock_handle = MagicMock()
         with (
-            patch("os.path.isdir", return_value=True),
+            _clone_present(),
             patch("core.repo.Repo") as MockRepo,
         ):
             mock_git_repo = MagicMock()
@@ -319,7 +358,7 @@ class TestPullRepo:
         mock_args.branch = "master"
         mock_handle = MagicMock()
         with (
-            patch("os.path.isdir", return_value=True),
+            _clone_present(),
             patch("core.repo.Repo") as MockRepo,
         ):
             mock_git_repo = MagicMock()
@@ -335,7 +374,7 @@ class TestPullRepo:
         mock_args.branch = "master"
         mock_handle = MagicMock()
         with (
-            patch("os.path.isdir", return_value=True),
+            _clone_present(),
             patch("core.repo.Repo") as MockRepo,
         ):
             mock_git_repo = MagicMock()
@@ -355,7 +394,7 @@ class TestCloneRepo:
         mock_args.branch = "master"
         mock_handle = MagicMock()
         with (
-            patch("os.path.isdir", return_value=False),
+            _clone_present(False),
             patch("core.repo.Repo") as MockRepo,
         ):
             MockRepo.clone_from.side_effect = git_exc.GitCommandError("clone", 128)
@@ -368,7 +407,7 @@ class TestCloneRepo:
         mock_args.branch = "master"
         mock_handle = MagicMock()
         with (
-            patch("os.path.isdir", return_value=False),
+            _clone_present(False),
             patch("core.repo.Repo") as MockRepo,
         ):
             MockRepo.clone_from.side_effect = RuntimeError("failed")

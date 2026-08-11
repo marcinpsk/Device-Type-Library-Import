@@ -408,7 +408,8 @@ class DTLRepo:
             self.handle.exception("InvalidRepoPath", self.repo_path, path_error)
 
         # Test for .git, not the directory itself: a mounted-but-empty volume must still clone.
-        if os.path.isdir(os.path.join(self.repo_path, ".git")):
+        # exists(), not isdir(): worktrees and submodules hold .git as a file.
+        if os.path.exists(os.path.join(self.repo_path, ".git")):
             # Repo exists; pull from existing remote (pull_repo validates origin URL)
             self.pull_repo()
         else:
