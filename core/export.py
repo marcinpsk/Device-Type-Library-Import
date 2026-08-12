@@ -20,7 +20,7 @@ from core.export_manifest import (
     save_manifest,
     update_entry,
 )
-from core.graphql_client import NetBoxGraphQLClient
+from core.graphql_client import GraphQLError, NetBoxGraphQLClient
 from core.nb_serializer import (
     COMPONENT_ENDPOINT_NAMES,
     serialize_device_type,
@@ -864,7 +864,7 @@ class Exporter:
         """
         try:
             details = self._get_module_image_details()
-        except Exception as exc:
+        except (GraphQLError, requests.RequestException) as exc:
             self.handle.log(f"[yellow]Could not fetch module image details: {exc}[/yellow]")
             return False
         type_images = details.get(item.nb_record.id, {})

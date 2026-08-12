@@ -655,13 +655,18 @@ class TestParseFilesExtended:
             repo = _dtl_repo(mock_args, "/tmp/repo", mock_handle)
         return repo, mock_handle
 
-    def test_error_files_logged_and_skipped(self):
+    def test_a_file_that_will_not_parse_is_reported_by_name(self, tmp_path):
+        """A skipped file is a device type the run did not import, so it is not verbose-only."""
         repo, mock_handle = self._make_repo()
-        bad_yaml = "---\n: invalid: [yaml: !!!"
-        with patch("builtins.open", mock_open(read_data=bad_yaml)):
-            results = repo.parse_files(["/tmp/repo/cisco/bad.yaml"])
+        bad = tmp_path / "bad.yaml"
+        bad.write_text("---\n: invalid: [yaml: !!!", encoding="utf-8")
+
+        results = repo.parse_files([str(bad)])
+
         assert results == []
-        mock_handle.verbose_log.assert_called()
+        logged = " ".join(str(call) for call in mock_handle.log.call_args_list)
+        assert str(bad) in logged
+        mock_handle.verbose_log.assert_not_called()
 
     def test_progress_iterable_consumed(self):
         repo, _ = self._make_repo()

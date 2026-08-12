@@ -39,7 +39,7 @@ def reset_graphql_clamping_warned(mock_env_vars, request):
 
 
 @pytest.fixture(autouse=True)
-def mock_env_vars(request):
+def mock_env_vars(request, tmp_path):
     """Set mandatory environment variables to prevent settings.py from exiting."""
     if request.node.get_closest_marker("integration"):
         yield
@@ -53,6 +53,8 @@ def mock_env_vars(request):
             "IGNORE_SSL_ERRORS": "True",
             "GRAPHQL_PAGE_SIZE": "5000",
             "PRELOAD_THREADS": "8",
+            # Keep the image-hash cache out of the developer's real ~/.cache.
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
         },
     ):
         yield
