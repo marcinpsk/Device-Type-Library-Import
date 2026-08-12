@@ -10,6 +10,7 @@ from functools import lru_cache
 from typing import Any, List, Optional
 from enum import Enum
 
+from core.component_registry import COMPONENT_TYPES
 from core.normalization import normalize_values
 from core.formatting import log_property_diffs
 from core.schema_reader import load_properties_for_type
@@ -126,28 +127,6 @@ _MISSING = object()
 # Image properties: YAML uses boolean flags, NetBox stores URL strings.
 # Only existence is compared (YAML=true vs NetBox=empty).
 IMAGE_PROPERTIES = ["front_image", "rear_image"]
-
-# Component type mapping: YAML key -> (cache_key, comparable_properties)
-COMPONENT_TYPES = {
-    "interfaces": (
-        "interface_templates",
-        ["name", "type", "mgmt_only", "label", "enabled", "poe_mode", "poe_type", "description", "rf_role"],
-    ),
-    "power-ports": (
-        "power_port_templates",
-        ["name", "type", "maximum_draw", "allocated_draw", "label", "description"],
-    ),
-    "console-ports": ("console_port_templates", ["name", "type", "label", "description"]),
-    "power-outlets": ("power_outlet_templates", ["name", "type", "feed_leg", "label", "description"]),
-    "console-server-ports": (
-        "console_server_port_templates",
-        ["name", "type", "label", "description"],
-    ),
-    "rear-ports": ("rear_port_templates", ["name", "type", "positions", "label", "description", "color"]),
-    "front-ports": ("front_port_templates", ["name", "type", "_mappings", "label", "description", "color"]),
-    "device-bays": ("device_bay_templates", ["name", "label", "description"]),
-    "module-bays": ("module_bay_templates", ["name", "position", "label", "description"]),
-}
 
 
 class ChangeDetector:
@@ -312,11 +291,12 @@ class ChangeDetector:
         """
         changes = []
 
-        for yaml_key, (cache_name, properties) in COMPONENT_TYPES.items():
+        for component in COMPONENT_TYPES:
+            yaml_key = component.yaml_key
             yaml_components = list(yaml_data.get(yaml_key) or [])
 
             # entries(), not get(): detection must read the cache, never trigger a fetch.
-            existing_components = self.device_types.components.entries(cache_name, parent_type, device_type_id)
+            existing_components = self.device_types.components.entries(component.endpoint, parent_type, device_type_id)
 
             # Build set of YAML component names for this type
             yaml_component_names = {comp.get("name") for comp in yaml_components if comp.get("name")}
@@ -357,7 +337,7 @@ class ChangeDetector:
                     # Check for property changes on existing component
                     existing = existing_components[comp_name]
                     prop_changes = self._compare_component_properties(
-                        yaml_comp, existing, properties, comp_type=yaml_key
+                        yaml_comp, existing, component.compare_properties, comp_type=yaml_key
                     )
                     if prop_changes:
                         changes.append(

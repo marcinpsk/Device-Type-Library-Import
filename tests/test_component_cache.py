@@ -11,13 +11,12 @@ import pytest
 
 from core.component_cache import (
     ComponentCache,
-    NO_MODULE_TYPE_ENDPOINTS,
     NullTaskDisplay,
-    PRELOAD_TARGETS,
     RichTaskDisplay,
     _chunked,
 )
-from core.graphql_client import GraphQLCountMismatchError, GraphQLSchemaError, _NO_MODULE_TYPE
+from core.component_registry import COMPONENT_TYPES
+from core.graphql_client import GraphQLCountMismatchError, GraphQLSchemaError
 
 
 # ── Fakes ─────────────────────────────────────────────────────────────────────
@@ -197,10 +196,6 @@ def test_chunked_of_nothing_yields_nothing():
     assert list(_chunked([], 3)) == []
 
 
-def test_device_only_endpoints_share_the_graphql_source():
-    assert NO_MODULE_TYPE_ENDPOINTS is _NO_MODULE_TYPE
-
-
 # ── Index ─────────────────────────────────────────────────────────────────────
 
 
@@ -359,7 +354,7 @@ class TestPrefetch:
         cache.begin_prefetch()
         cache.ensure_ready()
 
-        assert len(graphql.slugs_seen) == len(PRELOAD_TARGETS)
+        assert len(graphql.slugs_seen) == len(COMPONENT_TYPES)
 
     def test_a_prefetch_cannot_be_collected_for_another_vendor(self):
         cache = make_cache()
@@ -462,7 +457,7 @@ class TestPrefetchProgress:
         cache.ensure_ready()
 
         # Every task finished, so an owning display removed all tasks.
-        assert len(progress.removed) == len(PRELOAD_TARGETS)
+        assert len(progress.removed) == len(COMPONENT_TYPES)
 
     def test_pump_returns_true_once_an_endpoint_finishes(self):
         with make_cache() as cache:

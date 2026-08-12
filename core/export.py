@@ -22,7 +22,7 @@ from core.export_manifest import (
 )
 from core.graphql_client import NetBoxGraphQLClient
 from core.nb_serializer import (
-    COMPONENT_ENDPOINTS,
+    COMPONENT_ENDPOINT_NAMES,
     serialize_device_type,
     serialize_module_type,
     serialize_rack_type,
@@ -247,7 +247,7 @@ class Exporter:
             f"Fetched type metadata: {total_dt} device-types, "
             f"{total_mt} module-types, {total_rt} rack-types. "
             f"Component templates fetched per vendor below "
-            f"({len(COMPONENT_ENDPOINTS)} endpoints/vendor)."
+            f"({len(COMPONENT_ENDPOINT_NAMES)} endpoints/vendor)."
         )
 
         # ── Load repo YAML dicts ─────────────────────────────────────────────
@@ -353,7 +353,7 @@ class Exporter:
             self.handle.verbose_log(
                 f"  {mfr_slug}: {len(stale_dts)} device-type(s), "
                 f"{len(stale_mts)} module-type(s) to compare; "
-                f"fetching {len(COMPONENT_ENDPOINTS)} component-template endpoints…"
+                f"fetching {len(COMPONENT_ENDPOINT_NAMES)} component-template endpoints…"
             )
             dt_components, mt_components = self._fetch_vendor_components(mfr_slug)
 
@@ -633,8 +633,8 @@ class Exporter:
             )
 
         try:
-            with ThreadPoolExecutor(max_workers=len(COMPONENT_ENDPOINTS)) as pool:
-                results = list(pool.map(_fetch_one, [ep_name for _, ep_name in COMPONENT_ENDPOINTS]))
+            with ThreadPoolExecutor(max_workers=len(COMPONENT_ENDPOINT_NAMES)) as pool:
+                results = list(pool.map(_fetch_one, COMPONENT_ENDPOINT_NAMES))
         finally:
             for client in _clients:
                 try:

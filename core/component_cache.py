@@ -18,40 +18,8 @@ from core.compat import (
     module_type_filter_key,
     module_type_filter_kwargs,
 )
-from core.graphql_client import (
-    GraphQLCountMismatchError,
-    GraphQLSchemaError,
-    _NO_MODULE_TYPE as NO_MODULE_TYPE_ENDPOINTS,
-)
-
-# Component endpoints fetched up front, with the label shown in the progress display.
-PRELOAD_TARGETS = (
-    ("interface_templates", "Interfaces"),
-    ("power_port_templates", "Power Ports"),
-    ("console_port_templates", "Console Ports"),
-    ("console_server_port_templates", "Console Server Ports"),
-    ("power_outlet_templates", "Power Outlets"),
-    ("rear_port_templates", "Rear Ports"),
-    ("front_port_templates", "Front Ports"),
-    ("device_bay_templates", "Device Bays"),
-    ("module_bay_templates", "Module Bays"),
-)
-
-# YAML component key -> (pynetbox endpoint attribute, cache name).
-ENDPOINT_CACHE_MAP = {
-    "interfaces": ("interface_templates", "interface_templates"),
-    "power-ports": ("power_port_templates", "power_port_templates"),
-    "console-ports": ("console_port_templates", "console_port_templates"),
-    "power-outlets": ("power_outlet_templates", "power_outlet_templates"),
-    "console-server-ports": (
-        "console_server_port_templates",
-        "console_server_port_templates",
-    ),
-    "rear-ports": ("rear_port_templates", "rear_port_templates"),
-    "front-ports": ("front_port_templates", "front_port_templates"),
-    "device-bays": ("device_bay_templates", "device_bay_templates"),
-    "module-bays": ("module_bay_templates", "module_bay_templates"),
-}
+from core.component_registry import COMPONENT_TYPES
+from core.graphql_client import GraphQLCountMismatchError, GraphQLSchemaError
 
 # Endpoints whose GraphQL schema is missing fields required for accurate change
 # detection, and where REST provides them.  Add an endpoint here if a NetBox
@@ -202,11 +170,11 @@ class ComponentCache:
             return
 
         display = display or NullTaskDisplay()
-        for endpoint_name, label in PRELOAD_TARGETS:
-            display.add(endpoint_name, label)
+        for component in COMPONENT_TYPES:
+            display.add(component.endpoint, component.plural_label)
 
         updates = queue.Queue()
-        max_workers = max(1, min(len(PRELOAD_TARGETS), self.max_threads))
+        max_workers = max(1, min(len(COMPONENT_TYPES), self.max_threads))
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
         try:
             futures = {
@@ -216,12 +184,12 @@ class ComponentCache:
                     lambda name, advance: updates.put((name, advance)),
                     manufacturer_slug,
                 )
-                for endpoint_name, _label in PRELOAD_TARGETS
+                for endpoint_name in (component.endpoint for component in COMPONENT_TYPES)
             }
         except Exception:
             executor.shutdown(wait=False, cancel_futures=True)
-            for endpoint_name, _label in PRELOAD_TARGETS:
-                display.discard(endpoint_name)
+            for component in COMPONENT_TYPES:
+                display.discard(component.endpoint)
             raise
 
         self._job = {
@@ -277,9 +245,9 @@ class ComponentCache:
             )
 
         records = self._collect()
-        for endpoint_name, label in PRELOAD_TARGETS:
-            count = self.populate(endpoint_name, records.get(endpoint_name, []))
-            self.handle.verbose_log(f"Cached {count} {label}.")
+        for component in COMPONENT_TYPES:
+            count = self.populate(component.endpoint, records.get(component.endpoint, []))
+            self.handle.verbose_log(f"Cached {count} {component.plural_label}.")
 
         if manufacturer_slug is not None:
             self._verify_vendor_scope(manufacturer_slug, device_type_ids or set())
@@ -504,7 +472,8 @@ class ComponentCache:
         dt_ids = list(device_type_ids)
         mt_ids = list(module_type_ids)
 
-        for endpoint_name, _label in PRELOAD_TARGETS:
+        for component in COMPONENT_TYPES:
+            endpoint_name = component.endpoint
             if endpoint_name in REST_ONLY_ENDPOINTS:
                 # Already fetched over REST, so comparing REST to REST proves nothing.
                 continue
@@ -519,7 +488,7 @@ class ComponentCache:
             rest_count = 0
             if dt_ids:
                 rest_count += self._rest_count(rest_endpoint, dt_filter_key, dt_ids)
-            if mt_ids and endpoint_name not in NO_MODULE_TYPE_ENDPOINTS:
+            if mt_ids and component.module_types:
                 rest_count += self._rest_count(rest_endpoint, mt_filter_key, mt_ids)
 
             if cached_count != rest_count:
