@@ -9,6 +9,7 @@ import os
 from core.change_detector import ChangeDetector, ChangeType, IMAGE_PROPERTIES
 from core.component_cache import NullTaskDisplay, RichTaskDisplay
 from core.config import RunConfig
+from core.errors import VendorSelectionError
 
 
 _PROGRESS_DESC_WIDTH = 28
@@ -586,21 +587,19 @@ class ImportRun:
             vendor_slug_filter = {vendor.lower() for vendor in self.config.vendors}
             vendors = [vendor for vendor in all_vendors if vendor["slug"] in vendor_slug_filter]
             if not vendors:
-                self.reporter.log(
+                raise VendorSelectionError(
                     f"No vendors matched --vendors: {', '.join(self.config.vendors)}. "
                     f"Available: {', '.join(vendor['slug'] for vendor in all_vendors[:10])}"
                     f"{'...' if len(all_vendors) > 10 else ''}"
                 )
-                raise SystemExit(1)
         else:
             vendors = all_vendors
 
         vendors, slug_resolved = self._narrow_by_slug(vendors)
         if self.config.vendors and not vendors:
-            self.reporter.log(
+            raise VendorSelectionError(
                 f"No vendors matched the combination of --vendors and --slugs: {', '.join(self.config.vendors)}"
             )
-            raise SystemExit(1)
 
         return RunSelection(
             vendors=tuple(vendors),

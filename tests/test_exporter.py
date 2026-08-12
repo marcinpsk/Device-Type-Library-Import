@@ -19,6 +19,7 @@ from core.export import (
     _yaml_equal,
     _SKIP,
 )
+from core.log_handler import LogHandler
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -365,6 +366,13 @@ class TestExporterHonoursTheConfiguredPageSize:
         exporter = Exporter(settings, _make_handle(), str(tmp_path / "extra"), False, None)
 
         assert exporter.graphql.DEFAULT_PAGE_SIZE == 250
+
+    def test_the_graphql_client_uses_the_exporter_reporter(self, tmp_path):
+        handle = LogHandler(False)
+
+        exporter = Exporter(_make_settings(tmp_path), handle, str(tmp_path / "extra"), False, None)
+
+        assert exporter.graphql._handle is handle
 
 
 class TestExporterRequiresTheLibrary:

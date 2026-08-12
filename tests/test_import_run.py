@@ -5,6 +5,7 @@ from contextlib import contextmanager
 
 import pytest
 
+from core.errors import VendorSelectionError
 from core.import_run import ImportRun, RunSummary, VendorPlan, _process_device_types
 from core.log_handler import LogHandler
 
@@ -202,6 +203,42 @@ def test_empty_device_types_return_before_cache_readiness(make_config):
         [],
         vendor_slug="vendor-one",
     )
+
+
+def test_discover_raises_a_typed_fatal_error_when_no_vendor_matches(make_config, tmp_path):
+    repo = _RepositoryBoundary(tmp_path)
+    run = ImportRun(
+        make_config(vendors=("missing-vendor",)),
+        repo,
+        _NetBoxBoundary(),
+        LogHandler(False),
+        _ProgressFactory(),
+    )
+
+    with pytest.raises(VendorSelectionError, match="No vendors matched --vendors"):
+        run.discover()
+
+
+def test_discover_raises_a_typed_fatal_error_when_slug_selection_removes_the_vendor(make_config, tmp_path):
+    class SlugResolvedRepository(_RepositoryBoundary):
+        def resolve_slug_files(self, _slugs):
+            return {
+                "device_files": {"other-vendor": []},
+                "module_vendors": set(),
+                "rack_vendors": set(),
+            }
+
+    repo = SlugResolvedRepository(tmp_path)
+    run = ImportRun(
+        make_config(vendors=("vendor-one",), slugs=("missing-slug",)),
+        repo,
+        _NetBoxBoundary(),
+        LogHandler(False),
+        _ProgressFactory(),
+    )
+
+    with pytest.raises(VendorSelectionError, match="combination of --vendors and --slugs"):
+        run.discover()
 
 
 def test_execute_returns_snapshot_and_owns_console_lifecycle(make_config, tmp_path):

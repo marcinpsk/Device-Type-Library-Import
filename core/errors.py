@@ -10,6 +10,10 @@ class FatalError(Exception):
         self.stack_trace = stack_trace
 
 
+class VendorSelectionError(FatalError):
+    """A requested vendor selection that matches no source data."""
+
+
 class UnknownError(FatalError):
     """An unexpected error with a stable user-facing category."""
 

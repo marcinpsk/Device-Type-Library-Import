@@ -843,7 +843,7 @@ class TestMain:
         assert "Filtering by slugs: ws-c3750" in output
 
     def test_unknown_vendors_exits_nonzero(self, nb_dt_import):
-        """--vendors with no matching slug exits with code 1 instead of silently doing nothing."""
+        """--vendors with no matching slug exits with the fatal error message."""
         with (
             patch.object(
                 sys,
@@ -858,7 +858,7 @@ class TestMain:
             MockRepo.return_value = mock_repo
             with pytest.raises(SystemExit) as exc_info:
                 nb_dt_import.main()
-            assert exc_info.value.code == 1
+            assert str(exc_info.value) == "No vendors matched --vendors: nonexistent-vendor. Available: nokia"
 
     def test_modules_with_types_to_process(self, nb_dt_import):
         """modules=True + non-empty filter_actionable_module_types calls create_module_types."""
@@ -1281,6 +1281,7 @@ class TestPerVendorLoop:
             assert call.kwargs.get("manufacturer_slug") is not None, (
                 "ensure_components_ready called without manufacturer_slug (global fetch triggered)"
             )
+
 
 # ---------------------------------------------------------------------------
 # _process_module_types hints and counters (lines 554-559, 572, 574-575)
