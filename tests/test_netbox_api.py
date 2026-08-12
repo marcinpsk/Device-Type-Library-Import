@@ -2888,6 +2888,7 @@ class TestCreateModuleTypesEdge:
         mock_pynetbox.api.return_value.version = "3.5"
         nb = NetBox(mock_settings, mock_handle)
         nb.device_types = make_device_types(nb_api=mock_pynetbox.api.return_value)
+        _mark_cache_ready(nb.device_types)
 
         # Simulate update_components actually updating a component (increments components_updated)
         def _do_update(*args, **kwargs):
@@ -2951,6 +2952,7 @@ class TestCreateModuleTypesEdge:
         mock_pynetbox.api.return_value.version = "3.5"
         nb = NetBox(mock_settings, mock_handle)
         nb.device_types = make_device_types(nb_api=mock_pynetbox.api.return_value)
+        _mark_cache_ready(nb.device_types)
 
         # Simulate update_components actually updating a component
         def _do_update(*args, **kwargs):
@@ -3018,6 +3020,7 @@ class TestCreateModuleTypesEdge:
         mock_pynetbox.api.return_value.version = "3.5"
         nb = NetBox(mock_settings, mock_handle)
         nb.device_types = make_device_types(nb_api=mock_pynetbox.api.return_value)
+        _mark_cache_ready(nb.device_types)
         # update_components is a no-op for removals (no counter change)
         nb.device_types.update_components = MagicMock()
 
@@ -6004,10 +6007,14 @@ class TestAdditionalModuleTypeCoverage:
         nb = NetBox(mock_settings, mock_handle)
         module_type_res = MagicMock(id=7, model="LC")
         module_type_res.manufacturer.name = "Cisco"
+        nb.device_types.ensure_components_ready = MagicMock()
         nb.change_detector._compare_components = MagicMock(return_value=[])
 
-        nb._apply_module_type_component_updates({}, module_type_res, False, False, patch_ok=False)
+        nb._apply_module_type_component_updates(
+            {"manufacturer": {"slug": "cisco"}}, module_type_res, False, False, patch_ok=False
+        )
 
+        nb.device_types.ensure_components_ready.assert_called_once_with(manufacturer_slug="cisco")
         assert nb.counter["module_update_failed"] == 1
         assert nb.outcomes.failures()[0].reason == "Scalar PATCH failed; no component changes detected."
 
@@ -6033,7 +6040,9 @@ class TestAdditionalModuleTypeCoverage:
             ]
         )
 
-        nb._apply_module_type_component_updates({}, module_type_res, False, False, patch_ok=True)
+        nb._apply_module_type_component_updates(
+            {"manufacturer": {"slug": "cisco"}}, module_type_res, False, False, patch_ok=True
+        )
 
         assert nb.counter["module_partial_update"] == 1
 
@@ -6052,7 +6061,9 @@ class TestAdditionalModuleTypeCoverage:
             return_value=[ComponentChange("interfaces", "xe-0", ChangeType.COMPONENT_CHANGED)]
         )
 
-        nb._apply_module_type_component_updates({}, module_type_res, True, False, patch_ok=True)
+        nb._apply_module_type_component_updates(
+            {"manufacturer": {"slug": "cisco"}}, module_type_res, True, False, patch_ok=True
+        )
 
         assert nb.counter["module_partial_update"] == 1
 
@@ -6070,7 +6081,9 @@ class TestAdditionalModuleTypeCoverage:
             return_value=[ComponentChange("interfaces", "xe-0", ChangeType.COMPONENT_REMOVED)]
         )
 
-        nb._apply_module_type_component_updates({}, module_type_res, False, False, patch_ok=False)
+        nb._apply_module_type_component_updates(
+            {"manufacturer": {"slug": "cisco"}}, module_type_res, False, False, patch_ok=False
+        )
 
         assert nb.counter["module_update_failed"] == 1
         assert nb.outcomes.failures()[0].reason == "Scalar PATCH failed; no component changes were actionable."

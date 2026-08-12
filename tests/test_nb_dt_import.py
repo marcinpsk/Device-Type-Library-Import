@@ -1229,6 +1229,19 @@ class TestPerVendorLoop:
         mock_repo.get_devices.side_effect = _get_devices_se
         mock_repo.parse_files.side_effect = _parse_files_se
 
+        netbox_class = nb_dt_import.NetBox
+
+        def _filter_actionable(module_types, all_module_types, only_new=False):
+            return netbox_class.filter_actionable_module_types(
+                mock_nb,
+                module_types,
+                all_module_types,
+                only_new=only_new,
+            )
+
+        mock_nb._fetch_module_type_existing_images.return_value = {}
+        mock_nb.filter_actionable_module_types.side_effect = _filter_actionable
+
         self._run_main(["nb-dt-import.py"], mock_repo, mock_nb, nb_dt_import)
 
         cache = mock_nb.device_types.components
@@ -1236,10 +1249,31 @@ class TestPerVendorLoop:
         assert cache.begin_prefetch.call_args.kwargs.get("manufacturer_slug") == "acbel"
 
         # An unscoped readiness call fetches every vendor, which is the regression.
+        assert mock_nb.device_types.ensure_components_ready.call_args_list
         for call in mock_nb.device_types.ensure_components_ready.call_args_list:
             assert call.kwargs.get("manufacturer_slug") is not None, (
                 "ensure_components_ready called without manufacturer_slug (global fetch triggered)"
             )
+
+    def test_empty_device_type_list_returns_before_cache_readiness(self, nb_dt_import):
+        class DeviceTypes:
+            def ensure_components_ready(self, manufacturer_slug=None):
+                raise AssertionError("empty input must not populate the component cache")
+
+        class Handle:
+            def __init__(self):
+                self.messages = []
+
+            def verbose_log(self, message):
+                self.messages.append(message)
+
+        handle = Handle()
+        config = SimpleNamespace(only_new=False)
+        netbox = SimpleNamespace(device_types=DeviceTypes())
+
+        nb_dt_import._process_device_types(config, netbox, handle, None, [], vendor_slug="cisco")
+
+        assert handle.messages == ["No device types matched filters."]
 
 
 # ---------------------------------------------------------------------------

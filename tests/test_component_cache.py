@@ -5,15 +5,19 @@ real ComponentCache, so the prefetch, the index and the fallbacks are the code u
 test rather than a mock's idea of them.
 """
 
+import time
+
 import pytest
 
 from core.component_cache import (
     ComponentCache,
+    NO_MODULE_TYPE_ENDPOINTS,
     NullTaskDisplay,
+    PRELOAD_TARGETS,
     RichTaskDisplay,
     _chunked,
 )
-from core.graphql_client import GraphQLCountMismatchError, GraphQLSchemaError
+from core.graphql_client import GraphQLCountMismatchError, GraphQLSchemaError, _NO_MODULE_TYPE
 
 
 # ── Fakes ─────────────────────────────────────────────────────────────────────
@@ -87,9 +91,11 @@ class FakeGraphQL:
         self.records = records or {}
         self.module_types = module_types or {}
         self.module_types_error = module_types_error
+        self.endpoints_seen = []
         self.slugs_seen = []
 
     def get_component_templates(self, endpoint_name, manufacturer_slug=None, on_page=None):
+        self.endpoints_seen.append(endpoint_name)
         self.slugs_seen.append(manufacturer_slug)
         records = self.records.get(endpoint_name, [])
         if on_page is not None and records:
@@ -191,6 +197,10 @@ def test_chunked_of_nothing_yields_nothing():
     assert list(_chunked([], 3)) == []
 
 
+def test_device_only_endpoints_share_the_graphql_source():
+    assert NO_MODULE_TYPE_ENDPOINTS is _NO_MODULE_TYPE
+
+
 # ── Index ─────────────────────────────────────────────────────────────────────
 
 
@@ -243,7 +253,7 @@ class TestLookupFallback:
         cache.populate("interface_templates", [Record("eth0", device_type=1)])
         endpoint = FakeEndpoint()
 
-        result = cache.get("interface_templates", 1, "device", endpoint)
+        result = cache.get("interface_templates", "device", 1, endpoint)
 
         assert set(result) == {"eth0"}
         assert endpoint.filter_calls == []
@@ -252,8 +262,8 @@ class TestLookupFallback:
         cache = make_cache()
         endpoint = FakeEndpoint([Record("eth0", device_type=1)])
 
-        first = cache.get("interface_templates", 1, "device", endpoint)
-        second = cache.get("interface_templates", 1, "device", endpoint)
+        first = cache.get("interface_templates", "device", 1, endpoint)
+        second = cache.get("interface_templates", "device", 1, endpoint)
 
         assert set(first) == {"eth0"} and first == second
         assert endpoint.filter_calls == [{"device_type_id": 1}]
@@ -262,7 +272,7 @@ class TestLookupFallback:
         cache = make_cache()
         endpoint = FakeEndpoint()
 
-        cache.get("interface_templates", 5, "module", endpoint)
+        cache.get("interface_templates", "module", 5, endpoint)
 
         assert endpoint.filter_calls == [{"module_type_id": 5}]
 
@@ -270,7 +280,7 @@ class TestLookupFallback:
         cache = make_cache(new_filters=False)
         endpoint = FakeEndpoint()
 
-        cache.get("interface_templates", 1, "device", endpoint)
+        cache.get("interface_templates", "device", 1, endpoint)
 
         assert endpoint.filter_calls == [{"devicetype_id": 1}]
 
@@ -279,8 +289,8 @@ class TestLookupFallback:
         cache = make_cache()
         endpoint = FakeEndpoint([])
 
-        cache.get("interface_templates", 1, "device", endpoint)
-        cache.get("interface_templates", 1, "device", endpoint)
+        cache.get("interface_templates", "device", 1, endpoint)
+        cache.get("interface_templates", "device", 1, endpoint)
 
         assert len(endpoint.filter_calls) == 1
 
@@ -290,7 +300,7 @@ class TestLookupFallback:
         endpoint = FakeEndpoint([Record("eth1", device_type=1)])
 
         cache.invalidate("interface_templates", "device", 1)
-        result = cache.get("interface_templates", 1, "device", endpoint)
+        result = cache.get("interface_templates", "device", 1, endpoint)
 
         assert set(result) == {"eth1"}
 
@@ -349,7 +359,16 @@ class TestPrefetch:
         cache.begin_prefetch()
         cache.ensure_ready()
 
-        assert len(graphql.slugs_seen) == 9
+        assert len(graphql.slugs_seen) == len(PRELOAD_TARGETS)
+
+    def test_a_prefetch_cannot_be_collected_for_another_vendor(self):
+        cache = make_cache()
+        cache.begin_prefetch(manufacturer_slug="cisco")
+
+        with pytest.raises(ValueError, match="cisco.*juniper"):
+            cache.ensure_ready(manufacturer_slug="juniper")
+
+        cache.close()
 
     def test_begin_prefetch_after_ready_is_a_no_op(self):
         graphql = FakeGraphQL()
@@ -442,18 +461,21 @@ class TestPrefetchProgress:
         cache.begin_prefetch(display=RichTaskDisplay(progress))
         cache.ensure_ready()
 
-        # Every task finished, so an owning display removed all nine.
-        assert len(progress.removed) == 9
+        # Every task finished, so an owning display removed all tasks.
+        assert len(progress.removed) == len(PRELOAD_TARGETS)
 
     def test_pump_returns_true_once_an_endpoint_finishes(self):
-        cache = make_cache()
-        cache.begin_prefetch()
+        with make_cache() as cache:
+            cache.begin_prefetch()
 
-        for _ in range(200):
-            if cache.pump():
-                break
-        else:
-            pytest.fail("no endpoint completed")
+            for _ in range(200):
+                if cache.pump():
+                    break
+                time.sleep(0.001)
+            else:
+                pytest.fail("no endpoint completed")
+
+        assert cache._job is None
 
     def test_a_run_without_a_display_still_drains_the_update_queue(self):
         graphql = FakeGraphQL({"interface_templates": [Record("eth0", device_type=1)]})
@@ -573,6 +595,14 @@ class TestRichTaskDisplay:
 
         display.discard("interface_templates")
 
+    def test_a_non_key_error_while_clearing_a_task_propagates(self):
+        class BrokenProgress(FakeProgress):
+            def stop_task(self, task_id):
+                raise RuntimeError("display failed")
+
+        with pytest.raises(RuntimeError, match="display failed"):
+            RichTaskDisplay(BrokenProgress())._clear(1)
+
     def test_the_null_display_accepts_every_call(self):
         display = NullTaskDisplay()
 
@@ -620,7 +650,7 @@ class TestFetching:
         cache.ensure_ready()
 
         assert set(cache.entries("interface_templates", "device", 1)) == {"eth0"}
-        assert "interface_templates" not in graphql.records
+        assert "interface_templates" not in graphql.endpoints_seen
 
     def test_a_rest_only_endpoint_with_no_records_reports_no_progress(self, monkeypatch):
         import core.component_cache as module
@@ -686,6 +716,17 @@ class TestVendorGuards:
         )
 
         with pytest.raises(GraphQLCountMismatchError, match="interface_templates"):
+            cache.ensure_ready(manufacturer_slug="cisco", device_type_ids={1})
+
+        assert cache.ready is False
+
+    def test_a_mismatch_after_foreign_records_are_cleared_names_the_scope_failure(self):
+        cache = self._cache_for(
+            {"interface_templates": [Record("eth0", device_type=99)]},
+            counts={"interface_templates": 1},
+        )
+
+        with pytest.raises(GraphQLCountMismatchError, match="cross-vendor contamination"):
             cache.ensure_ready(manufacturer_slug="cisco", device_type_ids={1})
 
     def test_module_types_of_the_vendor_count_towards_the_check(self):

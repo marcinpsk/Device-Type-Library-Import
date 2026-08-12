@@ -503,11 +503,12 @@ def _process_device_types(
             handle.verbose_log("No new device types to create.")
         return
 
-    handle.verbose_log("Caching NetBox data for comparison (concurrent API requests started after parsing)...")
-    netbox.device_types.ensure_components_ready(manufacturer_slug=vendor_slug)
-
     if not device_types:
         handle.verbose_log("No device types matched filters.")
+        return
+
+    handle.verbose_log("Caching NetBox data for comparison (concurrent API requests started after parsing)...")
+    netbox.device_types.ensure_components_ready(manufacturer_slug=vendor_slug)
 
     detector = ChangeDetector(
         netbox.device_types,

@@ -1331,7 +1331,7 @@ class NetBox:
                 continue
             endpoint_attr, cache_name = ENDPOINT_CACHE_MAP[component_key]
             endpoint = getattr(self.netbox.dcim, endpoint_attr)
-            existing_components = self.device_types.components.get(cache_name, existing_module.id, "module", endpoint)
+            existing_components = self.device_types.components.get(cache_name, "module", existing_module.id, endpoint)
             requested_names = {c.get("name") for c in components if c.get("name")}
             if any(name not in existing_components for name in requested_names):
                 return True
@@ -1376,7 +1376,7 @@ class NetBox:
         # processing in normal mode; this call is a no-op then.  When no device types were
         # present (e.g. vendor-filtered runs or --only-new was used for device types) the
         # preload is triggered here so module-type comparisons still hit accurate cache data.
-        self.device_types.ensure_components_ready()
+        self.device_types.ensure_components_ready(manufacturer_slug=module_types[0]["manufacturer"]["slug"])
 
         existing_module_map = {}
         for module_type in module_types:
@@ -1537,7 +1537,7 @@ class NetBox:
                 When False the property drift is still present; a component-only reconciliation
                 must not be recorded as a full ``module_updated`` success.
         """
-        self.device_types.ensure_components_ready()
+        self.device_types.ensure_components_ready(manufacturer_slug=curr_mt["manufacturer"]["slug"])
         identity = f"{module_type_res.manufacturer.name}/{module_type_res.model}"
         component_changes = self.change_detector._compare_components(curr_mt, module_type_res.id, parent_type="module")
         if component_changes:
@@ -2149,7 +2149,7 @@ class DeviceTypes:
             cache_name (str | None): Cache entry invalidated after creation, or None to skip.
         """
         # Look up existing components via cache or API fallback
-        existing = self.components.get(cache_name, parent_id, parent_type, endpoint)
+        existing = self.components.get(cache_name, parent_type, parent_id, endpoint)
 
         to_create = [x for x in items if x["name"] not in existing]
         parent_key = "device_type" if parent_type == "device" else "module_type"
@@ -2206,8 +2206,8 @@ class DeviceTypes:
         """
         existing_rp = self.components.get(
             "rear_port_templates",
-            device_type_id,
             parent_type,
+            device_type_id,
             self.netbox.dcim.rear_port_templates,
         )
         rear_ports_payload = []
@@ -2275,8 +2275,8 @@ class DeviceTypes:
                 rp_name, _fp_pos, rp_pos = first
             rps = self.components.get(
                 "rear_port_templates",
-                device_type_id,
                 parent_type,
+                device_type_id,
                 self.netbox.dcim.rear_port_templates,
             )
             rp = rps.get(rp_name)
@@ -2309,7 +2309,7 @@ class DeviceTypes:
         if not endpoint:
             return
 
-        existing = self.components.get(cache_name, device_type_id, parent_type, endpoint)
+        existing = self.components.get(cache_name, parent_type, device_type_id, endpoint)
 
         updates = []
         for change in changes:
@@ -2467,7 +2467,7 @@ class DeviceTypes:
             if not endpoint:
                 continue
 
-            existing = self.components.get(cache_name, device_type_id, parent_type, endpoint)
+            existing = self.components.get(cache_name, parent_type, device_type_id, endpoint)
 
             ids_to_delete = []
             for change in changes:
@@ -2525,8 +2525,8 @@ class DeviceTypes:
         if bridged_interfaces:
             all_interfaces = self.components.get(
                 "interface_templates",
-                device_type,
                 "device",
+                device_type,
                 self.netbox.dcim.interface_templates,
             )
 
@@ -2585,8 +2585,8 @@ class DeviceTypes:
             """Resolve power-port name references in *items* and persist the outlet templates for device type *pid*."""
             existing_pp = self.components.get(
                 "power_port_templates",
-                pid,
                 "device",
+                pid,
                 self.netbox.dcim.power_port_templates,
             )
 
@@ -2681,8 +2681,8 @@ class DeviceTypes:
             """Resolve rear-port position references in *items* and persist the front port templates for *pid*."""
             existing_rp = self.components.get(
                 "rear_port_templates",
-                pid,
                 parent_type,
+                pid,
                 self.netbox.dcim.rear_port_templates,
             )
 
@@ -2844,8 +2844,8 @@ class DeviceTypes:
             """Resolve power-port name references in *items* and persist the outlet templates for module type *pid*."""
             existing_pp = self.components.get(
                 "power_port_templates",
-                pid,
                 "module",
+                pid,
                 self.netbox.dcim.power_port_templates,
             )
 

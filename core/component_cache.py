@@ -18,7 +18,11 @@ from core.compat import (
     module_type_filter_key,
     module_type_filter_kwargs,
 )
-from core.graphql_client import GraphQLCountMismatchError, GraphQLSchemaError
+from core.graphql_client import (
+    GraphQLCountMismatchError,
+    GraphQLSchemaError,
+    _NO_MODULE_TYPE as NO_MODULE_TYPE_ENDPOINTS,
+)
 
 # Component endpoints fetched up front, with the label shown in the progress display.
 PRELOAD_TARGETS = (
@@ -53,9 +57,6 @@ ENDPOINT_CACHE_MAP = {
 # detection, and where REST provides them.  Add an endpoint here if a NetBox
 # version drops a field from GraphQL but keeps it in REST.
 REST_ONLY_ENDPOINTS: frozenset = frozenset()
-
-# Endpoints that only apply to device types.  Matches _NO_MODULE_TYPE in graphql_client.
-NO_MODULE_TYPE_ENDPOINTS: frozenset = frozenset({"device_bay_templates"})
 
 
 def _chunked(items, size):
@@ -140,7 +141,7 @@ class RichTaskDisplay:
         try:
             self.progress.stop_task(task_id)
             self.progress.remove_task(task_id)
-        except Exception:
+        except KeyError:
             pass
 
 
@@ -229,6 +230,7 @@ class ComponentCache:
             "updates": updates,
             "display": display,
             "done": set(),
+            "manufacturer_slug": manufacturer_slug,
         }
 
     def pump(self):
@@ -264,15 +266,24 @@ class ComponentCache:
             return
         if self._job is None:
             self.begin_prefetch(manufacturer_slug=manufacturer_slug)
+        elif (
+            manufacturer_slug is not None
+            and self._job["manufacturer_slug"] is not None
+            and manufacturer_slug != self._job["manufacturer_slug"]
+        ):
+            raise ValueError(
+                f"Prefetch for manufacturer {self._job['manufacturer_slug']!r} "
+                f"cannot be collected for {manufacturer_slug!r}."
+            )
 
         records = self._collect()
         for endpoint_name, label in PRELOAD_TARGETS:
             count = self.populate(endpoint_name, records.get(endpoint_name, []))
             self.handle.verbose_log(f"Cached {count} {label}.")
 
-        self._ready = True
         if manufacturer_slug is not None:
             self._verify_vendor_scope(manufacturer_slug, device_type_ids or set())
+        self._ready = True
 
     def close(self):
         """Cancel a prefetch in flight and release its executor."""
@@ -306,7 +317,7 @@ class ComponentCache:
         """
         return self._entries.get(endpoint_name, {}).get((parent_type, parent_id), {})
 
-    def get(self, endpoint_name, parent_id, parent_type, endpoint):
+    def get(self, endpoint_name, parent_type, parent_id, endpoint):
         """Return cached components for one parent, falling back to a targeted REST filter.
 
         A miss means the parent was created during this run or its entry was invalidated
@@ -444,9 +455,9 @@ class ComponentCache:
             return
         module_type_ids = {record.id for models in module_types.values() for record in models.values()}
 
-        self._drop_foreign_entries(device_type_ids, module_type_ids)
-        # A count mismatch means GraphQL truncated the fetch, so let it propagate.
-        self._check_counts_against_rest(device_type_ids, module_type_ids)
+        vendor_scope_valid = self._drop_foreign_entries(device_type_ids, module_type_ids)
+        # A count mismatch means the prefetch failed an integrity check, so let it propagate.
+        self._check_counts_against_rest(device_type_ids, module_type_ids, vendor_scope_valid)
 
     def _belongs_to_vendor(self, key, device_type_ids, module_type_ids):
         """Whether the cache *key* names a device or module type of the current vendor."""
@@ -482,7 +493,7 @@ class ComponentCache:
             total += rest_endpoint.count(**{filter_key: chunk})
         return total
 
-    def _check_counts_against_rest(self, device_type_ids, module_type_ids):
+    def _check_counts_against_rest(self, device_type_ids, module_type_ids, vendor_scope_valid):
         """Compare each endpoint's cached count with REST, which GraphQL cannot truncate.
 
         Raises:
@@ -512,8 +523,10 @@ class ComponentCache:
                 rest_count += self._rest_count(rest_endpoint, mt_filter_key, mt_ids)
 
             if cached_count != rest_count:
+                if vendor_scope_valid:
+                    reason = "GraphQL may have silently truncated the result set."
+                else:
+                    reason = "The cache failed vendor validation after cross-vendor contamination was cleared."
                 raise GraphQLCountMismatchError(
-                    f"{endpoint_name}: GraphQL returned {cached_count} records "
-                    f"but REST reports {rest_count} — "
-                    "GraphQL may have silently truncated the result set."
+                    f"{endpoint_name}: GraphQL returned {cached_count} records but REST reports {rest_count}. {reason}"
                 )
