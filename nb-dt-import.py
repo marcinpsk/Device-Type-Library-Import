@@ -10,6 +10,7 @@ from core.netbox_api import NetBox, _fmt_connection_error
 from core.log_handler import LogHandler
 from core.repo import DTLRepo
 from core.change_detector import ChangeDetector, ChangeType, IMAGE_PROPERTIES
+from core.component_cache import NullTaskDisplay, RichTaskDisplay
 from core.graphql_client import GraphQLError
 from pynetbox.core.query import RequestError as NetBoxRequestError
 import requests
@@ -398,6 +399,17 @@ def should_only_create_new_modules(config):
     return config.only_new or not config.update
 
 
+def _cache_display(progress, task_registry):
+    """Return the progress sink the component cache reports through.
+
+    The registry keeps the "Caching X" tasks cumulative across vendors, so the
+    display leaves them for :func:`_finalize_task_registry` to close.
+    """
+    if progress is None:
+        return NullTaskDisplay()
+    return RichTaskDisplay(progress, registry=task_registry)
+
+
 @contextmanager
 def _image_progress_scope(progress, device_types, total=0):
     """Context manager that wires up image-upload progress tracking.
@@ -450,7 +462,6 @@ def _process_device_types(
     handle,
     progress,
     device_types,
-    cache_preload_job,
     vendor_slug=None,
     task_registry=None,
 ):
@@ -466,13 +477,8 @@ def _process_device_types(
         handle (LogHandler): Logging handler used to emit progress messages.
         progress: Rich Progress instance for progress display, or None.
         device_types (list[dict]): Parsed device-type dicts to process.
-        cache_preload_job: Background component-cache preload job, or None.
         vendor_slug (str | None): Manufacturer slug for scoped integrity checks.
         task_registry (dict | None): Shared cumulative progress task registry.
-
-    Returns:
-        The updated *cache_preload_job*: ``None`` if the job was consumed by
-        ``preload_all_components``; otherwise the original value.
     """
     if config.only_new:
         new_device_types = filter_new_device_types(
@@ -495,23 +501,14 @@ def _process_device_types(
                 )
         else:
             handle.verbose_log("No new device types to create.")
-        return cache_preload_job
-
-    # Non-only_new path: always consume the preload job if one was started.
-    # This is required even when device_types is empty (e.g. module-type-only vendor)
-    # so that _global_preload_done is set before _process_module_types runs.
-    if cache_preload_job is not None:
-        handle.verbose_log("Caching NetBox data for comparison (concurrent API requests started after parsing)...")
-        netbox.device_types.preload_all_components(
-            progress=progress,
-            preload_job=cache_preload_job,
-            manufacturer_slug=vendor_slug,
-            task_registry=task_registry,
-        )
-        cache_preload_job = None
+        return
 
     if not device_types:
         handle.verbose_log("No device types matched filters.")
+        return
+
+    handle.verbose_log("Caching NetBox data for comparison (concurrent API requests started after parsing)...")
+    netbox.device_types.ensure_components_ready(manufacturer_slug=vendor_slug)
 
     detector = ChangeDetector(
         netbox.device_types,
@@ -565,8 +562,6 @@ def _process_device_types(
                 )
         else:
             handle.verbose_log("No new device types or missing images to process.")
-
-    return cache_preload_job
 
 
 def _process_module_types(config, netbox, handle, progress, module_types, task_registry=None):
@@ -910,7 +905,7 @@ def _run_vendor_loop(
     vendor_task_id,
 ) -> None:
     """Process all selected vendors and finalize preload/progress teardown."""
-    cache_preload_job = None
+    cache = netbox.device_types.components
     try:
         for vendor in vendors_to_process:
             parsed_device_types, parsed_module_types, parsed_rack_types = _parse_vendor_types(
@@ -923,35 +918,28 @@ def _run_vendor_loop(
                 continue
 
             netbox.load_vendor(vendor["slug"])
-            cache_preload_job = None
 
             if (parsed_device_types or parsed_module_types) and not config.only_new:
-                cache_preload_job = netbox.device_types.start_component_preload(
+                cache.begin_prefetch(
                     manufacturer_slug=vendor["slug"],
-                    progress=progress,
-                    task_registry=task_registry,
+                    display=_cache_display(progress, task_registry),
                 )
 
-            def _pump():
-                if cache_preload_job and progress is not None:
-                    netbox.device_types.pump_preload_progress(cache_preload_job, progress)
-
             handle.verbose_log(f"{len(parsed_device_types)} Device-Types Found")
-            _pump()
+            cache.pump()
             netbox.create_manufacturers([vendor])
-            _pump()
+            cache.pump()
 
-            cache_preload_job = _process_device_types(
+            _process_device_types(
                 config,
                 netbox,
                 handle,
                 progress,
                 parsed_device_types,
-                cache_preload_job,
                 vendor_slug=vendor["slug"],
                 task_registry=task_registry,
             )
-            _pump()
+            cache.pump()
 
             if netbox.modules:
                 _process_module_types(
@@ -962,7 +950,7 @@ def _run_vendor_loop(
                     parsed_module_types,
                     task_registry=task_registry,
                 )
-                _pump()
+                cache.pump()
 
             _process_rack_types(
                 config,
@@ -972,17 +960,13 @@ def _run_vendor_loop(
                 parsed_rack_types,
                 task_registry=task_registry,
             )
-            _pump()
-
-            if cache_preload_job:
-                netbox.device_types.stop_component_preload(cache_preload_job, progress=progress)
-                cache_preload_job = None
+            cache.pump()
+            cache.close()
 
             if vendor_task_id is not None:
                 progress.advance(vendor_task_id)
     finally:
-        if cache_preload_job:
-            netbox.device_types.stop_component_preload(cache_preload_job, progress=progress)
+        cache.close()
         _finalize_task_registry(progress, task_registry)
         handle.set_console(None)
 

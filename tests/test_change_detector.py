@@ -1,6 +1,7 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from core.component_cache import ComponentCache
 from core.graphql_client import DotDict
 from core.change_detector import (
     ChangeDetector,
@@ -10,6 +11,24 @@ from core.change_detector import (
     DeviceTypeChange,
     PropertyChange,
 )
+
+
+def _cache(**records):
+    """Build a real ComponentCache holding *records*, keyed by endpoint name.
+
+    Populating through the real object means these tests read the same index the
+    importer builds, rather than a dict that merely looks like it.
+    """
+    cache = ComponentCache(MagicMock(), MagicMock(), MagicMock(), new_filters=True, max_threads=1)
+    for endpoint_name, items in records.items():
+        cache.populate(endpoint_name, items)
+    return cache
+
+
+def _component(name, parent_id=1, parent_type="device", **fields):
+    """Build a component-template record the cache can index by its parent."""
+    parent_key = "device_type" if parent_type == "device" else "module_type"
+    return DotDict({"name": name, parent_key: DotDict({"id": parent_id}), **fields})
 
 
 class TestDeviceTypeChangeProperties:
@@ -99,49 +118,41 @@ class TestCompareDeviceTypeProperties:
 class TestCompareComponents:
     """Tests for TestCompareComponents."""
 
-    def _make_detector(self, cached_components=None):
+    def _make_detector(self, cache=None):
         dt_instance = MagicMock()
-        dt_instance.cached_components = cached_components or {}
+        dt_instance.components = cache or _cache()
         handle = MagicMock()
         return ChangeDetector(dt_instance, handle)
 
     def test_component_added_when_missing_in_netbox(self):
         detector = self._make_detector()
-        detector.device_types.cached_components = {"interface_templates": {("device", 1): {}}}
         yaml_data = {"interfaces": [{"name": "eth0", "type": "virtual"}]}
         changes = detector._compare_components(yaml_data, 1)
         assert any(c.component_name == "eth0" and c.change_type == ChangeType.COMPONENT_ADDED for c in changes)
 
     def test_component_removed_when_missing_in_yaml(self):
-        existing_comp = DotDict({"name": "eth99"})
-        detector = self._make_detector()
-        detector.device_types.cached_components = {"interface_templates": {("device", 1): {"eth99": existing_comp}}}
+        detector = self._make_detector(_cache(interface_templates=[_component("eth99")]))
         yaml_data = {"interfaces": []}  # key present but empty → removal detected
         changes = detector._compare_components(yaml_data, 1)
         assert any(c.component_name == "eth99" and c.change_type == ChangeType.COMPONENT_REMOVED for c in changes)
 
     def test_no_removal_when_key_absent(self):
-        existing_comp = DotDict({})
-        detector = self._make_detector()
-        detector.device_types.cached_components = {"interface_templates": {("device", 1): {"eth99": existing_comp}}}
+        detector = self._make_detector(_cache(interface_templates=[_component("eth99")]))
         yaml_data = {}  # 'interfaces' key absent → YAML doesn't manage this type
         changes = detector._compare_components(yaml_data, 1)
         assert not any(c.component_name == "eth99" for c in changes)
 
     def test_removal_when_key_absent_with_remove_unmanaged_types(self):
         """remove_unmanaged_types=True flags removals even when the YAML omits the section entirely."""
-        existing_comp = DotDict({"name": "eth99"})
         dt_instance = MagicMock()
-        dt_instance.cached_components = {"interface_templates": {("device", 1): {"eth99": existing_comp}}}
+        dt_instance.components = _cache(interface_templates=[_component("eth99")])
         detector = ChangeDetector(dt_instance, MagicMock(), remove_unmanaged_types=True)
         yaml_data = {}  # 'interfaces' key absent
         changes = detector._compare_components(yaml_data, 1)
         assert any(c.component_name == "eth99" and c.change_type == ChangeType.COMPONENT_REMOVED for c in changes)
 
     def test_component_changed_when_property_differs(self):
-        existing_comp = DotDict({"type": "virtual"})
-        detector = self._make_detector()
-        detector.device_types.cached_components = {"interface_templates": {("device", 1): {"eth0": existing_comp}}}
+        detector = self._make_detector(_cache(interface_templates=[_component("eth0", type="virtual")]))
         yaml_data = {"interfaces": [{"name": "eth0", "type": "1000base-t"}]}
         changes = detector._compare_components(yaml_data, 1)
         assert any(c.component_name == "eth0" and c.change_type == ChangeType.COMPONENT_CHANGED for c in changes)
@@ -149,7 +160,6 @@ class TestCompareComponents:
     def test_component_without_name_is_skipped(self):
         """YAML component entry with no 'name' key must be skipped (line 350 continue)."""
         detector = self._make_detector()
-        detector.device_types.cached_components = {"interface_templates": {("device", 1): {}}}
         yaml_data = {"interfaces": [{"type": "virtual"}]}  # no 'name' key
         changes = detector._compare_components(yaml_data, 1)
         assert changes == []
@@ -184,11 +194,11 @@ class TestCompareComponentProperties:
 class TestDetectChanges:
     """Tests for TestDetectChanges."""
 
-    def _make_detector_with_cache(self, existing_by_model=None, existing_by_slug=None, cached_components=None):
+    def _make_detector_with_cache(self, existing_by_model=None, existing_by_slug=None, cache=None):
         dt_instance = MagicMock()
         dt_instance.existing_device_types = existing_by_model or {}
         dt_instance.existing_device_types_by_slug = existing_by_slug or {}
-        dt_instance.cached_components = cached_components or {}
+        dt_instance.components = cache or _cache()
         handle = MagicMock()
         return ChangeDetector(dt_instance, handle)
 
@@ -203,7 +213,6 @@ class TestDetectChanges:
         existing = DotDict({"id": 1})
         detector = self._make_detector_with_cache(
             existing_by_model={("cisco", "X"): existing},
-            cached_components={},
         )
         dt_data = [{"manufacturer": {"slug": "cisco"}, "model": "X", "slug": "x"}]
         report = detector.detect_changes(dt_data)
@@ -214,7 +223,6 @@ class TestDetectChanges:
         existing = DotDict({"id": 1, "u_height": 1})
         detector = self._make_detector_with_cache(
             existing_by_model={("cisco", "X"): existing},
-            cached_components={},
         )
         dt_data = [
             {
@@ -232,7 +240,6 @@ class TestDetectChanges:
         detector = self._make_detector_with_cache(
             existing_by_model={},
             existing_by_slug={("cisco", "x"): existing},
-            cached_components={},
         )
         dt_data = [{"manufacturer": {"slug": "cisco"}, "model": "NewName", "slug": "x"}]
         report = detector.detect_changes(dt_data)
@@ -246,7 +253,7 @@ class TestLogChangeReport:
         dt_instance = MagicMock()
         dt_instance.existing_device_types = {}
         dt_instance.existing_device_types_by_slug = {}
-        dt_instance.cached_components = {}
+        dt_instance.components = _cache()
         handle = MagicMock()
         handle.args = SimpleNamespace(verbose=verbose)
         return ChangeDetector(dt_instance, handle)

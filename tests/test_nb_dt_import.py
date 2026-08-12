@@ -1229,17 +1229,51 @@ class TestPerVendorLoop:
         mock_repo.get_devices.side_effect = _get_devices_se
         mock_repo.parse_files.side_effect = _parse_files_se
 
+        netbox_class = nb_dt_import.NetBox
+
+        def _filter_actionable(module_types, all_module_types, only_new=False):
+            return netbox_class.filter_actionable_module_types(
+                mock_nb,
+                module_types,
+                all_module_types,
+                only_new=only_new,
+            )
+
+        mock_nb._fetch_module_type_existing_images.return_value = {}
+        mock_nb.filter_actionable_module_types.side_effect = _filter_actionable
+
         self._run_main(["nb-dt-import.py"], mock_repo, mock_nb, nb_dt_import)
 
-        mock_nb.device_types.start_component_preload.assert_called_once()
-        call_kwargs = mock_nb.device_types.start_component_preload.call_args
-        assert call_kwargs.kwargs.get("manufacturer_slug") == "acbel"
+        cache = mock_nb.device_types.components
+        cache.begin_prefetch.assert_called_once()
+        assert cache.begin_prefetch.call_args.kwargs.get("manufacturer_slug") == "acbel"
 
-        # The unscoped preload_all_components (no manufacturer_slug) must NOT be called
-        for call in mock_nb.device_types.preload_all_components.call_args_list:
+        # An unscoped readiness call fetches every vendor, which is the regression.
+        assert mock_nb.device_types.ensure_components_ready.call_args_list
+        for call in mock_nb.device_types.ensure_components_ready.call_args_list:
             assert call.kwargs.get("manufacturer_slug") is not None, (
-                "preload_all_components called without manufacturer_slug (global fetch triggered)"
+                "ensure_components_ready called without manufacturer_slug (global fetch triggered)"
             )
+
+    def test_empty_device_type_list_returns_before_cache_readiness(self, nb_dt_import):
+        class DeviceTypes:
+            def ensure_components_ready(self, manufacturer_slug=None):
+                raise AssertionError("empty input must not populate the component cache")
+
+        class Handle:
+            def __init__(self):
+                self.messages = []
+
+            def verbose_log(self, message):
+                self.messages.append(message)
+
+        handle = Handle()
+        config = SimpleNamespace(only_new=False)
+        netbox = SimpleNamespace(device_types=DeviceTypes())
+
+        nb_dt_import._process_device_types(config, netbox, handle, None, [], vendor_slug="cisco")
+
+        assert handle.messages == ["No device types matched filters."]
 
 
 # ---------------------------------------------------------------------------
@@ -1763,7 +1797,6 @@ class TestMainAdditionalCoverage:
         )
         mock_repo.parse_files.side_effect = _parse_files
         mock_nb = _make_mock_netbox()
-        mock_nb.device_types.start_component_preload.return_value = "job-1"
         progress = MagicMock()
         progress.console = object()
 
@@ -1779,7 +1812,7 @@ class TestMainAdditionalCoverage:
             patch("nb_dt_import.DTLRepo", return_value=mock_repo),
             patch("nb_dt_import.NetBox", return_value=mock_nb),
             patch("nb_dt_import.ChangeDetector") as MockDetector,
-            patch("nb_dt_import._process_device_types", return_value="job-1"),
+            patch("nb_dt_import._process_device_types"),
             patch("sys.stdout") as mock_stdout,
             patch("nb_dt_import.get_progress_panel", return_value=_Ctx()),
         ):
@@ -1787,8 +1820,8 @@ class TestMainAdditionalCoverage:
             MockDetector.return_value.detect_changes.return_value = _empty_change_report()
             nb_dt_import.main()
 
-        mock_nb.device_types.pump_preload_progress.assert_called()
-        mock_nb.device_types.stop_component_preload.assert_called_with("job-1", progress=progress)
+        mock_nb.device_types.components.pump.assert_called()
+        mock_nb.device_types.components.close.assert_called()
 
     def test_main_stops_preload_job_in_finally_on_error(self, nb_dt_import):
         mock_repo = _make_mock_repo()
@@ -1800,7 +1833,6 @@ class TestMainAdditionalCoverage:
             [{"manufacturer": {"slug": "cisco"}, "model": "X", "slug": "x"}] if files == ["device.yaml"] else []
         )
         mock_nb = _make_mock_netbox()
-        mock_nb.device_types.start_component_preload.return_value = "job-2"
         progress = MagicMock()
         progress.console = object()
 
@@ -1821,7 +1853,7 @@ class TestMainAdditionalCoverage:
             with pytest.raises(RuntimeError, match="boom"):
                 nb_dt_import.main()
 
-        mock_nb.device_types.stop_component_preload.assert_called_with("job-2", progress=progress)
+        mock_nb.device_types.components.close.assert_called()
 
     def test_build_argument_parser_sets_expected_defaults_and_flags(self, nb_dt_import):
         parser = config_module.build_argument_parser({})
@@ -1890,7 +1922,6 @@ class TestMainAdditionalCoverage:
             else []
         )
         netbox = _make_mock_netbox(modules=True)
-        netbox.device_types.start_component_preload.return_value = "job-1"
         slug_resolved = {
             "device_files": {"empty": [], "cisco": ["resolved.yaml"]},
             "module_vendors": {"cisco"},
@@ -1902,7 +1933,7 @@ class TestMainAdditionalCoverage:
                 "nb_dt_import._parse_vendor_racks",
                 side_effect=[[], [{"manufacturer": {"slug": "cisco"}, "model": "R", "slug": "r"}]],
             ),
-            patch("nb_dt_import._process_device_types", return_value="job-1") as mock_process_device_types,
+            patch("nb_dt_import._process_device_types") as mock_process_device_types,
             patch("nb_dt_import._process_module_types") as mock_process_module_types,
             patch("nb_dt_import._process_rack_types") as mock_process_rack_types,
             patch("nb_dt_import._finalize_task_registry") as mock_finalize,
@@ -1923,16 +1954,12 @@ class TestMainAdditionalCoverage:
             )
 
         netbox.load_vendor.assert_called_once_with("cisco")
-        netbox.device_types.start_component_preload.assert_called_once_with(
-            manufacturer_slug="cisco",
-            progress=progress,
-            task_registry={},
-        )
-        # pump is now called after preload start, after create_manufacturers,
-        # and after each of the three process_*_types steps → 5 calls total
-        assert netbox.device_types.pump_preload_progress.call_count == 5
-        netbox.device_types.pump_preload_progress.assert_called_with("job-1", progress)
-        netbox.device_types.stop_component_preload.assert_called_once_with("job-1", progress=progress)
+        netbox.device_types.components.begin_prefetch.assert_called_once()
+        assert netbox.device_types.components.begin_prefetch.call_args.kwargs["manufacturer_slug"] == "cisco"
+        # pump runs after the prefetch starts, after create_manufacturers, and after
+        # each of the three process_*_types steps → 5 calls
+        assert netbox.device_types.components.pump.call_count == 5
+        netbox.device_types.components.close.assert_called()
         netbox.create_manufacturers.assert_called_once_with([{"slug": "cisco", "name": "Cisco"}])
         mock_process_device_types.assert_called_once()
         assert mock_process_device_types.call_args.args[4] == [
@@ -1960,7 +1987,6 @@ class TestMainAdditionalCoverage:
             [{"manufacturer": {"slug": "cisco"}, "model": "X", "slug": "x"}] if files == ["device.yaml"] else []
         )
         netbox = _make_mock_netbox()
-        netbox.device_types.start_component_preload.return_value = "job-2"
 
         with (
             patch("nb_dt_import._parse_vendor_racks", return_value=[]),
@@ -1983,7 +2009,7 @@ class TestMainAdditionalCoverage:
                     vendor_task_id=8,
                 )
 
-        netbox.device_types.stop_component_preload.assert_called_once_with("job-2", progress=progress)
+        netbox.device_types.components.close.assert_called()
         mock_finalize.assert_called_once_with(progress, {})
 
 
