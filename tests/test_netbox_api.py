@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+from requests.exceptions import ConnectionError as RequestsConnectionError
 from unittest.mock import MagicMock, patch
 from core.component_registry import BY_YAML_KEY, COMPONENT_TYPES
 from core.netbox_api import (
@@ -5115,11 +5116,11 @@ class TestCheckImageUrl:
             assert _check_image_url("http://nb", "/media/front.png", False) == "missing"
 
     def test_a_refused_connection_is_unknown_not_present(self):
-        """A real failure on the wire says nothing about the file, so neither state applies."""
+        """A failure on the wire says nothing about the file, so neither state applies."""
         from core.netbox_api import _check_image_url
 
-        # Port 1 on loopback refuses immediately: a genuine transport failure, no mock.
-        assert _check_image_url("http://127.0.0.1:1", "/media/front.png", False) == "unknown"
+        with patch("core.netbox_api.requests.get", side_effect=RequestsConnectionError("connection refused")):
+            assert _check_image_url("http://nb", "/media/front.png", False) == "unknown"
 
     def test_uses_full_url_when_image_url_is_absolute(self):
         """If image_url_path starts with 'http', base_url is not prepended."""
@@ -5266,7 +5267,7 @@ class TestVerifyImagesDeviceType:
         """--verify-images asked for a server check; a failed request did not deliver one."""
         nb = self._make_nb(mock_settings, mock_handle, mock_pynetbox, graphql_client, make_device_types)
         nb.verify_images = True
-        nb.url = "http://127.0.0.1:1"
+        nb.url = "http://nb"
         nb.device_types.upload_images = MagicMock()
 
         existing_dt = MagicMock()
@@ -5292,8 +5293,10 @@ class TestVerifyImagesDeviceType:
             "src": str(dev_types_dir / "router.yaml"),
         }
 
-        # Port 1 on loopback refuses: a real transport failure, not a mocked one.
-        with patch("glob.glob", return_value=[str(img)]):
+        with (
+            patch("glob.glob", return_value=[str(img)]),
+            patch("core.netbox_api.requests.get", side_effect=RequestsConnectionError("connection refused")),
+        ):
             nb.create_device_types([device_type])
 
         assert any("Could not verify Front image" in str(call) for call in mock_handle.log.call_args_list)
@@ -5516,7 +5519,8 @@ class TestNetBoxImageHelperFunctions:
         from core.netbox_api import _check_image_url
 
         logged = []
-        result = _check_image_url("http://127.0.0.1:1", "/media/img.png", False, log_fn=logged.append)
+        with patch("core.netbox_api.requests.get", side_effect=RequestsConnectionError("connection refused")):
+            result = _check_image_url("http://nb", "/media/img.png", False, log_fn=logged.append)
 
         assert result == "unknown"
         assert any("Network error" in m for m in logged)
@@ -5525,7 +5529,8 @@ class TestNetBoxImageHelperFunctions:
         """Without a log_fn the error is not reported, but the verdict still says unknown."""
         from core.netbox_api import _check_image_url
 
-        assert _check_image_url("http://127.0.0.1:1", "/media/img.png", False) == "unknown"
+        with patch("core.netbox_api.requests.get", side_effect=RequestsConnectionError("connection refused")):
+            assert _check_image_url("http://nb", "/media/img.png", False) == "unknown"
 
 
 class TestTheImageHashCacheReportsWhatItLoses:
