@@ -5092,6 +5092,14 @@ class TestCheckImageUrl:
         with patch("requests.get", return_value=self._image_resp(ok=True, content_type="image/png")):
             assert _check_image_url("http://nb", "/media/front.png", False) == "present"
 
+    @pytest.mark.real_http
+    def test_returns_missing_when_response_is_a_pdf(self):
+        """A successful non-image response does not prove that an image is present."""
+        from core.netbox_api import _check_image_url
+
+        with _netbox_returning(200, "%PDF-1.7", content_type="application/pdf") as url:
+            assert _check_image_url(url, "/media/front.png", False) == "missing"
+
     def test_returns_missing_when_ok_but_html_content_type(self):
         """2xx with text/html means a login-redirect / missing-file error page → 'missing'."""
         from core.netbox_api import _check_image_url
@@ -6459,10 +6467,11 @@ class _CannedHandler(BaseHTTPRequestHandler):
 
     def _reply(self):
         self.send_response(self.server.canned_status)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", self.server.canned_content_type)
         self.end_headers()
         self.wfile.write(self.server.canned_body.encode())
 
+    do_GET = _reply
     do_PATCH = _reply
     do_POST = _reply
     do_DELETE = _reply
@@ -6472,11 +6481,12 @@ class _CannedHandler(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def _netbox_returning(status, body):
+def _netbox_returning(status, body, content_type="application/json"):
     """Run a local HTTP server that answers every request with *status* and *body*."""
     server = ThreadingHTTPServer(("127.0.0.1", 0), _CannedHandler)
     server.canned_status = status
     server.canned_body = body
+    server.canned_content_type = content_type
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

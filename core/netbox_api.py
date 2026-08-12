@@ -160,8 +160,8 @@ def _check_image_url(
         return "unknown"
     if not response.ok:
         return "missing"
-    content_type = response.headers.get("Content-Type", "")
-    if content_type.startswith("text/") or content_type.startswith("application/json"):
+    content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+    if not content_type.startswith("image/"):
         return "missing"
     return "present"
 
