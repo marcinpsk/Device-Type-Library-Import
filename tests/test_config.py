@@ -80,9 +80,12 @@ class TestOptionalVariablesUseTheirDefault:
         monkeypatch.setenv("NETBOX_URL", "")
         monkeypatch.setenv("NETBOX_TOKEN", "")
         result = _run_cli("--export-diff", REPO_URL="", GRAPHQL_PAGE_SIZE="invalid")
+        combined = result.stdout + result.stderr
 
-        assert 'Environment variable "REPO_URL" is not set' not in result.stdout + result.stderr
-        assert 'Environment variable "NETBOX_URL" is not set' not in result.stdout + result.stderr
+        assert result.returncode != 0
+        assert "GRAPHQL_PAGE_SIZE" in combined
+        assert 'Environment variable "REPO_URL" is not set' not in combined
+        assert 'Environment variable "NETBOX_URL" is not set' not in combined
 
 
 class TestRequiredVariables:
