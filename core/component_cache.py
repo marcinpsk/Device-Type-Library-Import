@@ -21,11 +21,6 @@ from core.compat import (
 from core.component_registry import COMPONENT_TYPES
 from core.graphql_client import GraphQLCountMismatchError, GraphQLSchemaError
 
-# Endpoints whose GraphQL schema is missing fields required for accurate change
-# detection, and where REST provides them.  Add an endpoint here if a NetBox
-# version drops a field from GraphQL but keeps it in REST.
-REST_ONLY_ENDPOINTS: frozenset = frozenset()
-
 
 def _chunked(items, size):
     """Yield successive *size*-length chunks of *items*."""
@@ -339,12 +334,6 @@ class ComponentCache:
 
     def _fetch_endpoint(self, endpoint_name, on_advance, manufacturer_slug):
         """Return every record for *endpoint_name*, reporting each page through *on_advance*."""
-        if endpoint_name in REST_ONLY_ENDPOINTS:
-            records = list(getattr(self.netbox.dcim, endpoint_name).all())
-            if records:
-                on_advance(endpoint_name, len(records))
-            return records
-
         records = self.graphql.get_component_templates(
             endpoint_name,
             manufacturer_slug=manufacturer_slug,
@@ -474,10 +463,6 @@ class ComponentCache:
 
         for component in COMPONENT_TYPES:
             endpoint_name = component.endpoint
-            if endpoint_name in REST_ONLY_ENDPOINTS:
-                # Already fetched over REST, so comparing REST to REST proves nothing.
-                continue
-
             cached_count = sum(
                 len(records)
                 for key, records in self._entries.get(endpoint_name, {}).items()

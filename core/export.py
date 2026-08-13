@@ -208,6 +208,7 @@ class Exporter:
             url=config.netbox_url,
             token=config.netbox_token,
             ignore_ssl=config.ignore_ssl_errors,
+            handle=handle,
             page_size=config.graphql_page_size,
         )
         self._module_image_details: Optional[dict] = None
@@ -622,7 +623,7 @@ class Exporter:
                     self.graphql.url,
                     self.graphql.token,
                     self.graphql.ignore_ssl,
-                    self.graphql._log_handler,
+                    self.graphql._handle,
                     self.graphql.DEFAULT_PAGE_SIZE,
                 )
                 _thread_local.graphql = client

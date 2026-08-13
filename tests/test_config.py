@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from core.config import resolve_run_config
+from core.config import EnvironmentVariableError, resolve_run_config
 
 _ROOT = pathlib.Path(__file__).resolve().parent.parent
 _ENTRY = _ROOT / "nb-dt-import.py"
@@ -60,6 +60,24 @@ class TestOptionalVariablesUseTheirDefault:
         result = _run_cli("--export-diff", REPO_URL="")
 
         assert 'Environment variable "REPO_URL" is not set' not in result.stdout + result.stderr
+
+
+class TestRequiredVariables:
+    """Required environment values fail with a typed configuration error."""
+
+    def test_one_missing_variable_uses_the_catalogue_error(self):
+        with pytest.raises(EnvironmentVariableError, match='Environment variable "NETBOX_TOKEN" is not set.'):
+            resolve_run_config(argv=[], env={"NETBOX_URL": "http://netbox.local"})
+
+    def test_all_missing_variables_use_one_typed_error(self):
+        with pytest.raises(EnvironmentVariableError) as exc_info:
+            resolve_run_config(argv=[], env={})
+
+        assert str(exc_info.value) == (
+            'Environment variable "NETBOX_URL" is not set.\n'
+            'Environment variable "NETBOX_TOKEN" is not set.\n\n'
+            "Required: NETBOX_URL, NETBOX_TOKEN"
+        )
 
 
 class TestRepoPathHasOneResolution:

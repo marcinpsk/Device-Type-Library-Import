@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
 
+from core.errors import FatalError
+
 DEFAULT_REPO_URL = "https://github.com/netbox-community/devicetype-library.git"
 DEFAULT_REPO_BRANCH = "master"
 DEFAULT_GRAPHQL_PAGE_SIZE = 5000
@@ -18,8 +20,19 @@ REQUIRED_ENV_VARS = ("NETBOX_URL", "NETBOX_TOKEN")
 _DEFAULT_REPO_PATH = f"{os.path.dirname(os.path.dirname(os.path.realpath(__file__)))}/repo"
 
 
-class ConfigError(Exception):
+class ConfigError(FatalError):
     """A configuration value the run cannot start with, phrased for the person who set it."""
+
+
+class EnvironmentVariableError(ConfigError):
+    """A required environment variable that is not set."""
+
+    def __init__(self, names, stack_trace=None):
+        """Name the required environment variables."""
+        names = (names,) if isinstance(names, str) else tuple(names)
+        message = "\n".join(f'Environment variable "{name}" is not set.' for name in names)
+        message += f"\n\nRequired: {', '.join(REQUIRED_ENV_VARS)}"
+        super().__init__(message, stack_trace)
 
 
 @dataclass(frozen=True)
@@ -242,10 +255,7 @@ def resolve_run_config(argv=None, env=None):
 
     missing = [name for name in REQUIRED_ENV_VARS if _text(env, name) is None]
     if missing:
-        raise ConfigError(
-            "\n".join(f'Environment variable "{name}" is not set.' for name in missing)
-            + f"\n\nRequired: {', '.join(REQUIRED_ENV_VARS)}"
-        )
+        raise EnvironmentVariableError(missing)
 
     slug_values = env.get("SLUGS", "").split() if args.slugs is None else args.slugs
     slugs = _split_slugs(slug_values)
