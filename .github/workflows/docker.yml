@@ -48,7 +48,7 @@ jobs:
         name: Check the image runs
         run: ./.github/scripts/docker-smoke-test.sh nb-dt-import:smoke
 
-  build-and-push-images:
+  build-images:
     needs: smoke-test
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
