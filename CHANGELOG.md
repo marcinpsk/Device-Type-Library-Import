@@ -2,6 +2,51 @@
 
 <!-- version list -->
 
+## v1.8.1 (2026-08-13)
+
+### Bug Fixes
+
+- Apply graphql_page_size to the export graphql client (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+- Address component cache review findings (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+- Report the image and parse failures the run used to swallow (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+- Report the image and parse failures the run used to swallow (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+- Require image content type for image checks (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+- Address pipeline review findings (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+- Address consolidated review findings (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+
+
+### Continuous Integration
+
+- Gate pull requests into develop (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+- Audit the workflows with zizmor, and slow dependabot down (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+
+
+### Refactoring
+
+- Importer with centralized configuration and import pipeline (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+- Resolve a run's configuration once, into a value (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+- Resolve a run's configuration once, into a value (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+- Give the component cache one owner and a small interface (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+- Give the component cache one owner and a small interface (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+- Describe each component type once, in one registry (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+- Give the pipeline an interface and the logger one job (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+- Split loghandler into a sink and a fatal-error policy (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+- Give the import pipeline an interface (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+- Delete the interface members only tests use (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+
+
+### Testing
+
+- Load .env before integration collection, and resolve repo_path once (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+- Make transport failures deterministic (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+- Assert export config stop condition (#117, [`2ac2407`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/2ac24070a1f41ce86610653e13982c98be6cee62))
+
+
+
+### Contributors
+
+@marcinpsk
+
 ## v1.8.0 (2026-08-11)
 
 ### Bug Fixes
