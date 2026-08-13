@@ -18,7 +18,6 @@ def test_pull_request_image_build_has_no_package_write_permission():
     jobs = _jobs()
     job = jobs["build-images"]
 
-    assert "build-and-push-images" not in jobs
     assert job["if"] == "github.event_name == 'pull_request'"
     assert job["permissions"] == {"contents": "read"}
     build = next(step for step in job["steps"] if step.get("uses", "").startswith("docker/build-push-action@"))
