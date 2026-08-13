@@ -1,9 +1,12 @@
 """Tests for core/export.py — Exporter class."""
 
+from dataclasses import replace
+
 import pytest
 from unittest.mock import MagicMock, patch
 import yaml
 
+from core.config import RunConfig
 from core.export import (
     ExportItem,
     Exporter,
@@ -16,6 +19,7 @@ from core.export import (
     _yaml_equal,
     _SKIP,
 )
+from core.log_handler import LogHandler
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
@@ -34,12 +38,17 @@ class _Stub:
 
 
 def _make_settings(tmp_path):
-    s = MagicMock()
-    s.NETBOX_URL = "http://localhost:8000/"
-    s.NETBOX_TOKEN = "test-token"
-    s.IGNORE_SSL_ERRORS = False
-    s.REPO_PATH = str(tmp_path / "repo")
-    return s
+    """Build a real RunConfig, so the exporter reads the same value the CLI hands it."""
+    return RunConfig(
+        netbox_url="http://localhost:8000/",
+        netbox_token="test-token",
+        ignore_ssl_errors=False,
+        graphql_page_size=5000,
+        preload_threads=8,
+        repo_url="https://example.com/repo.git",
+        repo_branch="master",
+        repo_path=str(tmp_path / "repo"),
+    )
 
 
 def _make_handle():
@@ -345,6 +354,25 @@ class TestCanonMfrSlug:
 
     def test_empty_dict_returns_empty(self):
         assert _canon_mfr_slug({}) == ""
+
+
+class TestExporterHonoursTheConfiguredPageSize:
+    """A server that caps GraphQL page size caps it for export too, not only for import."""
+
+    def test_the_graphql_client_is_built_with_the_configured_page_size(self, tmp_path):
+        """GRAPHQL_PAGE_SIZE exists because a server rejected the default; export hits that server too."""
+        settings = replace(_make_settings(tmp_path), graphql_page_size=250)
+
+        exporter = Exporter(settings, _make_handle(), str(tmp_path / "extra"), False, None)
+
+        assert exporter.graphql.DEFAULT_PAGE_SIZE == 250
+
+    def test_the_graphql_client_uses_the_exporter_reporter(self, tmp_path):
+        handle = LogHandler(False)
+
+        exporter = Exporter(_make_settings(tmp_path), handle, str(tmp_path / "extra"), False, None)
+
+        assert exporter.graphql.handle is handle
 
 
 class TestExporterRequiresTheLibrary:
@@ -908,12 +936,23 @@ class TestExporterAdditionalCoverage:
         assert exporter._download_type_images(rt_item) is True
 
     def test_download_module_type_images_handles_fetch_failure(self, tmp_path):
+        from core.graphql_client import GraphQLError
+
         exporter = self._make_exporter(tmp_path)
         item = ExportItem("module-type", _make_mt(id=77), None, {}, "absent", "Nokia", "mt.yaml", "Nokia/mt")
-        exporter._get_module_image_details = MagicMock(side_effect=RuntimeError("boom"))
+        exporter._get_module_image_details = MagicMock(side_effect=GraphQLError("boom"))
 
         assert exporter._download_module_type_images(item) is False
         assert any("Could not fetch module image details" in str(call) for call in exporter.handle.log.call_args_list)
+
+    def test_download_module_type_images_does_not_swallow_a_programming_error(self, tmp_path):
+        """Only a query or transport failure is a reason to give up on the images."""
+        exporter = self._make_exporter(tmp_path)
+        item = ExportItem("module-type", _make_mt(id=77), None, {}, "absent", "Nokia", "mt.yaml", "Nokia/mt")
+        exporter._get_module_image_details = MagicMock(side_effect=TypeError("wrong argument"))
+
+        with pytest.raises(TypeError):
+            exporter._download_module_type_images(item)
 
     def test_download_module_type_images_downloads_available_attachments(self, tmp_path):
         exporter = self._make_exporter(tmp_path)

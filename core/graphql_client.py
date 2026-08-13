@@ -10,6 +10,8 @@ import time
 
 import requests
 
+from core.component_registry import BY_ENDPOINT
+
 # Module-level dedup: tracks (url, requested_page_size) pairs that have already
 # emitted the page-size clamping warning so the message appears at most once
 # even when multiple client instances share the same server.
@@ -91,68 +93,6 @@ def _to_dotdict(obj):
     return obj
 
 
-# Deterministic mapping from endpoint name to its GraphQL list key.
-# Using rstrip("s") would strip multiple trailing 's' chars from hypothetical
-# future names; this mapping is explicit and safe.
-ENDPOINT_TO_LIST_KEY = {
-    "interface_templates": "interface_template_list",
-    "power_port_templates": "power_port_template_list",
-    "console_port_templates": "console_port_template_list",
-    "console_server_port_templates": "console_server_port_template_list",
-    "power_outlet_templates": "power_outlet_template_list",
-    "rear_port_templates": "rear_port_template_list",
-    "front_port_templates": "front_port_template_list",
-    "device_bay_templates": "device_bay_template_list",
-    "module_bay_templates": "module_bay_template_list",
-}
-
-# Mapping of endpoint names (as used in DeviceTypes) to their GraphQL fields.
-# Every entry also includes ``device_type { id }`` and ``module_type { id }`` automatically.
-COMPONENT_TEMPLATE_FIELDS = {
-    "interface_templates": [
-        "id",
-        "name",
-        "type",
-        "mgmt_only",
-        "label",
-        "enabled",
-        "poe_mode",
-        "poe_type",
-        "description",
-        "rf_role",
-    ],
-    "power_port_templates": [
-        "id",
-        "name",
-        "type",
-        "maximum_draw",
-        "allocated_draw",
-        "label",
-        "description",
-    ],
-    "console_port_templates": ["id", "name", "type", "label", "description"],
-    "console_server_port_templates": ["id", "name", "type", "label", "description"],
-    "power_outlet_templates": ["id", "name", "type", "feed_leg", "label", "description"],
-    "rear_port_templates": ["id", "name", "type", "positions", "label", "description", "color"],
-    "front_port_templates": [
-        "id",
-        "name",
-        "type",
-        "label",
-        "description",
-        "color",
-        "mappings { id front_port_position rear_port_position rear_port { id name } }",
-    ],
-    "device_bay_templates": ["id", "name", "label", "description"],
-    "module_bay_templates": ["id", "name", "position", "label", "description"],
-}
-
-# Endpoints whose GraphQL schema has no ``module_type`` parent field.
-# Note: module_bay_templates is intentionally excluded from this set — NetBox's
-# module_bay_template_list DOES support module_type { id }, so we must include it
-# in the query to correctly cache module bays owned by module types.
-_NO_MODULE_TYPE = {"device_bay_templates"}
-
 # NetBox returns the real cause (a database error, a plugin traceback) in the response body,
 # so it is worth reporting. Django error pages can be large, hence the cap.
 _MAX_ERROR_BODY_CHARS = 1000
@@ -195,14 +135,14 @@ class NetBoxGraphQLClient:
         or raise the server's ``MAX_PAGE_SIZE`` setting to match.
     """
 
-    def __init__(self, url, token, ignore_ssl=False, log_handler=None, page_size=5000):
+    def __init__(self, url, token, ignore_ssl=False, handle=None, page_size=5000):
         """Store connection parameters for later use in :meth:`query`.
 
         Args:
             url: Base URL of the NetBox instance.
             token: API authentication token.
             ignore_ssl: If True, skip SSL certificate verification.
-            log_handler: Optional :class:`~log_handler.LogHandler` used to emit
+            handle: Optional :class:`~log_handler.LogHandler` used to emit
                 warnings (e.g. server-side page-size clamping).  Falls back to
                 ``print`` when not provided.
             page_size: Default number of items per GraphQL page
@@ -213,7 +153,7 @@ class NetBoxGraphQLClient:
         self.graphql_url = f"{self.url}/graphql/"
         self.token = token
         self.ignore_ssl = ignore_ssl
-        self._log_handler = log_handler
+        self._handle = handle
 
         self._session = requests.Session()
         # v2 tokens start with "nbt_" prefix (format: nbt_<key>.<secret>);
@@ -230,6 +170,15 @@ class NetBoxGraphQLClient:
             import urllib3
 
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+    @property
+    def handle(self):
+        """Return the log handle supplied at construction time."""
+        return self._handle
+
+    def clone(self):
+        """Return an independent client with the same connection settings."""
+        return type(self)(self.url, self.token, self.ignore_ssl, self.handle, self.DEFAULT_PAGE_SIZE)
 
     def close(self):
         """Close the underlying HTTP session."""
@@ -373,8 +322,8 @@ class NetBoxGraphQLClient:
                             f"will be slower than expected. Consider raising "
                             f"MAX_PAGE_SIZE on your NetBox server."
                         )
-                        if self._log_handler is not None:
-                            self._log_handler.log(msg)
+                        if self._handle is not None:
+                            self._handle.log(msg)
                         else:
                             print(msg)
 
@@ -829,17 +778,18 @@ class NetBoxGraphQLClient:
             ValueError: If *endpoint_name* is not a recognized component template endpoint.
             ValueError: If *manufacturer_slug* is an empty string.
         """
-        if endpoint_name not in COMPONENT_TEMPLATE_FIELDS or endpoint_name not in ENDPOINT_TO_LIST_KEY:
+        component = BY_ENDPOINT.get(endpoint_name)
+        if component is None:
             raise ValueError(f"Unknown component endpoint: {endpoint_name}")
 
         if manufacturer_slug is not None and len(manufacturer_slug) == 0:
             raise ValueError("manufacturer_slug must be None or a non-empty string")
 
-        fields = COMPONENT_TEMPLATE_FIELDS[endpoint_name]
-        list_key = ENDPOINT_TO_LIST_KEY[endpoint_name]
+        fields = component.graphql_fields
+        list_key = component.list_key
 
         parent_fields = "device_type { id }"
-        if endpoint_name not in _NO_MODULE_TYPE:
+        if component.module_types:
             parent_fields += "\n            module_type { id }"
 
         if manufacturer_slug is None:
@@ -869,7 +819,7 @@ class NetBoxGraphQLClient:
             )
 
             # If endpoint supports module_type, also query module-type-filtered templates
-            if endpoint_name not in _NO_MODULE_TYPE:
+            if component.module_types:
                 module_filter = "filters: {module_type: {manufacturer: {slug: {exact: $manufacturer_slug}}}}, "
                 module_items = self._query_component_endpoint(
                     list_key=list_key,

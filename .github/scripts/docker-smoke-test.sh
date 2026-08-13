@@ -38,7 +38,7 @@ expect_output "unrecognized arguments" "unknown flags did not reach the importer
 # an entrypoint that silently does nothing also produces no Docker error.
 run_image "$IMAGE"
 [ "$status" -eq 1 ] || fail "the no-argument run exited $status, expected the importer's 1: $out"
-expect_output 'Environment variable "REPO_URL" is not set.' "the no-argument run did not start the importer"
+expect_output 'Environment variable "NETBOX_URL" is not set.' "the no-argument run did not start the importer"
 
 # The pre-entrypoint invocation stays supported for anyone who worked it out from the
 # Dockerfile before the image was documented.

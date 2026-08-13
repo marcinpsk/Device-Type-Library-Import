@@ -6,9 +6,11 @@ in the repository and existing data in NetBox, supporting the --update workflow.
 
 import os
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Any, List, Optional
 from enum import Enum
 
+from core.component_registry import COMPONENT_TYPES
 from core.normalization import normalize_values
 from core.formatting import log_property_diffs
 from core.schema_reader import load_properties_for_type
@@ -95,40 +97,26 @@ _DEVICE_TYPE_PROPERTIES_FALLBACK = [
 _DEVICE_TYPE_SCHEMA_EXCLUDE = {"manufacturer", "model", "slug", "front_image", "rear_image"}
 
 
-def _load_device_type_properties():
+def _load_device_type_properties(repo_path):
     """Load device type scalar properties from the schema, falling back to hardcoded list."""
-    try:
-        from core import settings as _settings
-
-        props = load_properties_for_type(
-            os.path.join(_settings.REPO_PATH, "schema"),
-            "devicetype",
-            exclude=_DEVICE_TYPE_SCHEMA_EXCLUDE,
-        )
-        return props if props else list(_DEVICE_TYPE_PROPERTIES_FALLBACK)
-    except (ImportError, AttributeError):
-        return list(_DEVICE_TYPE_PROPERTIES_FALLBACK)
+    props = load_properties_for_type(
+        os.path.join(repo_path, "schema"),
+        "devicetype",
+        exclude=_DEVICE_TYPE_SCHEMA_EXCLUDE,
+    )
+    return props if props else list(_DEVICE_TYPE_PROPERTIES_FALLBACK)
 
 
-_CACHED_DEVICE_TYPE_PROPERTIES = None
-
-
-def get_device_type_properties():
-    """Lazily resolve and cache the device-type schema properties.
+@lru_cache(maxsize=1)
+def get_device_type_properties(repo_path):
+    """Resolve and cache the device-type schema properties.
 
     Resolved at first call rather than at import time so the schema lookup
     sees a populated repo even when ``change_detector`` is imported before
     the repo is cloned (e.g., test bootstrap, fresh CI environments).
     """
-    global _CACHED_DEVICE_TYPE_PROPERTIES
-    if _CACHED_DEVICE_TYPE_PROPERTIES is None:
-        _CACHED_DEVICE_TYPE_PROPERTIES = _load_device_type_properties()
-    return _CACHED_DEVICE_TYPE_PROPERTIES
+    return _load_device_type_properties(repo_path)
 
-
-# Backwards-compatible eager constant.  Prefer ``get_device_type_properties()``
-# in code paths that may run before the repo schema is available.
-DEVICE_TYPE_PROPERTIES = _load_device_type_properties()
 
 # Sentinel used to distinguish "attribute missing from record" from a genuine
 # None/null value returned by NetBox.  When a property is in the schema-derived
@@ -140,33 +128,11 @@ _MISSING = object()
 # Only existence is compared (YAML=true vs NetBox=empty).
 IMAGE_PROPERTIES = ["front_image", "rear_image"]
 
-# Component type mapping: YAML key -> (cache_key, comparable_properties)
-COMPONENT_TYPES = {
-    "interfaces": (
-        "interface_templates",
-        ["name", "type", "mgmt_only", "label", "enabled", "poe_mode", "poe_type", "description", "rf_role"],
-    ),
-    "power-ports": (
-        "power_port_templates",
-        ["name", "type", "maximum_draw", "allocated_draw", "label", "description"],
-    ),
-    "console-ports": ("console_port_templates", ["name", "type", "label", "description"]),
-    "power-outlets": ("power_outlet_templates", ["name", "type", "feed_leg", "label", "description"]),
-    "console-server-ports": (
-        "console_server_port_templates",
-        ["name", "type", "label", "description"],
-    ),
-    "rear-ports": ("rear_port_templates", ["name", "type", "positions", "label", "description", "color"]),
-    "front-ports": ("front_port_templates", ["name", "type", "_mappings", "label", "description", "color"]),
-    "device-bays": ("device_bay_templates", ["name", "label", "description"]),
-    "module-bays": ("module_bay_templates", ["name", "position", "label", "description"]),
-}
-
 
 class ChangeDetector:
     """Detects changes between YAML device types and NetBox cached data."""
 
-    def __init__(self, device_types_instance, handle, remove_unmanaged_types: bool = False):
+    def __init__(self, device_types_instance, handle, remove_unmanaged_types: bool = False, *, verbose: bool = False):
         """Initialize the change detector.
 
         Args:
@@ -176,9 +142,11 @@ class ChangeDetector:
                 YAML section is missing (not just those listed in an empty/partial section).
                 Only honoured when callers also pass ``remove_components=True`` to the
                 applier; this flag controls *detection*, not application.
+            verbose: Show the hint about --verbose only when it is off.
         """
         self.device_types = device_types_instance
         self.handle = handle
+        self.verbose = verbose
         self.remove_unmanaged_types = remove_unmanaged_types
 
     def detect_changes(self, device_types: List[dict], progress=None) -> ChangeReport:
@@ -244,7 +212,7 @@ class ChangeDetector:
         """
         changes = []
 
-        for prop in get_device_type_properties():
+        for prop in get_device_type_properties(self.device_types.repo_path):
             # Only compare properties explicitly present in YAML;
             # an omitted property means the YAML doesn't manage it,
             # matching the component semantics (absent key != removal).
@@ -324,14 +292,13 @@ class ChangeDetector:
             List of ComponentChange objects for all differences
         """
         changes = []
-        cache_key = (parent_type, device_type_id)
 
-        for yaml_key, (cache_name, properties) in COMPONENT_TYPES.items():
+        for component in COMPONENT_TYPES:
+            yaml_key = component.yaml_key
             yaml_components = list(yaml_data.get(yaml_key) or [])
 
-            # Get cached components for this device type
-            cached = self.device_types.cached_components.get(cache_name, {})
-            existing_components = cached.get(cache_key, {})
+            # entries(), not get(): detection must read the cache, never trigger a fetch.
+            existing_components = self.device_types.components.entries(component.endpoint, parent_type, device_type_id)
 
             # Build set of YAML component names for this type
             yaml_component_names = {comp.get("name") for comp in yaml_components if comp.get("name")}
@@ -372,7 +339,7 @@ class ChangeDetector:
                     # Check for property changes on existing component
                     existing = existing_components[comp_name]
                     prop_changes = self._compare_component_properties(
-                        yaml_comp, existing, properties, comp_type=yaml_key
+                        yaml_comp, existing, component.compare_properties, comp_type=yaml_key
                     )
                     if prop_changes:
                         changes.append(
@@ -605,7 +572,7 @@ class ChangeDetector:
             self.handle.log("MODIFIED DEVICE TYPES:")
             for dt in report.modified_device_types:
                 self._log_modified_device_details(dt)
-            if not self.handle.args.verbose:
+            if not self.verbose:
                 self.handle.log("  (use --verbose for property diffs and component names)")
         else:
             self.handle.log("Modified device types: 0")

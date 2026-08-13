@@ -5,7 +5,7 @@ import pathlib
 import textwrap
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import requests
 
 from core.graphql_client import DotDict, NetBoxGraphQLClient
@@ -105,6 +105,35 @@ class TestDotDict:
 
 class TestNetBoxGraphQLClient:
     """Tests for NetBoxGraphQLClient initialization and configuration."""
+
+    def test_logging_dependency_has_a_public_read_only_handle(self):
+        from core.graphql_client import NetBoxGraphQLClient
+        from core.log_handler import LogHandler
+
+        handle = LogHandler(False)
+        client = NetBoxGraphQLClient("http://netbox.local", "tok", handle=handle)
+
+        assert client.handle is handle
+        with pytest.raises(AttributeError):
+            client.handle = LogHandler(True)
+
+    def test_clone_uses_an_independent_session_with_the_same_settings(self):
+        handle = MagicMock()
+        sessions = [MagicMock(), MagicMock()]
+
+        with patch("core.graphql_client.requests.Session", side_effect=sessions):
+            client = NetBoxGraphQLClient("http://netbox.local", "token", True, handle, 250)
+            clone = client.clone()
+
+        assert clone is not client
+        assert clone._session is sessions[1]
+        assert (clone.url, clone.token, clone.ignore_ssl, clone.handle, clone.DEFAULT_PAGE_SIZE) == (
+            client.url,
+            client.token,
+            client.ignore_ssl,
+            client.handle,
+            client.DEFAULT_PAGE_SIZE,
+        )
 
     def test_init_stores_config(self):
         from core.graphql_client import NetBoxGraphQLClient
@@ -381,7 +410,7 @@ class TestGraphQLQueryAll:
 
         from core.graphql_client import NetBoxGraphQLClient
 
-        client = NetBoxGraphQLClient("http://netbox.local", "tok", log_handler=FakeLog())
+        client = NetBoxGraphQLClient("http://netbox.local", "tok", handle=FakeLog())
         result = client.query_all(
             "query($p: OffsetPaginationInput) { device_type_list(pagination: $p) { id } }",
             list_key="device_type_list",
@@ -421,7 +450,7 @@ class TestGraphQLQueryAll:
 
         from core.graphql_client import NetBoxGraphQLClient
 
-        client = NetBoxGraphQLClient("http://netbox.local", "tok", log_handler=FakeLog())
+        client = NetBoxGraphQLClient("http://netbox.local", "tok", handle=FakeLog())
         client.query_all(
             "query($p: OffsetPaginationInput) { device_type_list(pagination: $p) { id } }",
             list_key="device_type_list",
@@ -1050,29 +1079,20 @@ class TestGetComponentTemplates:
 
         assert records == []
 
-    def test_all_endpoint_names_are_supported(self):
-        """Every component endpoint name used by DeviceTypes should be recognized."""
-        from core.graphql_client import COMPONENT_TEMPLATE_FIELDS
+    def test_every_registry_endpoint_is_queryable(self, mock_post):
+        """Every endpoint in the registry reaches the server instead of being rejected."""
+        from core.component_registry import COMPONENT_TYPES
 
-        expected_endpoints = [
-            "interface_templates",
-            "power_port_templates",
-            "console_port_templates",
-            "console_server_port_templates",
-            "power_outlet_templates",
-            "rear_port_templates",
-            "front_port_templates",
-            "device_bay_templates",
-            "module_bay_templates",
-        ]
-        for endpoint in expected_endpoints:
-            assert endpoint in COMPONENT_TEMPLATE_FIELDS, f"{endpoint} not in COMPONENT_TEMPLATE_FIELDS"
+        mock_post.return_value.json.return_value = {"data": {}}
+        client = self._make_client()
+        for component in COMPONENT_TYPES:
+            assert client.get_component_templates(component.endpoint) == []
 
     def test_front_port_templates_uses_mappings_field(self):
         """front_port_templates fields include the nested mappings subfield (not rear_port_position)."""
-        from core.graphql_client import COMPONENT_TEMPLATE_FIELDS
+        from core.component_registry import BY_ENDPOINT
 
-        fields = COMPONENT_TEMPLATE_FIELDS["front_port_templates"]
+        fields = BY_ENDPOINT["front_port_templates"].graphql_fields
         has_mappings = any("mappings" in f and "{" in f for f in fields)
         has_rear_port_position_direct = "rear_port_position" in fields
         assert has_mappings, "Expected mappings { ... } in front_port_templates fields"
@@ -1278,10 +1298,10 @@ class TestQueryAllOnPage:
 
 
 class TestQueryAllClampingPrintFallback:
-    """Tests for the print() fallback in query_all when no log_handler is set."""
+    """Tests for the print() fallback in query_all when no handle is set."""
 
-    def test_clamping_warning_uses_print_when_no_log_handler(self, mock_post, capsys):
-        """When log_handler is None the clamping warning goes to stdout via print()."""
+    def test_clamping_warning_uses_print_when_no_handle(self, mock_post, capsys):
+        """When handle is None the clamping warning goes to stdout via print()."""
         pages = [
             [{"id": "1"}, {"id": "2"}],
             [{"id": "3"}, {"id": "4"}],
@@ -1298,7 +1318,7 @@ class TestQueryAllClampingPrintFallback:
 
         from core.graphql_client import NetBoxGraphQLClient
 
-        client = NetBoxGraphQLClient("http://netbox.local", "tok")  # no log_handler
+        client = NetBoxGraphQLClient("http://netbox.local", "tok")
         result = client.query_all(
             "query($p: OffsetPaginationInput) { device_type_list(pagination: $p) { id } }",
             list_key="device_type_list",
@@ -1519,25 +1539,22 @@ class TestGetComponentTemplatesFrontPortFallback:
     def test_primary_fails_no_mappings_field_reraises(self, mock_post):
         """When primary query fails and schema has no 'mappings' field, re-raise immediately.
 
-        Covers graphql_client.py line 541: 'if not has_mappings: raise'.
-        The guard fires when endpoint_name is front_port_templates but the fields list
-        (COMPONENT_TEMPLATE_FIELDS) has been stripped of the 'mappings' entry — meaning
-        there is no fallback query to attempt.
+        The guard fires when the registry row for front ports carries no 'mappings'
+        selection — meaning there is no older tier left to fall back to.
         """
-        from core.graphql_client import GraphQLError, COMPONENT_TEMPLATE_FIELDS
+        from dataclasses import replace
+
+        from core.component_registry import BY_ENDPOINT
+        from core.graphql_client import GraphQLError
         from unittest.mock import patch
         import core.graphql_client as gc_module
 
-        # Strip 'mappings' from front_port_templates fields so has_mappings is False
-        stripped = {
-            "front_port_templates": [
-                f for f in COMPONENT_TEMPLATE_FIELDS["front_port_templates"] if "mappings" not in f
-            ]
-        }
+        # A NetBox whose schema dropped the mappings block entirely.
+        stripped = {"front_port_templates": replace(BY_ENDPOINT["front_port_templates"], graphql_extra=())}
 
         mock_post.return_value = self._make_error_response("some field error")
 
-        with patch.dict(gc_module.COMPONENT_TEMPLATE_FIELDS, stripped):
+        with patch.dict(gc_module.BY_ENDPOINT, stripped):
             client = self._make_client()
             with pytest.raises(GraphQLError):
                 client.get_component_templates("front_port_templates")

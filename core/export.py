@@ -1,6 +1,6 @@
 """Export-diff feature: export NetBox types absent from or differing vs. the local repo.
 
-Entry point: ``Exporter(settings, handle, export_dir, force_overwrite, vendor_slugs).run()``
+Entry point: ``Exporter(config, handle, export_dir, force_overwrite, vendor_slugs).run()``
 """
 
 import hashlib
@@ -20,9 +20,9 @@ from core.export_manifest import (
     save_manifest,
     update_entry,
 )
-from core.graphql_client import NetBoxGraphQLClient
+from core.graphql_client import GraphQLError, NetBoxGraphQLClient
 from core.nb_serializer import (
-    COMPONENT_ENDPOINTS,
+    COMPONENT_ENDPOINT_NAMES,
     serialize_device_type,
     serialize_module_type,
     serialize_rack_type,
@@ -193,21 +193,23 @@ def _is_subset(sub: Any, sup: Any) -> bool:
 class Exporter:
     """Exports NetBox device/module/rack types to a local directory in DTL format."""
 
-    def __init__(self, settings, handle, export_dir: str, force_overwrite: bool, vendor_slugs: Optional[List[str]]):
-        """Initialize the Exporter with settings and configuration."""
-        self.settings = settings
+    def __init__(self, config, handle, export_dir: str, force_overwrite: bool, vendor_slugs: Optional[List[str]]):
+        """Initialize the Exporter from the resolved run configuration."""
+        self.config = config
         self.handle = handle
         self.export_dir = Path(export_dir)
         self.force_overwrite = force_overwrite
         self.vendor_slugs = vendor_slugs  # None means all vendors
-        self.repo_path = Path(settings.REPO_PATH)
-        self.base_url = settings.NETBOX_URL.rstrip("/")
-        self.token = settings.NETBOX_TOKEN
-        self.ignore_ssl = settings.IGNORE_SSL_ERRORS
+        self.repo_path = Path(config.repo_path)
+        self.base_url = config.netbox_url.rstrip("/")
+        self.token = config.netbox_token
+        self.ignore_ssl = config.ignore_ssl_errors
         self.graphql = NetBoxGraphQLClient(
-            url=settings.NETBOX_URL,
-            token=settings.NETBOX_TOKEN,
-            ignore_ssl=settings.IGNORE_SSL_ERRORS,
+            url=config.netbox_url,
+            token=config.netbox_token,
+            ignore_ssl=config.ignore_ssl_errors,
+            handle=handle,
+            page_size=config.graphql_page_size,
         )
         self._module_image_details: Optional[dict] = None
 
@@ -246,7 +248,7 @@ class Exporter:
             f"Fetched type metadata: {total_dt} device-types, "
             f"{total_mt} module-types, {total_rt} rack-types. "
             f"Component templates fetched per vendor below "
-            f"({len(COMPONENT_ENDPOINTS)} endpoints/vendor)."
+            f"({len(COMPONENT_ENDPOINT_NAMES)} endpoints/vendor)."
         )
 
         # ── Load repo YAML dicts ─────────────────────────────────────────────
@@ -352,7 +354,7 @@ class Exporter:
             self.handle.verbose_log(
                 f"  {mfr_slug}: {len(stale_dts)} device-type(s), "
                 f"{len(stale_mts)} module-type(s) to compare; "
-                f"fetching {len(COMPONENT_ENDPOINTS)} component-template endpoints…"
+                f"fetching {len(COMPONENT_ENDPOINT_NAMES)} component-template endpoints…"
             )
             dt_components, mt_components = self._fetch_vendor_components(mfr_slug)
 
@@ -621,7 +623,7 @@ class Exporter:
                     self.graphql.url,
                     self.graphql.token,
                     self.graphql.ignore_ssl,
-                    self.graphql._log_handler,
+                    self.graphql.handle,
                     self.graphql.DEFAULT_PAGE_SIZE,
                 )
                 _thread_local.graphql = client
@@ -632,8 +634,8 @@ class Exporter:
             )
 
         try:
-            with ThreadPoolExecutor(max_workers=len(COMPONENT_ENDPOINTS)) as pool:
-                results = list(pool.map(_fetch_one, [ep_name for _, ep_name in COMPONENT_ENDPOINTS]))
+            with ThreadPoolExecutor(max_workers=len(COMPONENT_ENDPOINT_NAMES)) as pool:
+                results = list(pool.map(_fetch_one, COMPONENT_ENDPOINT_NAMES))
         finally:
             for client in _clients:
                 try:
@@ -863,7 +865,7 @@ class Exporter:
         """
         try:
             details = self._get_module_image_details()
-        except Exception as exc:
+        except (GraphQLError, requests.RequestException) as exc:
             self.handle.log(f"[yellow]Could not fetch module image details: {exc}[/yellow]")
             return False
         type_images = details.get(item.nb_record.id, {})

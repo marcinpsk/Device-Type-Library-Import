@@ -30,8 +30,8 @@ C. Image linkage
      – front_image and rear_image URLs are set on the device type (not just
        "uploaded" as orphan files) and the URLs return HTTP 200.
 D. GraphQL schema consistency
-     – Query every DEVICE_TYPE_PROPERTIES field and every
-       COMPONENT_TEMPLATE_FIELDS field directly through the GraphQL client so a
+     – Query every device-type schema field and every
+       registry field directly through the GraphQL client so a
        removed/renamed schema field raises an explicit error rather than a
        silent false-positive.
 E. Front-port multi-position linkage
@@ -66,12 +66,10 @@ import pytest
 import requests
 import urllib3
 
-from core.change_detector import DEVICE_TYPE_PROPERTIES
-from core.graphql_client import (
-    COMPONENT_TEMPLATE_FIELDS,
-    NetBoxGraphQLClient,
-    _NO_MODULE_TYPE,
-)
+from core.change_detector import get_device_type_properties
+from core.config import resolve_run_config
+from core.component_registry import COMPONENT_TYPES
+from core.graphql_client import NetBoxGraphQLClient
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -386,14 +384,18 @@ def test_graphql_schema() -> None:
         fail("get_manufacturers() did not return TestVendor")
     ok("get_manufacturers() returned TestVendor")
 
-    # ── Device types: all DEVICE_TYPE_PROPERTIES present ──
+    # ── Device types: every schema property present ──
     dt_by_model, dt_by_slug = client.get_device_types()
     fd = dt_by_slug.get(("testvendor", "testvendor-full-device"))
     if fd is None:
         fail("get_device_types() did not return full-device")
     ok("get_device_types() returned testvendor-full-device")
 
-    for prop in DEVICE_TYPE_PROPERTIES:
+    # Resolve REPO_PATH the way the importer does: a blank or absent value has a default,
+    # and reading the raw value instead points the schema lookup at a directory with no schema.
+    repo_path = resolve_run_config(argv=[]).repo_path
+
+    for prop in get_device_type_properties(repo_path):
         val = getattr(fd, prop, "__MISSING__")
         if val == "__MISSING__":
             fail(
@@ -403,9 +405,11 @@ def test_graphql_schema() -> None:
             )
         ok(f"GraphQL device_type.{prop} = {val!r}")
 
-    # ── Component templates: all COMPONENT_TEMPLATE_FIELDS fields present ──
+    # ── Component templates: every registry field present ──
     device_type_id = fd.id
-    for endpoint_name, expected_fields in COMPONENT_TEMPLATE_FIELDS.items():
+    for component in COMPONENT_TYPES:
+        endpoint_name = component.endpoint
+        expected_fields = component.graphql_fields
         try:
             records = client.get_component_templates(endpoint_name)
         except Exception as exc:
@@ -415,7 +419,7 @@ def test_graphql_schema() -> None:
             )
         test_records = [r for r in records if getattr(getattr(r, "device_type", None), "id", None) == device_type_id]
 
-        if endpoint_name not in _NO_MODULE_TYPE:
+        if component.module_types:
             # Also accept module-type records for endpoints shared by both types
             test_records += [r for r in records if getattr(getattr(r, "module_type", None), "id", None) is not None]
 
@@ -439,8 +443,8 @@ def test_graphql_schema() -> None:
             if val == "__MISSING__":
                 fail(
                     f"GraphQL {endpoint_name} record missing field '{field}' — "
-                    f"schema change detected. Update COMPONENT_TEMPLATE_FIELDS or the "
-                    f"NetBox query in graphql_client.py."
+                    f"schema change detected. Update the row in core/component_registry.py "
+                    f"or the NetBox query in graphql_client.py."
                 )
         ok(f"GraphQL {endpoint_name}: all {len(expected_fields)} fields present")
 

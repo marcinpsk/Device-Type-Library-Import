@@ -2,6 +2,28 @@ import os
 import pytest
 from unittest.mock import MagicMock, patch
 
+from core.config import RunConfig
+
+
+@pytest.fixture
+def make_config():
+    """Build a real RunConfig, so tests exercise the value the CLI actually produces."""
+
+    def _factory(**overrides):
+        base = {
+            "netbox_url": "http://mock-netbox",
+            "netbox_token": "mock-token",
+            "ignore_ssl_errors": False,
+            "graphql_page_size": 5000,
+            "preload_threads": 8,
+            "repo_url": "https://example.com/repo.git",
+            "repo_branch": "master",
+            "repo_path": "/tmp/repo",
+        }
+        return RunConfig(**{**base, **overrides})
+
+    return _factory
+
 
 @pytest.fixture(autouse=True)
 def reset_graphql_clamping_warned(mock_env_vars, request):
@@ -17,7 +39,7 @@ def reset_graphql_clamping_warned(mock_env_vars, request):
 
 
 @pytest.fixture(autouse=True)
-def mock_env_vars(request):
+def mock_env_vars(request, tmp_path):
     """Set mandatory environment variables to prevent settings.py from exiting."""
     if request.node.get_closest_marker("integration"):
         yield
@@ -31,6 +53,8 @@ def mock_env_vars(request):
             "IGNORE_SSL_ERRORS": "True",
             "GRAPHQL_PAGE_SIZE": "5000",
             "PRELOAD_THREADS": "8",
+            # Keep the image-hash cache out of the developer's real ~/.cache.
+            "XDG_CACHE_HOME": str(tmp_path / "cache"),
         },
     ):
         yield

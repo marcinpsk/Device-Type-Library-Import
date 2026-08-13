@@ -1,36 +1,31 @@
 """NetBox REST and GraphQL API client for importing device and module type libraries."""
 
 from collections import Counter
-import concurrent.futures
 from functools import lru_cache
 import hashlib
-import itertools
 import json
-import queue
 import re
 import tempfile
 import time
 import pynetbox
 import requests
 import os
-from sys import exit as system_exit
 import glob
 from pathlib import Path
 
 from core.change_detector import ChangeDetector, ChangeType
-from core.compat import (
-    device_type_filter_key,
-    device_type_filter_kwargs,
-    module_type_filter_key,
-    module_type_filter_kwargs,
+from core.component_cache import ComponentCache
+from core.component_registry import (
+    BY_YAML_KEY,
+    COMPONENT_TYPES,
+    LINK_BRIDGE,
+    LINK_POWER_PORT,
+    LINK_REAR_PORTS,
+    MODULE_TYPE_COMPONENTS,
 )
 from core.formatting import log_property_diffs
-from core.graphql_client import (
-    GraphQLCountMismatchError,
-    GraphQLError,
-    GraphQLSchemaError,
-    NetBoxGraphQLClient,
-)
+from core.errors import FatalError, UnknownError
+from core.graphql_client import GraphQLError, NetBoxGraphQLClient
 from core.normalization import values_equal
 from core.outcomes import EntityKind, Outcome, OutcomeRegistry
 from core.schema_reader import load_properties_for_type
@@ -38,6 +33,22 @@ from core.update_failure_resolver import (
     FailureKind,
     classify_device_type_update_failure,
 )
+
+
+class SSLVerificationError(FatalError):
+    """A TLS certificate verification failure."""
+
+    def __init__(self, ignore_ssl_errors: bool, cause=None):
+        """Report the active TLS verification setting."""
+        super().__init__(
+            f"SSL verification failed. IGNORE_SSL_ERRORS is {ignore_ssl_errors}. "
+            "Set IGNORE_SSL_ERRORS to True if you want to ignore this error. EXITING.",
+            cause=cause,
+        )
+
+
+class NetBoxError(FatalError):
+    """A fatal error reported by the NetBox integration."""
 
 
 def _build_auth_header(token):
@@ -121,18 +132,18 @@ def _check_image_url(
     upload so remote bytes never match the originals.  Use
     :func:`_is_image_hash_changed` for local-file change detection instead.
 
-    Returns "ok" only when the server returns a 2xx response *and* the Content-Type
+    Returns "present" only when the server returns a 2xx response *and* the Content-Type
     indicates an actual image.  A 2xx with a non-image Content-Type (e.g. ``text/html``
     from a login-redirect) is treated as "missing" so that files absent from the
     filesystem but still recorded in the database are re-uploaded.
 
     Returns:
+        "present": the server holds the image (2xx with an image Content-Type)
         "missing": the server returned a non-2xx response, or a 2xx but with a
                    non-image Content-Type (image not physically present / auth redirect)
-        "ok":      image exists (2xx with image Content-Type) or a network error
-                   occurred (conservative — avoids spurious re-uploads on transient
-                   failures; network error is logged at verbose level when *log_fn*
-                   is provided so operators can spot degraded runs)
+        "unknown": the request did not complete, so the server said nothing about
+                   this image.  The caller decides what to do; a failure on the wire
+                   is not evidence about the file.
 
     Args:
         base_url: NetBox base URL (e.g. "https://netbox.example.com").
@@ -144,8 +155,8 @@ def _check_image_url(
             ``nbt_…`` tokens, ``Token`` otherwise) to support all NetBox token
             types.  Auth is only sent when the URL resolves to the same host as
             *base_url*, preventing credential leakage to off-host URLs.
-        log_fn: Optional callable ``(msg: str) -> None`` invoked at verbose level
-            when a network error is swallowed.  Pass ``handle.verbose_log``.
+        log_fn: Optional callable ``(msg: str) -> None`` invoked with the transport
+            error detail.  Pass ``handle.verbose_log``.
     """
     full_url = image_url_path if image_url_path.startswith("http") else base_url.rstrip("/") + image_url_path
     headers = {}
@@ -161,20 +172,17 @@ def _check_image_url(
         response = requests.get(full_url, headers=headers, verify=(not ignore_ssl), timeout=30)
     except requests.RequestException as exc:
         if log_fn is not None:
-            log_fn(
-                f"[yellow]Network error checking image {full_url}: {exc} "
-                f"— treating as present to avoid spurious re-upload[/yellow]"
-            )
-        return "ok"
+            log_fn(f"[yellow]Network error checking image {full_url}: {exc}[/yellow]")
+        return "unknown"
     if not response.ok:
         return "missing"
-    content_type = response.headers.get("Content-Type", "")
-    if content_type.startswith("text/") or content_type.startswith("application/json"):
+    content_type = response.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
+    if not content_type.startswith("image/"):
         return "missing"
-    return "ok"
+    return "present"
 
 
-def _is_image_hash_changed(local_path: str, hash_cache: dict) -> bool:
+def _is_image_hash_changed(local_path: str, hash_cache: dict, log_fn=None) -> bool:
     """Return True if the local file's SHA-256 hash differs from the cached value.
 
     The cache maps local file paths to the SHA-256 hex-digest recorded at the time
@@ -182,11 +190,15 @@ def _is_image_hash_changed(local_path: str, hash_cache: dict) -> bool:
     avoids the unreliability caused by NetBox re-encoding images on upload.
 
     Returns False when *local_path* is absent from *hash_cache* (conservative: avoids
-    re-uploading images that have never been tracked).
+    re-uploading images that have never been tracked), and when the file cannot be
+    read, which is reported through *log_fn* because a file this run cannot open is
+    also a file it cannot upload.
 
     Args:
         local_path: Absolute filesystem path to the local image file.
         hash_cache: Dict mapping local path strings to SHA-256 hex-digests.
+        log_fn: Optional callable ``(msg: str) -> None`` invoked when the file
+            cannot be read.
     """
     cached = hash_cache.get(local_path)
     if cached is None:
@@ -194,19 +206,38 @@ def _is_image_hash_changed(local_path: str, hash_cache: dict) -> bool:
     try:
         with open(local_path, "rb") as fh:
             current = hashlib.sha256(fh.read()).hexdigest()
-    except OSError:
+    except OSError as exc:
+        if log_fn is not None:
+            log_fn(f"[yellow]Cannot read image {local_path} to check for changes: {exc}[/yellow]")
         return False
     return current != cached
 
 
-def _load_image_hash_cache(path: str) -> dict:
-    """Load the image-hash cache from *path* (JSON).  Returns an empty dict on any error."""
+def _load_image_hash_cache(path: str, log_fn=None) -> dict:
+    """Load the image-hash cache from *path* (JSON), returning an empty dict when it cannot be read.
+
+    An absent file is the normal first run and stays quiet.  Anything else means the
+    run lost its record of which images it already uploaded, which is reported through
+    *log_fn*: every tracked image then reads as unchanged until it is uploaded again.
+    """
+    if path is None:
+        return {}
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
-        return data if isinstance(data, dict) else {}
-    except Exception:
+    except FileNotFoundError:
         return {}
+    except (OSError, ValueError) as exc:
+        if log_fn is not None:
+            log_fn(f"[yellow]Ignoring unreadable image hash cache {path}: {exc}[/yellow]")
+        return {}
+    if not isinstance(data, dict):
+        if log_fn is not None:
+            log_fn(
+                f"[yellow]Ignoring image hash cache {path}: expected an object, found {type(data).__name__}[/yellow]"
+            )
+        return {}
+    return data
 
 
 def _save_image_hash_cache(path: str, cache: dict) -> bool:
@@ -231,7 +262,7 @@ def _save_image_hash_cache(path: str, cache: dict) -> bool:
         os.replace(tmp_path, path)
         tmp_path = None  # successfully replaced; skip cleanup
         return True
-    except Exception:
+    except OSError:
         if tmp_path is not None:
             try:
                 os.unlink(tmp_path)
@@ -240,18 +271,20 @@ def _save_image_hash_cache(path: str, cache: dict) -> bool:
         return False
 
 
-def _store_image_hashes(cache: dict, images: dict) -> None:
+def _store_image_hashes(cache: dict, images: dict, log_fn=None) -> None:
     """Compute and store SHA-256 hashes for each local image path in *images*.
 
-    *images* maps arbitrary string keys to local file paths.  Entries that cannot
-    be read are silently skipped.  Updates *cache* in-place.
+    *images* maps arbitrary string keys to local file paths.  Updates *cache* in-place.
+    A file that cannot be read gets no entry, so the next run re-uploads it; that is
+    reported through *log_fn* rather than passed over.
     """
     for path in images.values():
         try:
             with open(path, "rb") as fh:
                 cache[path] = hashlib.sha256(fh.read()).hexdigest()
-        except OSError:
-            pass
+        except OSError as exc:
+            if log_fn is not None:
+                log_fn(f"[yellow]Cannot hash image {path}, so it will be re-uploaded next run: {exc}[/yellow]")
 
 
 def _delete_image_attachment(base_url: str, token: str, att_id: int, ignore_ssl: bool, handle) -> bool:
@@ -313,23 +346,18 @@ _MODULE_TYPE_SCHEMA_EXCLUDE = {"manufacturer", "model", "attribute_data", "profi
 
 
 @lru_cache(maxsize=1)
-def _load_module_type_properties():
+def _load_module_type_properties(repo_path):
     """Load module type scalar properties from the schema, falling back to hardcoded list.
 
     The result is cached after the first call, which happens after the repo checkout
     so the schema files are available.
     """
-    try:
-        from core import settings as _settings
-
-        props = load_properties_for_type(
-            os.path.join(_settings.REPO_PATH, "schema"),
-            "moduletype",
-            exclude=_MODULE_TYPE_SCHEMA_EXCLUDE,
-        )
-        return props if props else list(_MODULE_TYPE_PROPERTIES_FALLBACK)
-    except (ImportError, AttributeError):
-        return list(_MODULE_TYPE_PROPERTIES_FALLBACK)
+    props = load_properties_for_type(
+        os.path.join(repo_path, "schema"),
+        "moduletype",
+        exclude=_MODULE_TYPE_SCHEMA_EXCLUDE,
+    )
+    return props if props else list(_MODULE_TYPE_PROPERTIES_FALLBACK)
 
 
 # Sentinel used to distinguish "attribute missing from record" from a genuine
@@ -350,22 +378,6 @@ IMAGE_EXTENSIONS = {
     ".tiff",
     ".svg",
 }
-
-# Maximum number of IDs per endpoint.filter() call to avoid excessively long URLs.
-FILTER_CHUNK_SIZE = 200
-
-
-def _chunked(iterable, size):
-    """Yield successive *size*-length chunks from *iterable*.
-
-    Accepts any iterable; does not require a Sequence.
-    """
-    it = iter(iterable)
-    while True:
-        chunk = list(itertools.islice(it, size))
-        if not chunk:
-            break
-        yield chunk
 
 
 def _image_dir_for_yaml(src_file: str, src_segment: str, dst_segment: str) -> "Path | None":
@@ -407,11 +419,11 @@ def _count_actionable_component_changes(changes, remove_components):
 class NetBox:
     """Interface to the NetBox API for importing device and module types."""
 
-    def __init__(self, settings, handle):
+    def __init__(self, config, handle):
         """Initialize NetBox API connection, verify version compatibility, and load manufacturers/device types.
 
         Args:
-            settings: Settings module with NETBOX_URL, NETBOX_TOKEN, IGNORE_SSL_ERRORS, and NETBOX_FEATURES.
+            config (RunConfig): Supplies the NetBox URL, token, TLS choice, and tuning values.
             handle (LogHandler): Logging handler for progress and error messages.
         """
         self.counter = Counter(
@@ -431,18 +443,20 @@ class NetBox:
             device_types_failed=0,
         )
         self.outcomes = OutcomeRegistry()
-        self.url = settings.NETBOX_URL
-        self.token = settings.NETBOX_TOKEN
+        self.url = config.netbox_url
+        self.token = config.netbox_token
+        self.repo_path = config.repo_path
+        self.verbose = config.verbose
         self.handle = handle
         self.netbox = None
-        self.ignore_ssl = settings.IGNORE_SSL_ERRORS
+        self.ignore_ssl = config.ignore_ssl_errors
         self.modules = False
         self.new_filters = False
         self.m2m_front_ports = False  # True for NetBox >= 4.5 (M2M port mappings)
         self.rack_types = False
-        self.force_resolve_conflicts = False
-        self.remove_unmanaged_types = False
-        self.verify_images = False
+        self.force_resolve_conflicts = config.force_resolve_conflicts
+        self.remove_unmanaged_types = config.remove_unmanaged_types
+        self.verify_images = config.verify_images
         self._module_image_details: dict = {}  # populated by _fetch_module_type_existing_images in verify mode
         # Image hash cache: local file path -> SHA-256 hex-digest at last upload time.
         # Used by --verify-images to detect whether the local file changed since last upload,
@@ -452,27 +466,28 @@ class NetBox:
         try:
             _cache_dir.mkdir(parents=True, exist_ok=True)
             self._image_hash_cache_path = str(_cache_dir / "image-hashes.json")
-        except OSError:
-            self.handle.verbose_log(
+        except OSError as exc:
+            self.handle.log(
                 "[yellow]Warning: could not create image hash cache directory "
-                f"({_cache_dir}); hash-based re-upload detection will be disabled "
+                f"({_cache_dir}): {exc}. Hash-based re-upload detection is disabled "
                 "for this run.[/yellow]"
             )
             self._image_hash_cache_path = None
-        self._image_hash_cache: dict = _load_image_hash_cache(self._image_hash_cache_path)
+        self._hash_cache_write_failed = False
+        self._image_hash_cache: dict = _load_image_hash_cache(self._image_hash_cache_path, log_fn=self.handle.log)
         self.connect_api()
         self.verify_compatibility()
         self.graphql = NetBoxGraphQLClient(
             self.url,
             self.token,
             self.ignore_ssl,
-            log_handler=self.handle,
-            page_size=settings.GRAPHQL_PAGE_SIZE,
+            handle=self.handle,
+            page_size=config.graphql_page_size,
         )
         try:
             self.existing_manufacturers = self.get_manufacturers()
         except GraphQLError as e:
-            system_exit(f"GraphQL error: {e}")
+            raise NetBoxError(f"GraphQL error: {e}") from e
         try:
             self.device_types = DeviceTypes(
                 self.netbox,
@@ -482,10 +497,11 @@ class NetBox:
                 self.new_filters,
                 graphql=self.graphql,
                 m2m_front_ports=self.m2m_front_ports,
-                max_threads=settings.PRELOAD_THREADS,
+                repo_path=config.repo_path,
+                max_threads=config.preload_threads,
             )
         except Exception as e:
-            system_exit(f"Error initializing device types: {e}")
+            raise NetBoxError(f"Error initializing device types: {e}") from e
         self._change_detector: ChangeDetector | None = None
 
     @property
@@ -496,6 +512,7 @@ class NetBox:
                 self.device_types,
                 self.handle,
                 remove_unmanaged_types=self.remove_unmanaged_types,
+                verbose=self.verbose,
             )
         return self._change_detector
 
@@ -517,9 +534,13 @@ class NetBox:
         """Save the image hash cache and warn once if the write fails."""
         if self._image_hash_cache_path is None:
             return
-        if not _save_image_hash_cache(self._image_hash_cache_path, self._image_hash_cache):
-            self.handle.verbose_log(
-                "[yellow]Warning: failed to persist image hash cache; "
+        if _save_image_hash_cache(self._image_hash_cache_path, self._image_hash_cache):
+            return
+        if not self._hash_cache_write_failed:
+            self._hash_cache_write_failed = True
+            self.handle.log(
+                "[yellow]Warning: failed to persist image hash cache "
+                f"({self._image_hash_cache_path}); "
                 "local image edits may not be detected on the next run.[/yellow]"
             )
 
@@ -534,15 +555,7 @@ class NetBox:
                 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
                 self.netbox.http_session.verify = False
         except Exception as e:
-            self.handle.exception("Exception", "NetBox API Error", e)
-
-    def get_api(self):
-        """Return the underlying pynetbox API instance."""
-        return self.netbox
-
-    def get_counter(self):
-        """Return the shared operation counter."""
-        return self.counter
+            raise UnknownError("NetBox API Error", cause=e) from e
 
     def verify_compatibility(self):
         """Check the connected NetBox version and configure feature flags accordingly.
@@ -554,15 +567,17 @@ class NetBox:
         # Strip non-numeric suffixes (e.g. "4.1-beta") before converting to int.
         try:
             nb_version = self.netbox.version
+        except requests.exceptions.SSLError as e:
+            raise SSLVerificationError(self.ignore_ssl, cause=e) from e
         except requests.exceptions.ProxyError as e:
-            system_exit(
+            raise NetBoxError(
                 f"Proxy error while connecting to NetBox at {self.url}: {e}\n"
                 f"Hint: If NetBox is running locally, ensure that the NETBOX_URL host "
                 f"is included in your 'no_proxy' / 'NO_PROXY' environment variable "
                 f"(both with and without brackets for IPv6, e.g. '::1,[::1]')."
-            )
+            ) from e
         except requests.exceptions.ConnectionError as e:
-            system_exit(_fmt_connection_error(self.url, e))
+            raise NetBoxError(_fmt_connection_error(self.url, e)) from e
         except pynetbox.core.query.RequestError as e:
             endpoint = getattr(e, "base", self.url)
             status = getattr(e.req, "status_code", "?") if hasattr(e, "req") else "?"
@@ -573,7 +588,7 @@ class NetBox:
             if body:
                 msg += f"\nResponse body (may be from an intermediate proxy):\n{body}"
             msg += f"\nHint: Verify that {self.url} is reachable and not blocked by a proxy."
-            system_exit(msg)
+            raise NetBoxError(msg) from e
         _raw = [int(re.sub(r"\D.*", "", x.strip()) or "0") for x in nb_version.split(".")]
         version_split = (_raw + [0, 0])[:2]  # pad to (major, minor) to guard against single-component strings
 
@@ -910,15 +925,20 @@ class NetBox:
             if status == "missing":
                 self.handle.verbose_log(f"{label} is missing on server for {dt.model}, will re-upload.")
                 continue  # keep in saved_images for upload
+            if status == "unknown":
+                self.handle.log(
+                    f"[yellow]Could not verify {label} on the server for {dt.model}; "
+                    "falling back to the local hash alone.[/yellow]"
+                )
             # --verify-images: Step 2 — check if local file changed since last upload
-            if _is_image_hash_changed(saved_images[image_kind], self._image_hash_cache):
+            if _is_image_hash_changed(saved_images[image_kind], self._image_hash_cache, log_fn=self.handle.log):
                 self.handle.verbose_log(f"{label} content has changed for {dt.model}, will re-upload.")
                 continue  # keep in saved_images for upload
             # Both checks passed — image is present and unchanged;
             # seed hash cache so future local edits will be detected.
             local_path = saved_images[image_kind]
             if local_path not in self._image_hash_cache:
-                _store_image_hashes(self._image_hash_cache, {image_kind: local_path})
+                _store_image_hashes(self._image_hash_cache, {image_kind: local_path}, log_fn=self.handle.log)
                 self._persist_hash_cache()
             self.handle.verbose_log(f"{label} verified OK for {dt.model}, skipping upload.")
             del saved_images[image_kind]
@@ -953,7 +973,7 @@ class NetBox:
             self._filter_images_for_upload(dt, saved_images)
             if saved_images:
                 self.device_types.upload_images(self.url, self.token, saved_images, dt.id)
-                _store_image_hashes(self._image_hash_cache, saved_images)
+                _store_image_hashes(self._image_hash_cache, saved_images, log_fn=self.handle.log)
                 self._persist_hash_cache()
 
         if only_new:
@@ -1081,27 +1101,16 @@ class NetBox:
             src_file (str): Filesystem path to the YAML source file (for front-port context).
             saved_images (dict): Mapping of image kind to local file path for upload.
         """
-        if "interfaces" in device_type:
-            self.device_types.create_interfaces(device_type["interfaces"], dt_id)
-        if "power-ports" in device_type:
-            self.device_types.create_power_ports(device_type["power-ports"], dt_id)
-        if "console-ports" in device_type:
-            self.device_types.create_console_ports(device_type["console-ports"], dt_id)
-        if "power-outlets" in device_type:
-            self.device_types.create_power_outlets(device_type["power-outlets"], dt_id)
-        if "console-server-ports" in device_type:
-            self.device_types.create_console_server_ports(device_type["console-server-ports"], dt_id)
-        if "rear-ports" in device_type:
-            self.device_types.create_rear_ports(device_type["rear-ports"], dt_id)
-        if "front-ports" in device_type:
-            self.device_types.create_front_ports(device_type["front-ports"], dt_id, context=src_file)
-        if "device-bays" in device_type:
-            self.device_types.create_device_bays(device_type["device-bays"], dt_id)
-        if self.modules and "module-bays" in device_type:
-            self.device_types.create_module_bays(device_type["module-bays"], dt_id)
+        for component in COMPONENT_TYPES:
+            yaml_key = component.yaml_key
+            if yaml_key not in device_type:
+                continue
+            if yaml_key == "module-bays" and not self.modules:
+                continue
+            self.device_types.create_components(yaml_key, device_type[yaml_key], dt_id, context=src_file)
         if saved_images:
             self.device_types.upload_images(self.url, self.token, saved_images, dt_id)
-            _store_image_hashes(self._image_hash_cache, saved_images)
+            _store_image_hashes(self._image_hash_cache, saved_images, log_fn=self.handle.log)
             self._persist_hash_cache()
 
     def create_device_types(
@@ -1131,7 +1140,7 @@ class NetBox:
             change_report (ChangeReport | None): Pre-computed change report; required when ``update`` is True.
             remove_components (bool): If True (with ``update``), remove components absent from YAML.
         """
-        # Note: Caching is now done externally before this method via preload_all_components()
+        # Note: the component cache is populated before this method runs.
 
         iterator = progress if progress is not None else device_types_to_add
         # Pre-index change_report for O(1) lookup instead of an O(M) scan per device type.
@@ -1355,22 +1364,6 @@ class NetBox:
                 for comp in removed:
                     self.handle.verbose_log(f"        - {comp.component_type}: {comp.component_name}")
 
-    def _module_type_has_missing_components(self, module_type, existing_module, component_keys):
-        """Return True if any YAML-defined components are absent from the existing module type in NetBox."""
-        for component_key in component_keys:
-            components = module_type.get(component_key)
-            if not components:
-                continue
-            endpoint_attr, cache_name = ENDPOINT_CACHE_MAP[component_key]
-            endpoint = getattr(self.netbox.dcim, endpoint_attr)
-            existing_components = self.device_types._get_cached_or_fetch(
-                cache_name, existing_module.id, "module", endpoint
-            )
-            requested_names = {c.get("name") for c in components if c.get("name")}
-            if any(name not in existing_components for name in requested_names):
-                return True
-        return False
-
     def filter_actionable_module_types(self, module_types, all_module_types, only_new=False):
         """Determine which module types need to be created or updated in NetBox.
 
@@ -1410,8 +1403,7 @@ class NetBox:
         # processing in normal mode; this call is a no-op then.  When no device types were
         # present (e.g. vendor-filtered runs or --only-new was used for device types) the
         # preload is triggered here so module-type comparisons still hit accurate cache data.
-        if not self.device_types._global_preload_done:
-            self.device_types.preload_all_components()
+        self.device_types.ensure_components_ready(manufacturer_slug=module_types[0]["manufacturer"]["slug"])
 
         existing_module_map = {}
         for module_type in module_types:
@@ -1439,7 +1431,7 @@ class NetBox:
                 image_changed = True
 
             changed_fields_info = []
-            for f in _load_module_type_properties():
+            for f in _load_module_type_properties(self.repo_path):
                 if f not in module_type:
                     continue
                 nb_val = getattr(existing_module, f, _MISSING)
@@ -1509,7 +1501,7 @@ class NetBox:
                 *updated* is True when at least one field was actually patched.
         """
         updates = {}
-        for field in _load_module_type_properties():
+        for field in _load_module_type_properties(self.repo_path):
             if field not in curr_mt:
                 continue
             current_value = getattr(module_type_res, field, _MISSING)
@@ -1544,18 +1536,12 @@ class NetBox:
             module_type_id (int): ID of the newly created module type in NetBox.
             src_file (str): Source file path for error context.
         """
-        component_map = {
-            "interfaces": self.device_types.create_module_interfaces,
-            "power-ports": self.device_types.create_module_power_ports,
-            "console-ports": self.device_types.create_module_console_ports,
-            "power-outlets": self.device_types.create_module_power_outlets,
-            "console-server-ports": self.device_types.create_module_console_server_ports,
-            "rear-ports": self.device_types.create_module_rear_ports,
-            "front-ports": self.device_types.create_module_front_ports,
-        }
-        for key, create_fn in component_map.items():
-            if key in curr_mt:
-                create_fn(curr_mt[key], module_type_id, context=src_file)
+        for component in MODULE_TYPE_COMPONENTS:
+            yaml_key = component.yaml_key
+            if yaml_key in curr_mt:
+                self.device_types.create_components(
+                    yaml_key, curr_mt[yaml_key], module_type_id, parent_type="module", context=src_file
+                )
 
     def _apply_module_type_component_updates(
         self, curr_mt, module_type_res, properties_updated, remove_components, patch_ok=True
@@ -1572,8 +1558,7 @@ class NetBox:
                 When False the property drift is still present; a component-only reconciliation
                 must not be recorded as a full ``module_updated`` success.
         """
-        if not self.device_types._global_preload_done:
-            self.device_types.preload_all_components()
+        self.device_types.ensure_components_ready(manufacturer_slug=curr_mt["manufacturer"]["slug"])
         identity = f"{module_type_res.manufacturer.name}/{module_type_res.model}"
         component_changes = self.change_detector._compare_components(curr_mt, module_type_res.id, parent_type="module")
         if component_changes:
@@ -1948,6 +1933,11 @@ class NetBox:
                             self.token,
                             log_fn=self.handle.verbose_log,
                         )
+                        if status == "unknown":
+                            self.handle.log(
+                                f"[yellow]Could not verify image '{os.path.basename(img_path)}' on the server "
+                                f"for {module_type_res.model}; falling back to the local hash alone.[/yellow]"
+                            )
                         if status == "missing":
                             self.handle.verbose_log(
                                 f"Image '{os.path.basename(img_path)}' missing on server for "
@@ -1959,7 +1949,7 @@ class NetBox:
                             if not deleted:
                                 continue
                         # Step 2: local-file hash check
-                        elif _is_image_hash_changed(img_path, self._image_hash_cache):
+                        elif _is_image_hash_changed(img_path, self._image_hash_cache, log_fn=self.handle.log):
                             self.handle.verbose_log(
                                 f"Image '{os.path.basename(img_path)}' content has changed for "
                                 f"{module_type_res.model}, re-uploading."
@@ -1973,7 +1963,7 @@ class NetBox:
                             # Verify OK: image present and hash unchanged.
                             # Seed hash cache so future local edits will be detected.
                             if img_path not in self._image_hash_cache:
-                                _store_image_hashes(self._image_hash_cache, {"image": img_path})
+                                _store_image_hashes(self._image_hash_cache, {"image": img_path}, log_fn=self.handle.log)
                                 self._persist_hash_cache()
                             self.handle.verbose_log(
                                 f"Image '{os.path.basename(img_path)}' verified OK for "
@@ -1997,27 +1987,8 @@ class NetBox:
                 self.url, self.token, img_path, "dcim.moduletype", module_type_res.id
             ):
                 existing.add(img_name)
-                _store_image_hashes(self._image_hash_cache, {"image": img_path})
+                _store_image_hashes(self._image_hash_cache, {"image": img_path}, log_fn=self.handle.log)
                 self._persist_hash_cache()
-
-
-# Component type -> (dcim endpoint attribute name, cache key name).
-# The two tuple elements are intentionally identical today (endpoint attribute == cache name)
-# but are kept separate to allow them to diverge independently in the future.
-ENDPOINT_CACHE_MAP = {
-    "interfaces": ("interface_templates", "interface_templates"),
-    "power-ports": ("power_port_templates", "power_port_templates"),
-    "console-ports": ("console_port_templates", "console_port_templates"),
-    "power-outlets": ("power_outlet_templates", "power_outlet_templates"),
-    "console-server-ports": (
-        "console_server_port_templates",
-        "console_server_port_templates",
-    ),
-    "rear-ports": ("rear_port_templates", "rear_port_templates"),
-    "front-ports": ("front_port_templates", "front_port_templates"),
-    "device-bays": ("device_bay_templates", "device_bay_templates"),
-    "module-bays": ("module_bay_templates", "module_bay_templates"),
-}
 
 
 class _FrontPortRecordWithMappings:
@@ -2094,12 +2065,13 @@ class DeviceTypes:
     def __init__(
         self,
         netbox,
-        exception_handler,
+        handle,
         counter,
         ignore_ssl,
         new_filters,
         *,
         graphql,
+        repo_path,
         m2m_front_ports=False,
         max_threads=8,
     ):
@@ -2110,24 +2082,32 @@ class DeviceTypes:
 
         Args:
             netbox: Connected pynetbox API instance.
-            exception_handler (LogHandler): Handler for logging and error reporting.
+            handle (LogHandler): Sink for creation and error messages.
             counter (Counter): Shared operation counter updated during creation.
             ignore_ssl (bool): Whether SSL certificate verification is disabled.
             new_filters (bool): Whether to use updated filter parameter names (NetBox >= 4.1).
             graphql (NetBoxGraphQLClient): GraphQL client for read queries.
+            repo_path (str): Local library checkout, used to read the module-type schema.
             m2m_front_ports (bool): Whether NetBox uses the 4.5+ M2M port mapping model.
             max_threads (int): Maximum number of concurrent threads for component preloading.
         """
         self.netbox = netbox
-        self.handle = exception_handler
+        self.handle = handle
         self.counter = counter
         self.ignore_ssl = ignore_ssl
         self.new_filters = new_filters
         self.graphql = graphql
+        self.repo_path = repo_path
         self.m2m_front_ports = m2m_front_ports
         self.max_threads = max_threads
-        self.cached_components = {}
-        self._global_preload_done = False
+        self.components = ComponentCache(
+            netbox,
+            graphql,
+            handle,
+            new_filters,
+            max_threads,
+            wrap_record=_FrontPortRecordWithMappings,
+        )
         self._image_progress = None
         self.existing_device_types = {}
         self.existing_device_types_by_slug = {}
@@ -2151,842 +2131,30 @@ class DeviceTypes:
         Args:
             manufacturer_slug (str): Manufacturer slug to load device types for.
         """
-        self.cached_components = {}
-        self._global_preload_done = False
+        self.components.reset()
         by_model, by_slug = self.graphql.get_device_types(manufacturer_slugs=[manufacturer_slug])
         self.existing_device_types = by_model
         self.existing_device_types_by_slug = by_slug
 
-    # Endpoints whose GraphQL schema is missing fields required for accurate
-    # change detection and where the REST API provides the missing data.
-    # Add endpoint names here if a future NetBox version drops a field from
-    # GraphQL but keeps it in REST (or vice-versa).
-    REST_ONLY_ENDPOINTS: frozenset = frozenset()
+    def ensure_components_ready(self, manufacturer_slug=None):
+        """Populate the component cache, scoping the vendor checks to the loaded device types.
 
-    # Endpoints that only apply to device types (no module-type path).
-    # Matches _NO_MODULE_TYPE in graphql_client.py.
-    _NO_MODULE_TYPE_ENDPOINTS: frozenset = frozenset({"device_bay_templates"})
-
-    @staticmethod
-    def _component_preload_targets():
-        """Return the list of ``(endpoint_attr, display_label)`` pairs used for component preloading."""
-        return [
-            ("interface_templates", "Interfaces"),
-            ("power_port_templates", "Power Ports"),
-            ("console_port_templates", "Console Ports"),
-            ("console_server_port_templates", "Console Server Ports"),
-            ("power_outlet_templates", "Power Outlets"),
-            ("rear_port_templates", "Rear Ports"),
-            ("front_port_templates", "Front Ports"),
-            ("device_bay_templates", "Device Bays"),
-            ("module_bay_templates", "Module Bays"),
-        ]
-
-    def start_component_preload(
-        self,
-        progress=None,
-        manufacturer_slug: str | None = None,
-        task_registry: dict | None = None,
-    ):
-        """Start concurrent component prefetch and return a preload job handle.
-
-        Args:
-            progress: Optional Rich Progress instance for task tracking.
-            manufacturer_slug (str | None): When provided, fetch only component templates
-                belonging to this manufacturer's device types and module types.
-            task_registry (dict | None): When provided, task_ids are looked up or created
-                in this shared registry so they persist and accumulate counts across all
-                vendors rather than appearing and disappearing per vendor.
+        Idempotent, so any stage that needs cached components may call it without
+        knowing whether an earlier stage already did.
         """
-        components = self._component_preload_targets()
-        max_workers = max(1, min(len(components), self.max_threads))
-        executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
-
-        try:
-            endpoint_totals = {endpoint_name: None for endpoint_name, _label in components}
-            progress_updates = queue.Queue()
-            task_ids = None
-
-            if progress is not None:
-                task_ids = {}
-                for endpoint_name, label in components:
-                    desc = f"Caching {label}"
-                    if task_registry is not None:
-                        if desc not in task_registry:
-                            task_registry[desc] = progress.add_task(desc, total=None)
-                        task_ids[endpoint_name] = task_registry[desc]
-                    else:
-                        task_ids[endpoint_name] = progress.add_task(desc, total=None)
-
-            def update_progress(endpoint_name, advance):
-                """Put a progress update onto the queue for the main thread to consume."""
-                progress_updates.put((endpoint_name, advance))
-
-            futures = {
-                endpoint_name: executor.submit(
-                    self._fetch_global_endpoint_records,
-                    endpoint_name,
-                    update_progress,
-                    manufacturer_slug,
-                )
-                for endpoint_name, _label in components
-            }
-            return {
-                "mode": "global",
-                "components": components,
-                "futures": futures,
-                "progress_updates": progress_updates,
-                "endpoint_totals": endpoint_totals,
-                "task_ids": task_ids,
-                "finished_endpoints": set(),
-                "executor": executor,
-                # When task_registry is provided the caller owns the tasks;
-                # this job must not stop or remove them on completion.
-                "owns_tasks": task_registry is None,
-            }
-        except Exception:
-            executor.shutdown(wait=False, cancel_futures=True)
-            raise
-
-    @staticmethod
-    def stop_component_preload(preload_job, progress=None):
-        """Cancel any pending futures in *preload_job* and shut down its executor.
-
-        Args:
-            preload_job (dict | None): Preload job returned by :meth:`start_component_preload`; no-op if None.
-            progress: Optional Rich Progress instance; if provided, any remaining progress
-                tasks in the job are removed from the display.
-        """
-        if not preload_job:
-            return
-
-        futures = preload_job.get("futures", {})
-        for future in futures.values():
-            if not future.done():
-                future.cancel()
-
-        executor = preload_job.get("executor")
-        if executor:
-            executor.shutdown(wait=False, cancel_futures=True)
-            preload_job["executor"] = None
-
-        if progress is not None:
-            task_ids = preload_job.get("task_ids") or {}
-            owns_tasks = preload_job.get("owns_tasks", True)
-            if owns_tasks:
-                for task_id in task_ids.values():
-                    try:
-                        progress.stop_task(task_id)
-                        progress.remove_task(task_id)
-                    except Exception:
-                        pass
-
-    @staticmethod
-    def _apply_progress_updates(progress_updates, progress, task_ids, allowed_endpoints=None):
-        """Drain the progress queue and advance the corresponding Rich progress tasks.
-
-        Args:
-            progress_updates (queue.Queue | None): Queue of ``(endpoint_name, advance)`` tuples.
-            progress: Rich Progress instance, or None to skip.
-            task_ids (dict | None): Mapping of endpoint name to Rich task ID.
-            allowed_endpoints (set | None): If provided, only updates for these endpoints are applied.
-
-        Returns:
-            bool: True if at least one task was advanced; False otherwise.
-        """
-        if progress_updates is None or progress is None or not task_ids:
-            return False
-
-        advanced = False
-        updates = {}
-        while True:
-            try:
-                endpoint_name, advance = progress_updates.get_nowait()
-                if allowed_endpoints is not None and endpoint_name not in allowed_endpoints:
-                    # Drop updates for already-completed endpoints; their progress tasks are
-                    # already stopped so re-enqueuing would have no visible effect.
-                    continue
-                updates[endpoint_name] = updates.get(endpoint_name, 0) + advance
-            except queue.Empty:
-                break
-
-        for endpoint_name, advance in updates.items():
-            if advance == 0:
-                continue
-            task_id = task_ids.get(endpoint_name)
-            if task_id is not None:
-                if advance < 0:
-                    # Rewind on retry: clamp completed at 0 to avoid negative bars.
-                    task = next((t for t in progress.tasks if t.id == task_id), None)
-                    if task is not None:
-                        new_completed = max(0, task.completed + advance)
-                        progress.update(task_id, completed=new_completed)
-                else:
-                    progress.update(task_id, advance=advance)
-                advanced = True
-
-        return advanced
-
-    def pump_preload_progress(self, preload_job, progress):
-        """Drain pending progress updates and mark completed endpoints for *preload_job*.
-
-        Intended to be called periodically while parsing is in progress so that the
-        progress bar advances before :meth:`preload_all_components` is called.
-
-        Args:
-            preload_job (dict | None): Preload job returned by :meth:`start_component_preload`.
-            progress: Rich Progress instance.
-
-        Returns:
-            bool: True if any progress updates were applied or endpoints were marked done.
-        """
-        if not preload_job:
-            return False
-        futures = preload_job.get("futures", {})
-        finished_endpoints = preload_job.setdefault("finished_endpoints", set())
-        pending_endpoints = {endpoint_name for endpoint_name in futures if endpoint_name not in finished_endpoints}
-
-        advanced = self._apply_progress_updates(
-            preload_job.get("progress_updates"),
-            progress,
-            preload_job.get("task_ids"),
-            allowed_endpoints=pending_endpoints if pending_endpoints else None,
+        self.components.ensure_ready(
+            manufacturer_slug=manufacturer_slug,
+            device_type_ids={record.id for record in self.existing_device_types.values()},
         )
-
-        task_ids = preload_job.get("task_ids") or {}
-        owns_tasks = preload_job.get("owns_tasks", True)
-        for endpoint_name in pending_endpoints:
-            future = futures.get(endpoint_name)
-            if future is None or not future.done():
-                continue
-            if progress is not None and endpoint_name in task_ids:
-                try:
-                    records = future.result()
-                    final_total = max(len(records), 1)
-                except Exception:
-                    final_total = 1
-                if owns_tasks:
-                    progress.update(task_ids[endpoint_name], total=final_total, completed=final_total)
-                    progress.stop_task(task_ids[endpoint_name])
-                    progress.remove_task(task_ids[endpoint_name])
-            finished_endpoints.add(endpoint_name)
-            advanced = True
-
-        return advanced
-
-    def preload_all_components(
-        self,
-        progress_wrapper=None,
-        preload_job=None,
-        progress=None,
-        manufacturer_slug: str | None = None,
-        task_registry: dict | None = None,
-    ):
-        """Pre-fetch component templates to avoid N+1 queries during updates.
-
-        Args:
-            progress_wrapper: Optional callable to wrap iterables with progress bars.
-            preload_job: Optional preload job from :meth:`start_component_preload`.
-            progress: Optional shared Rich Progress instance used to render
-                all caching tasks inside a single progress panel.
-            manufacturer_slug (str | None): When provided, only fetch component templates
-                for device/module types belonging to this manufacturer.
-            task_registry (dict | None): Shared registry for cumulative progress tasks.
-                When provided, "Caching X" tasks persist across all vendors.
-        """
-        components = self._component_preload_targets()
-
-        if preload_job:
-            self._preload_global(
-                preload_job.get("components", components),
-                progress_wrapper,
-                preload_job=preload_job,
-                progress=progress,
-                task_registry=task_registry,
-            )
-        else:
-            self._preload_global(
-                components,
-                progress_wrapper,
-                progress=progress,
-                manufacturer_slug=manufacturer_slug,
-                task_registry=task_registry,
-            )
-
-        if manufacturer_slug is not None:
-            try:
-                vendor_dt_ids = {record.id for record in self.existing_device_types.values()}
-                vendor_mt_data = self.graphql.get_module_types(manufacturer_slugs=[manufacturer_slug])
-                vendor_mt_ids = {record.id for models in vendor_mt_data.values() for record in models.values()}
-            except GraphQLSchemaError as exc:
-                # Only a rejected query shape may skip the guard; a failed request must not.
-                self.handle.log(f"WARNING: Component cache integrity check skipped: {exc}")
-            else:
-                self._verify_component_cache_integrity(vendor_dt_ids, vendor_mt_ids)
-                # A mismatch means GraphQL truncated results, so let it propagate.
-                self._check_component_counts_against_rest(vendor_dt_ids, vendor_mt_ids)
-
-        self._global_preload_done = True
-
-    def _preload_track_progress(
-        self,
-        components,
-        futures,
-        progress,
-        task_ids,
-        preload_job,
-        progress_updates,
-        endpoint_totals,
-        owns_tasks=True,
-    ):
-        """Collect preload results and advance progress tasks as each endpoint future completes.
-
-        Handles already-finished endpoints from a shared preload job, then drains
-        the remaining pending futures while advancing per-endpoint progress tasks.
-
-        Args:
-            components (list): Sequence of ``(endpoint_name, label)`` pairs.
-            futures (dict): Mapping of endpoint name to submitted Future.
-            progress: Rich Progress instance for task updates.
-            task_ids (dict): Mapping of endpoint name to progress task ID.
-            preload_job (dict | None): Shared preload-job state dict, or None.
-            progress_updates (queue.Queue | None): Queue carrying ``(endpoint_name, advance)`` tuples.
-            endpoint_totals (dict): Expected record count per endpoint.
-            owns_tasks (bool): Whether this call owns the progress tasks and should stop/remove them.
-
-        Returns:
-            dict: ``{endpoint_name: [records]}`` populated as futures complete.
-        """
-        future_map = {endpoint: futures[endpoint] for endpoint, _label in components if endpoint in futures}
-        pending = set(future_map.keys())
-        records_by_endpoint = {}
-        if preload_job:
-            already_done = pending & preload_job.get("finished_endpoints", set())
-            # Collect results and stop tasks for endpoints already finalised by pump_preload_progress.
-            for endpoint_name in already_done:
-                try:
-                    records_by_endpoint[endpoint_name] = future_map[endpoint_name].result()
-                except Exception as exc:
-                    self.handle.log(f"Preload failed for {endpoint_name}: {exc}")
-                    raise
-                if endpoint_name in task_ids:
-                    try:
-                        final_total = max(
-                            endpoint_totals.get(endpoint_name) or 0,
-                            len(records_by_endpoint[endpoint_name]),
-                            1,
-                        )
-                        if owns_tasks:
-                            progress.update(
-                                task_ids[endpoint_name],
-                                total=final_total,
-                                completed=final_total,
-                            )
-                            progress.stop_task(task_ids[endpoint_name])
-                            progress.remove_task(task_ids[endpoint_name])
-                    except Exception:
-                        pass
-            # Exclude from pending to avoid double stop_task.
-            pending -= already_done
-        self._drain_pending(
-            pending,
-            future_map,
-            progress,
-            task_ids,
-            progress_updates,
-            endpoint_totals,
-            records_by_endpoint,
-            owns_tasks=owns_tasks,
-        )
-        return records_by_endpoint
-
-    def _drain_pending(
-        self,
-        pending,
-        future_map,
-        progress,
-        task_ids,
-        progress_updates,
-        endpoint_totals,
-        records_by_endpoint,
-        owns_tasks=True,
-    ):
-        """Wait for pending endpoint futures to complete, collecting results and updating progress.
-
-        Continuously loops until all pending futures are resolved, advancing the progress
-        display as results arrive and handling blocking waits when no updates are available.
-
-        Args:
-            pending (set): Endpoint names whose futures have not yet been collected.
-            future_map (dict): Mapping of endpoint name to Future.
-            progress: Rich Progress instance for task updates.
-            task_ids (dict): Mapping of endpoint name to progress task ID.
-            progress_updates (queue.Queue | None): Queue of ``(endpoint_name, advance)`` tuples.
-            endpoint_totals (dict): Expected record count per endpoint.
-            records_by_endpoint (dict): Accumulator dict updated in-place with results.
-            owns_tasks (bool): Whether this call owns the progress tasks and should stop/remove them.
-        """
-        while pending:
-            had_updates = self._apply_progress_updates(
-                progress_updates,
-                progress,
-                task_ids,
-                allowed_endpoints=pending,
-            )
-            done_now = [ep for ep in pending if future_map[ep].done()]
-            for endpoint_name in done_now:
-                pending.remove(endpoint_name)
-                try:
-                    records_by_endpoint[endpoint_name] = future_map[endpoint_name].result()
-                except Exception as exc:
-                    self.handle.log(f"Preload failed for {endpoint_name}: {exc}")
-                    raise
-                final_total = max(
-                    endpoint_totals.get(endpoint_name) or 0,
-                    len(records_by_endpoint[endpoint_name]),
-                    1,
-                )
-                task_id = task_ids.get(endpoint_name)
-                if task_id is not None and owns_tasks:
-                    progress.update(task_id, total=final_total, completed=final_total)
-                    progress.stop_task(task_id)
-                    progress.remove_task(task_id)
-            if pending and not had_updates:
-                if progress_updates is not None:
-                    try:
-                        endpoint_name, advance = progress_updates.get(timeout=0.1)
-                        if endpoint_name not in pending:
-                            # Drop: endpoint already finalised; no task to advance.
-                            continue
-                        task_id = task_ids.get(endpoint_name)
-                        if task_id is not None and advance != 0:
-                            if advance < 0:
-                                task = next(
-                                    (t for t in progress.tasks if t.id == task_id),
-                                    None,
-                                )
-                                if task is not None:
-                                    new_completed = max(0, task.completed + advance)
-                                    progress.update(task_id, completed=new_completed)
-                            else:
-                                progress.update(task_id, advance=advance)
-                    except queue.Empty:
-                        pass
-                else:
-                    concurrent.futures.wait(
-                        [future_map[ep] for ep in pending],
-                        timeout=0.1,
-                        return_when=concurrent.futures.FIRST_COMPLETED,
-                    )
-
-    def _preload_no_progress(self, components, futures):
-        """Collect preload results sequentially without any progress display.
-
-        Waits for each endpoint's future in order, logging verbose messages as each
-        completes, and accumulates results for the cache-merging step.
-
-        Args:
-            components (list): Sequence of ``(endpoint_name, label)`` pairs.
-            futures (dict): Mapping of endpoint name to submitted Future.
-
-        Returns:
-            dict: ``{endpoint_name: [records]}`` populated as each future resolves.
-        """
-        records_by_endpoint = {}
-        for endpoint, label in components:
-            self.handle.verbose_log(f"Pre-fetching {label}...")
-            try:
-                records_by_endpoint[endpoint] = futures[endpoint].result()
-            except Exception as exc:
-                self.handle.log(f"Preload failed for {label}: {exc}")
-                raise
-        return records_by_endpoint
-
-    def _preload_global(
-        self,
-        components,
-        progress_wrapper=None,
-        preload_job=None,
-        progress=None,
-        manufacturer_slug=None,
-        task_registry=None,
-    ):
-        """Fetch all component templates, optionally scoped to a single manufacturer."""
-        own_executor = preload_job is None
-        if preload_job:
-            executor = preload_job.get("executor")
-            futures = preload_job.get("futures", {})
-            progress_updates = preload_job.get("progress_updates")
-            endpoint_totals = preload_job.get("endpoint_totals", {})
-        else:
-            max_workers = max(1, min(len(components), self.max_threads))
-            endpoint_totals = {endpoint_name: None for endpoint_name, _label in components}
-            executor = None
-            futures = {}
-            progress_updates = None
-
-        try:
-            if own_executor:
-                executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
-                if progress is not None:
-                    progress_updates = queue.Queue()
-
-                    def update_progress(endpoint_name, advance):
-                        """Put a progress update onto the queue for the main-thread pump to consume."""
-                        progress_updates.put((endpoint_name, advance))
-
-                    futures = {
-                        endpoint: executor.submit(
-                            self._fetch_global_endpoint_records,
-                            endpoint,
-                            update_progress,
-                            manufacturer_slug,
-                        )
-                        for endpoint, _label in components
-                    }
-                else:
-                    futures = {
-                        endpoint: executor.submit(
-                            self._fetch_global_endpoint_records,
-                            endpoint,
-                            None,
-                            manufacturer_slug,
-                        )
-                        for endpoint, _label in components
-                    }
-            if progress is not None:
-                task_ids = preload_job.get("task_ids") if preload_job else None
-                owns_tasks = preload_job.get("owns_tasks", True) if preload_job else (task_registry is None)
-                if not task_ids:
-                    task_ids = {}
-                    for endpoint, label in components:
-                        desc = f"Caching {label}"
-                        if task_registry is not None:
-                            if desc not in task_registry:
-                                task_registry[desc] = progress.add_task(desc, total=None)
-                            task_ids[endpoint] = task_registry[desc]
-                        else:
-                            task_ids[endpoint] = progress.add_task(desc, total=None)
-                records_by_endpoint = self._preload_track_progress(
-                    components,
-                    futures,
-                    progress,
-                    task_ids,
-                    preload_job,
-                    progress_updates,
-                    endpoint_totals,
-                    owns_tasks=owns_tasks,
-                )
-            else:
-                records_by_endpoint = self._preload_no_progress(components, futures)
-            for endpoint, label in components:
-                all_items = records_by_endpoint.get(endpoint, [])
-                cache, count = self._build_component_cache(all_items)
-                # Merge to preserve entries from prior incremental preloads.
-                self.cached_components.setdefault(endpoint, {}).update(cache)
-                self.handle.verbose_log(f"Cached {count} {label}.")
-        finally:
-            if executor:
-                if own_executor:
-                    executor.shutdown(wait=True)
-                elif preload_job and preload_job.get("executor") is executor:
-                    executor.shutdown(wait=True)
-                    preload_job["executor"] = None
-
-    def _fetch_global_endpoint_records(self, endpoint_name, progress_callback=None, manufacturer_slug=None):
-        """Fetch all records for *endpoint_name* from NetBox.
-
-        Most endpoints are fetched via GraphQL for speed.  Endpoints listed in
-        :attr:`REST_ONLY_ENDPOINTS` are fetched via the pynetbox REST client
-        instead because their GraphQL schema is missing fields that are required
-        for accurate change detection.
-
-        ``front_port_templates`` records are always wrapped in
-        :class:`_FrontPortRecordWithMappings` after fetching so that
-        :class:`~change_detector.ChangeDetector` can access ``_mappings_canonical``
-        regardless of whether the server returned ``mappings`` (>= 4.5) or the
-        legacy ``rear_port_position`` scalar (< 4.5).
-
-        Args:
-            endpoint_name (str): Component template endpoint name (e.g. ``"interface_templates"``).
-            progress_callback (callable | None): Called with ``(endpoint_name, advance)``
-                once per page during the GraphQL fetch (or once after the batch fetch
-                completes for REST endpoints).  *advance* is a positive integer equal to
-                the number of records on that page.
-            manufacturer_slug (str | None): When provided, only templates belonging to
-                device types or module types of this manufacturer are fetched.
-
-        Returns:
-            list: All component template records.
-        """
-        use_rest = endpoint_name in self.REST_ONLY_ENDPOINTS
-
-        if use_rest:
-            endpoint = getattr(self.netbox.dcim, endpoint_name)
-            records = list(endpoint.all())
-            if progress_callback is not None and records:
-                progress_callback(endpoint_name, len(records))
-            return records
-
-        def _live_advance(n):
-            if progress_callback is not None and n:
-                progress_callback(endpoint_name, n)
-
-        on_page = _live_advance if progress_callback is not None else None
-        records = self.graphql.get_component_templates(
-            endpoint_name, manufacturer_slug=manufacturer_slug, on_page=on_page
-        )
-        if endpoint_name == "front_port_templates":
-            records = [_FrontPortRecordWithMappings(r) for r in records]
-
-        return records
-
-    @staticmethod
-    def _build_component_cache(items):
-        """Organise a flat list of component records into a nested cache structure.
-
-        Args:
-            items (list): pynetbox records; each must have a ``device_type`` or ``module_type`` attribute.
-
-        Returns:
-            tuple[dict, int]: Cache ``{(parent_type, parent_id): {name: record}}`` and the total
-                number of items successfully indexed.
-        """
-        cache = {}
-        count = 0
-        for item in items:
-            parent_id = None
-            parent_type = None
-
-            if getattr(item, "device_type", None):
-                parent_id = item.device_type.id
-                parent_type = "device"
-            elif getattr(item, "module_type", None):
-                parent_id = item.module_type.id
-                parent_type = "module"
-
-            if not parent_id:
-                continue
-
-            key = (parent_type, parent_id)
-            if key not in cache:
-                cache[key] = {}
-            cache[key][item.name] = item
-            count += 1
-
-        return cache, count
-
-    def _verify_component_cache_integrity(self, vendor_dt_ids: set, vendor_mt_ids: set) -> bool:
-        """Check that cached component records belong to the current vendor.
-
-        For each endpoint in :attr:`cached_components`, verifies that at least one
-        record has a parent ID (``device_type.id`` or ``module_type.id``) that
-        appears in *vendor_dt_ids* or *vendor_mt_ids* respectively.  A non-empty
-        endpoint whose records contain **no** matching IDs is treated as garbage
-        data and cleared.
-
-        Args:
-            vendor_dt_ids (set): Device type IDs belonging to the current vendor.
-            vendor_mt_ids (set): Module type IDs belonging to the current vendor.
-
-        Returns:
-            bool: ``True`` if all non-empty endpoints passed the check,
-                ``False`` if any were cleared.
-        """
-        all_ok = True
-        for endpoint_name, entries in list(self.cached_components.items()):
-            if not entries:
-                continue
-            has_valid = any(
-                (parent_type == "device" and parent_id in vendor_dt_ids)
-                or (parent_type == "module" and parent_id in vendor_mt_ids)
-                for (parent_type, parent_id) in entries
-            )
-            if not has_valid:
-                self.handle.log(
-                    f"ERROR: Cached {endpoint_name} contains no records matching the current vendor — "
-                    "clearing to prevent cross-vendor contamination."
-                )
-                self.cached_components[endpoint_name] = {}
-                all_ok = False
-        return all_ok
-
-    def _rest_count_chunked(self, rest_endpoint, filter_key, ids, chunk_size=100):
-        """Return REST count for *ids* using *filter_key*, chunked to avoid URL-length limits.
-
-        Args:
-            rest_endpoint: pynetbox endpoint object (e.g. ``self.netbox.dcim.interface_templates``).
-            filter_key (str): Filter parameter name (e.g. ``"device_type_id"``).
-            ids (list): List of integer IDs to filter by.
-            chunk_size (int): Maximum IDs per REST request.
-
-        Returns:
-            int: Total count across all chunks.
-        """
-        total = 0
-        for i in range(0, len(ids), chunk_size):
-            chunk = ids[i : i + chunk_size]
-            total += rest_endpoint.count(**{filter_key: chunk})
-        return total
-
-    def _check_component_counts_against_rest(self, vendor_dt_ids: set, vendor_mt_ids: set):
-        """Verify that GraphQL-cached component counts match REST API counts for this vendor.
-
-        For each preloaded component endpoint, counts cached records belonging to the
-        current vendor and compares with pynetbox REST counts.  A discrepancy means
-        GraphQL silently truncated the fetch and the import should not proceed.
-
-        Args:
-            vendor_dt_ids: Device type IDs for the current vendor.
-            vendor_mt_ids: Module type IDs for the current vendor.
-
-        Raises:
-            GraphQLCountMismatchError: If any endpoint's cached count differs from REST.
-        """
-        dt_filter_key = device_type_filter_key(self.new_filters)
-        mt_filter_key = module_type_filter_key(self.new_filters)
-        dt_ids = list(vendor_dt_ids)
-        mt_ids = list(vendor_mt_ids)
-
-        for endpoint_name, _label in self._component_preload_targets():
-            if endpoint_name in self.REST_ONLY_ENDPOINTS:
-                # REST-only endpoints are fetched via REST already — comparing REST
-                # count to REST count is tautological and adds no value.
-                continue
-
-            endpoint_cache = self.cached_components.get(endpoint_name, {})
-            cached_count = sum(
-                len(records)
-                for (parent_type, parent_id), records in endpoint_cache.items()
-                if (parent_type == "device" and parent_id in vendor_dt_ids)
-                or (parent_type == "module" and parent_id in vendor_mt_ids)
-            )
-
-            rest_ep = getattr(self.netbox.dcim, endpoint_name)
-            rest_count = 0
-            if dt_ids:
-                rest_count += self._rest_count_chunked(rest_ep, dt_filter_key, dt_ids)
-            if mt_ids and endpoint_name not in self._NO_MODULE_TYPE_ENDPOINTS:
-                rest_count += self._rest_count_chunked(rest_ep, mt_filter_key, mt_ids)
-
-            if cached_count != rest_count:
-                raise GraphQLCountMismatchError(
-                    f"{endpoint_name}: GraphQL returned {cached_count} records "
-                    f"but REST reports {rest_count} — "
-                    "GraphQL may have silently truncated the result set."
-                )
-
-    def _get_filter_kwargs(self, parent_id, parent_type="device"):
-        """Build endpoint filter keyword arguments for the given parent type and ID.
-
-        Delegates to :mod:`core.compat` helpers so the version-compat logic
-        lives in exactly one place.
-
-        Args:
-            parent_id (int): ID of the device type or module type.
-            parent_type (str): ``"device"`` or ``"module"``.
-
-        Returns:
-            dict: Filter kwargs to pass to a pynetbox endpoint's ``filter()`` method.
-        """
-        if parent_type == "device":
-            return device_type_filter_kwargs(parent_id, new_filters=self.new_filters)
-        else:
-            return module_type_filter_kwargs(parent_id, new_filters=self.new_filters)
-
-    def _get_cached_or_fetch(self, cache_name, parent_id, parent_type, endpoint):
-        """Return cached components or fall back to a targeted REST filter.
-
-        The global preload (``preload_all_components``) populates most entries before
-        any create/update operations.  A cache miss therefore occurs only for newly
-        created device types (not yet in the preload snapshot) or after a cache entry
-        has been invalidated following a mutation.  In both cases a targeted
-        ``endpoint.filter()`` call is fast and returns only the relevant records.
-
-        Args:
-            cache_name: Key in self.cached_components (e.g. "rear_port_templates")
-            parent_id: Device type or module type ID
-            parent_type: "device" or "module"
-            endpoint: pynetbox endpoint proxy used for the targeted REST filter
-
-        Returns:
-            Dict mapping component name -> record
-        """
-        cache_key = (parent_type, parent_id)
-        if cache_name in self.cached_components:
-            if cache_key in self.cached_components[cache_name]:
-                return self.cached_components[cache_name][cache_key]
-
-        # Cache miss: targeted REST filter (fast for both device and module types)
-        filter_kwargs = self._get_filter_kwargs(parent_id, parent_type)
-        records = list(endpoint.filter(**filter_kwargs))
-        result = {item.name: item for item in records}
-        self.cached_components.setdefault(cache_name, {})[cache_key] = result
-        return result
-
-    def preload_module_type_components(self, module_type_ids, component_keys):
-        """Bulk-fetch components for module types and populate the cache.
-
-        For each component endpoint referenced by *component_keys*, issues one
-        ``filter()`` call per chunk of up to ``FILTER_CHUNK_SIZE`` module-type IDs
-        (filtering by module_type_id=[...]) and distributes the returned items into
-        per-module-type cache entries so that subsequent ``_get_cached_or_fetch``
-        calls hit the cache.  All component types are fetched in parallel.
-        """
-        if not module_type_ids:
-            return
-
-        seen_endpoints = set()
-        targets = []
-        for component_key in component_keys:
-            endpoint_attr, cache_name = ENDPOINT_CACHE_MAP[component_key]
-            if endpoint_attr in seen_endpoints:
-                continue
-            seen_endpoints.add(endpoint_attr)
-            targets.append((endpoint_attr, cache_name))
-
-        filter_key = module_type_filter_key(self.new_filters)
-        id_list = sorted(module_type_ids)
-
-        # Pre-populate empty entries so cache hits return {} for IDs with no components.
-        for _, cache_name in targets:
-            cache = self.cached_components.setdefault(cache_name, {})
-            for mid in id_list:
-                cache.setdefault(("module", mid), {})
-
-        def _fetch_one(endpoint_attr, cache_name):
-            """Fetch all module-type component records for *endpoint_attr* and populate *cache_name*."""
-            endpoint = getattr(self.netbox.dcim, endpoint_attr)
-            results = []
-            for chunk in _chunked(id_list, FILTER_CHUNK_SIZE):
-                for item in endpoint.filter(**{filter_key: chunk}):
-                    module_type = getattr(item, "module_type", None)
-                    if module_type is None:
-                        continue
-                    if cache_name == "front_port_templates":
-                        item = _FrontPortRecordWithMappings(item)
-                    results.append((module_type.id, item))
-            return cache_name, results
-
-        max_workers = max(1, min(len(targets), self.max_threads))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = {executor.submit(_fetch_one, ea, cn): (ea, cn) for ea, cn in targets}
-            for future in concurrent.futures.as_completed(futures):
-                cache_name, results = future.result()
-                cache = self.cached_components[cache_name]
-                for mid, item in results:
-                    cache.setdefault(("module", mid), {})[item.name] = item
 
     def _create_generic(
         self,
+        component,
         items,
         parent_id,
-        endpoint,
-        component_name,
         parent_type="device",
         post_process=None,
         context=None,
-        cache_name=None,
     ):
         """Create component templates in NetBox, skipping those that already exist.
 
@@ -2995,17 +2163,19 @@ class DeviceTypes:
         then calls ``endpoint.create()`` and updates counters. On error, logs each failed item.
 
         Args:
+            component (ComponentType): Registry row naming the endpoint, cache and label.
             items (list[dict]): Component definitions to create; each must have a "name" key.
             parent_id (int): ID of the parent device or module type.
-            endpoint: pynetbox endpoint proxy for create/filter calls.
-            component_name (str): Human-readable component type for log messages.
             parent_type (str): ``"device"`` or ``"module"``; determines parent key and counter key.
             post_process (callable | None): Optional ``(items, parent_id)`` callback run before creation.
             context (str | None): Optional context string appended to error log messages.
-            cache_name (str | None): Key in ``self.cached_components``; entry is invalidated after creation.
         """
+        endpoint = getattr(self.netbox.dcim, component.endpoint)
+        component_name = component.create_label(parent_type)
+        cache_name = component.endpoint
+
         # Look up existing components via cache or API fallback
-        existing = self._get_cached_or_fetch(cache_name, parent_id, parent_type, endpoint)
+        existing = self.components.get(cache_name, parent_type, parent_id, endpoint)
 
         to_create = [x for x in items if x["name"] not in existing]
         parent_key = "device_type" if parent_type == "device" else "module_type"
@@ -3019,17 +2189,10 @@ class DeviceTypes:
         if to_create:
             try:
                 created = _retry_on_connection_error(endpoint.create, to_create)
-                if parent_type == "device":
-                    count = self.handle.log_device_ports_created(created, component_name)
-                    self.counter.update({"components_added": count})
-                else:
-                    count = self.handle.log_module_ports_created(created, component_name)
-                    self.counter.update({"components_added": count})
+                self.handle.log_ports_created(created, parent_type, component_name)
+                self.counter.update({"components_added": len(created)})
 
-                # Invalidate cache so subsequent lookups re-fetch with new records
-                if cache_name and cache_name in self.cached_components:
-                    cache_key = (parent_type, parent_id)
-                    self.cached_components[cache_name].pop(cache_key, None)
+                self.components.invalidate(cache_name, parent_type, parent_id)
             except pynetbox.RequestError as excep:
                 context_str = f" (Context: {context})" if context else ""
                 if isinstance(excep.error, list):
@@ -3062,10 +2225,10 @@ class DeviceTypes:
         Returns:
             list | None: ``rear_ports`` payload list, or ``None`` if resolution failed.
         """
-        existing_rp = self._get_cached_or_fetch(
+        existing_rp = self.components.get(
             "rear_port_templates",
-            device_type_id,
             parent_type,
+            device_type_id,
             self.netbox.dcim.rear_port_templates,
         )
         rear_ports_payload = []
@@ -3131,10 +2294,10 @@ class DeviceTypes:
                 rp_pos = first_yaml.get("rear_port_position", 1)
             else:
                 rp_name, _fp_pos, rp_pos = first
-            rps = self._get_cached_or_fetch(
+            rps = self.components.get(
                 "rear_port_templates",
-                device_type_id,
                 parent_type,
+                device_type_id,
                 self.netbox.dcim.rear_port_templates,
             )
             rp = rps.get(rp_name)
@@ -3159,15 +2322,12 @@ class DeviceTypes:
             device_type_id: NetBox ID of the parent device or module type.
             parent_type (str): ``"device"`` or ``"module"``.
         """
-        mapping = ENDPOINT_CACHE_MAP.get(comp_type)
-        if not mapping:
+        component = BY_YAML_KEY.get(comp_type)
+        if component is None:
             return
-        endpoint_attr, cache_name = mapping
-        endpoint = getattr(self.netbox.dcim, endpoint_attr, None)
-        if not endpoint:
-            return
+        endpoint = getattr(self.netbox.dcim, component.endpoint)
 
-        existing = self._get_cached_or_fetch(cache_name, device_type_id, parent_type, endpoint)
+        existing = self.components.get(component.endpoint, parent_type, device_type_id, endpoint)
 
         updates = []
         for change in changes:
@@ -3210,17 +2370,13 @@ class DeviceTypes:
             self.counter.update({"components_updated": success_count})
             self.handle.verbose_log(f"Updated {success_count} {comp_type}")
 
-            # Invalidate cache so subsequent lookups re-fetch with updated records
-            if cache_name in self.cached_components:
-                cache_key = (parent_type, device_type_id)
-                self.cached_components[cache_name].pop(cache_key, None)
+            self.components.invalidate(component.endpoint, parent_type, device_type_id)
 
     def _apply_additions_for_type(self, comp_type, changes, yaml_data, device_type_id, parent_type):
         """Create new component templates of a single type based on detected additions.
 
-        Resolves the YAML key for *comp_type* (including alias fallback), finds the
-        specific components to add from *yaml_data*, and delegates creation to the
-        appropriate endpoint helper.
+        Finds the components to add in *yaml_data* and hands them to
+        :meth:`create_components`, which resolves any name references.
 
         Args:
             comp_type (str): YAML component key (e.g. ``"interfaces"``).
@@ -3229,48 +2385,17 @@ class DeviceTypes:
             device_type_id: NetBox ID of the parent device or module type.
             parent_type (str): ``"device"`` or ``"module"``.
         """
-        yaml_key = None
-        if comp_type in yaml_data:
-            yaml_key = comp_type
-        if yaml_key is None:
+        if comp_type not in yaml_data or comp_type not in BY_YAML_KEY:
             return
 
-        mapping = ENDPOINT_CACHE_MAP.get(comp_type)
-        if not mapping:
-            return
-        endpoint_attr, cache_name = mapping
-        endpoint = getattr(self.netbox.dcim, endpoint_attr, None)
-        if not endpoint:
-            return
-
-        # Find the new components in the YAML data
-        yaml_components = yaml_data.get(yaml_key) or []
+        yaml_components = yaml_data.get(comp_type) or []
         new_component_names = {change.component_name for change in changes}
         components_to_add = [c for c in yaml_components if c.get("name") in new_component_names]
 
         if not components_to_add:
             return
 
-        # Front ports require special link_rear_ports post-processing (including M2M on 4.5+).
-        # Delegate to the dedicated create methods instead of calling _create_generic directly.
-        if comp_type == "front-ports":
-            if parent_type == "device":
-                self.create_front_ports(components_to_add, device_type_id)
-            else:
-                self.create_module_front_ports(components_to_add, device_type_id)
-            return
-
-        # Format component name for logging (e.g. "power_port_templates" -> "Power Port")
-        component_name = endpoint_attr.replace("_templates", "").replace("_", " ").title()
-
-        self._create_generic(
-            components_to_add,
-            device_type_id,
-            endpoint,
-            component_name,
-            parent_type=parent_type,
-            cache_name=cache_name,
-        )
+        self.create_components(comp_type, components_to_add, device_type_id, parent_type=parent_type)
 
     def update_components(self, yaml_data, device_type_id, component_changes, parent_type="device"):
         """Update existing components and add new components based on detected changes.
@@ -3320,15 +2445,12 @@ class DeviceTypes:
 
         # Process removals for each component type
         for comp_type, changes in removals_by_type.items():
-            mapping = ENDPOINT_CACHE_MAP.get(comp_type)
-            if not mapping:
+            component = BY_YAML_KEY.get(comp_type)
+            if component is None:
                 continue
-            endpoint_attr, cache_name = mapping
-            endpoint = getattr(self.netbox.dcim, endpoint_attr, None)
-            if not endpoint:
-                continue
+            endpoint = getattr(self.netbox.dcim, component.endpoint)
 
-            existing = self._get_cached_or_fetch(cache_name, device_type_id, parent_type, endpoint)
+            existing = self.components.get(component.endpoint, parent_type, device_type_id, endpoint)
 
             ids_to_delete = []
             for change in changes:
@@ -3354,103 +2476,27 @@ class DeviceTypes:
                 self.counter.update({"components_removed": success_count})
                 self.handle.log(f"Removed {success_count} {comp_type}")
 
-                # Invalidate cache so subsequent lookups re-fetch without deleted records
-                if cache_name in self.cached_components:
-                    cache_key = (parent_type, device_type_id)
-                    self.cached_components[cache_name].pop(cache_key, None)
+                self.components.invalidate(component.endpoint, parent_type, device_type_id)
 
-    def create_interfaces(self, interfaces, device_type, context=None):
-        """Create interface templates for a device type, handling bridge references.
+    def _build_link_power_port(self, parent_type, label, context=None):
+        """Return a ``post_process`` callable that resolves power-port name references.
 
-        Strips ``bridge`` entries before creation and re-applies them after by resolving
-        bridge interface names to their NetBox IDs.
+        Power outlets name their feeding power port; NetBox wants its id.  Outlets whose
+        power port cannot be resolved are dropped from the batch with a log entry, so one
+        bad reference does not fail the whole create call.
 
         Args:
-            interfaces (list[dict]): Interface template definitions; may include a "bridge" key.
-            device_type (int): ID of the parent device type.
-            context (str | None): Optional context string for log messages.
-        """
-        bridged_interfaces = {}
-        # Pre-process to separate bridge config
-        for x in interfaces:
-            if "bridge" in x:
-                bridged_interfaces[x["name"]] = x["bridge"]
-                del x["bridge"]
-
-        self._create_generic(
-            interfaces,
-            device_type,
-            self.netbox.dcim.interface_templates,
-            "Interface",
-            context=context,
-            cache_name="interface_templates",
-        )
-
-        if bridged_interfaces:
-            all_interfaces = self._get_cached_or_fetch(
-                "interface_templates",
-                device_type,
-                "device",
-                self.netbox.dcim.interface_templates,
-            )
-
-            to_update = []
-            for name, bridge_name in bridged_interfaces.items():
-                if name in all_interfaces and bridge_name in all_interfaces:
-                    iface = all_interfaces[name]
-                    bridge = all_interfaces[bridge_name]
-                    to_update.append({"id": iface.id, "bridge": bridge.id})
-                else:
-                    self.handle.log(f"Error bridging {name} to {bridge_name}: Interface not found (Context: {context})")
-
-            if to_update:
-                try:
-                    _retry_on_connection_error(self.netbox.dcim.interface_templates.update, to_update)
-                    self.handle.verbose_log(f"Bridged {len(to_update)} interfaces.")
-                except pynetbox.RequestError as e:
-                    self.handle.log(f"Error bridging interfaces: {e} (Context: {context})")
-                except _RETRYABLE_EXCEPTIONS as e:
-                    self.handle.log(
-                        f"Connection error bridging interfaces after {_MAX_RETRIES} retries: {e} (Context: {context})"
-                    )
-
-    def create_power_ports(self, power_ports, device_type, context=None):
-        """Create power port templates for a device type."""
-        self._create_generic(
-            power_ports,
-            device_type,
-            self.netbox.dcim.power_port_templates,
-            "Power Port",
-            context=context,
-            cache_name="power_port_templates",
-        )
-
-    def create_console_ports(self, console_ports, device_type, context=None):
-        """Create console port templates for a device type."""
-        self._create_generic(
-            console_ports,
-            device_type,
-            self.netbox.dcim.console_port_templates,
-            "Console Port",
-            context=context,
-            cache_name="console_port_templates",
-        )
-
-    def create_power_outlets(self, power_outlets, device_type, context=None):
-        """Create power outlet templates for a device type, resolving power-port name references.
-
-        Args:
-            power_outlets (list[dict]): Power-outlet template definitions; may include a "power_port" name key.
-            device_type (int): ID of the parent device type.
-            context (str | None): Optional context string for log messages.
+            parent_type (str): ``"device"`` or ``"module"``, passed to the component cache.
+            label (str): Human-readable label for log messages (e.g. ``"Power Outlet"``).
+            context (str | None): Optional context string appended to log messages.
         """
 
-        def link_ports(items, pid):
-            """Resolve power-port name references in *items* and persist the outlet templates for device type *pid*."""
-            existing_pp = self._get_cached_or_fetch(
+        def link_power_ports(items, pid):
+            """Resolve power-port name references in *items* for parent *pid*."""
+            existing_pp = self.components.get(
                 "power_port_templates",
+                parent_type,
                 pid,
-                "device",
                 self.netbox.dcim.power_port_templates,
             )
 
@@ -3466,7 +2512,7 @@ class DeviceTypes:
                     ctx = f" (Context: {context})" if context else ""
                     self.handle.log(
                         f'Could not find Power Port "{outlet["power_port"]}" for '
-                        f'Power Outlet "{outlet.get("name", "Unknown")}". '
+                        f'{label} "{outlet.get("name", "Unknown")}". '
                         f"Available: {available}{ctx}"
                     )
                     outlets_to_remove.append(outlet)
@@ -3479,41 +2525,11 @@ class DeviceTypes:
                 skipped_names = [o["name"] for o in outlets_to_remove]
                 ctx = f" (Context: {context})" if context else ""
                 self.handle.log(
-                    f"Skipped {len(outlets_to_remove)} power outlet(s) with invalid power port refs: "
+                    f"Skipped {len(outlets_to_remove)} {label.lower()}(s) with invalid power port refs: "
                     f"{skipped_names}{ctx}"
                 )
 
-        self._create_generic(
-            power_outlets,
-            device_type,
-            self.netbox.dcim.power_outlet_templates,
-            "Power Outlet",
-            post_process=link_ports,
-            context=context,
-            cache_name="power_outlet_templates",
-        )
-
-    def create_console_server_ports(self, console_server_ports, device_type, context=None):
-        """Create console server port templates for a device type."""
-        self._create_generic(
-            console_server_ports,
-            device_type,
-            self.netbox.dcim.console_server_port_templates,
-            "Console Server Port",
-            context=context,
-            cache_name="console_server_port_templates",
-        )
-
-    def create_rear_ports(self, rear_ports, device_type, context=None):
-        """Create rear port templates for a device type."""
-        self._create_generic(
-            rear_ports,
-            device_type,
-            self.netbox.dcim.rear_port_templates,
-            "Rear Port",
-            context=context,
-            cache_name="rear_port_templates",
-        )
+        return link_power_ports
 
     def _build_link_rear_ports(self, parent_type, label, context=None):
         """Return a ``post_process`` callable that resolves rear-port name references.
@@ -3535,7 +2551,7 @@ class DeviceTypes:
         name cannot be resolved are skipped with a log entry.
 
         Args:
-            parent_type (str): ``"device"`` or ``"module"`` — passed to :meth:`_get_cached_or_fetch`.
+            parent_type (str): ``"device"`` or ``"module"``, passed to the component cache.
             label (str): Human-readable label for log messages (e.g. ``"Front Port"``).
             context (str | None): Optional context string appended to log messages.
         """
@@ -3543,10 +2559,10 @@ class DeviceTypes:
 
         def link_rear_ports(items, pid):
             """Resolve rear-port position references in *items* and persist the front port templates for *pid*."""
-            existing_rp = self._get_cached_or_fetch(
+            existing_rp = self.components.get(
                 "rear_port_templates",
-                pid,
                 parent_type,
+                pid,
                 self.netbox.dcim.rear_port_templates,
             )
 
@@ -3630,173 +2646,84 @@ class DeviceTypes:
 
         return link_rear_ports
 
-    def create_front_ports(self, front_ports, device_type, context=None):
-        """Create front port templates for a device type, resolving rear-port references."""
-        self._create_generic(
-            front_ports,
-            device_type,
-            self.netbox.dcim.front_port_templates,
-            "Front Port",
-            post_process=self._build_link_rear_ports("device", "Front Port", context),
-            context=context,
-            cache_name="front_port_templates",
-        )
+    def _link_bridges(self, bridged, parent_id, parent_type, context=None):
+        """Point each bridged interface at its bridge partner, once both exist in NetBox.
 
-    def create_device_bays(self, device_bays, device_type, context=None):
-        """Create device bay templates for a device type."""
-        self._create_generic(
-            device_bays,
-            device_type,
-            self.netbox.dcim.device_bay_templates,
-            "Device Bay",
-            context=context,
-            cache_name="device_bay_templates",
-        )
+        Runs after creation because NetBox wants the partner's id and the YAML has its name.
 
-    def create_module_bays(self, module_bays, device_type, context=None):
-        """Create module bay templates for a device type."""
-        self._create_generic(
-            module_bays,
-            device_type,
-            self.netbox.dcim.module_bay_templates,
-            "Module Bay",
-            context=context,
-            cache_name="module_bay_templates",
-        )
-
-    # Module methods
-    def create_module_interfaces(self, interfaces, module_type, context=None):
-        """Create interface templates for a module type."""
-        self._create_generic(
-            interfaces,
-            module_type,
+        Args:
+            bridged (dict): ``{interface_name: bridge_interface_name}``.
+            parent_id (int): NetBox ID of the parent device or module type.
+            parent_type (str): ``"device"`` or ``"module"``.
+            context (str | None): Optional context string appended to log messages.
+        """
+        all_interfaces = self.components.get(
+            "interface_templates",
+            parent_type,
+            parent_id,
             self.netbox.dcim.interface_templates,
-            "Module Interface",
-            parent_type="module",
-            context=context,
-            cache_name="interface_templates",
         )
 
-    def create_module_power_ports(self, power_ports, module_type, context=None):
-        """Create power port templates for a module type."""
-        self._create_generic(
-            power_ports,
-            module_type,
-            self.netbox.dcim.power_port_templates,
-            "Module Power Port",
-            parent_type="module",
-            context=context,
-            cache_name="power_port_templates",
-        )
+        to_update = []
+        for name, bridge_name in bridged.items():
+            if name in all_interfaces and bridge_name in all_interfaces:
+                to_update.append({"id": all_interfaces[name].id, "bridge": all_interfaces[bridge_name].id})
+            else:
+                self.handle.log(f"Error bridging {name} to {bridge_name}: Interface not found (Context: {context})")
 
-    def create_module_console_ports(self, console_ports, module_type, context=None):
-        """Create console port templates for a module type."""
-        self._create_generic(
-            console_ports,
-            module_type,
-            self.netbox.dcim.console_port_templates,
-            "Module Console Port",
-            parent_type="module",
-            context=context,
-            cache_name="console_port_templates",
-        )
-
-    def create_module_power_outlets(self, power_outlets, module_type, context=None):
-        """Create power outlet templates for a module type, resolving power-port name references."""
-
-        def link_ports(items, pid):
-            """Resolve power-port name references in *items* and persist the outlet templates for module type *pid*."""
-            existing_pp = self._get_cached_or_fetch(
-                "power_port_templates",
-                pid,
-                "module",
-                self.netbox.dcim.power_port_templates,
+        if not to_update:
+            return
+        try:
+            _retry_on_connection_error(self.netbox.dcim.interface_templates.update, to_update)
+            self.handle.verbose_log(f"Bridged {len(to_update)} interfaces.")
+        except pynetbox.RequestError as e:
+            self.handle.log(f"Error bridging interfaces: {e} (Context: {context})")
+        except _RETRYABLE_EXCEPTIONS as e:
+            self.handle.log(
+                f"Connection error bridging interfaces after {_MAX_RETRIES} retries: {e} (Context: {context})"
             )
 
-            outlets_to_remove = []
-            for outlet in items:
-                if "power_port" not in outlet:
-                    continue
-                try:
-                    power_port = existing_pp[outlet["power_port"]]
-                    outlet["power_port"] = power_port.id
-                except KeyError:
-                    available = list(existing_pp.keys()) if existing_pp else []
-                    ctx = f" (Context: {context})" if context else ""
-                    self.handle.log(
-                        f'Could not find Power Port "{outlet["power_port"]}" for '
-                        f'Module Power Outlet "{outlet.get("name", "Unknown")}". '
-                        f"Available: {available}{ctx}"
-                    )
-                    outlets_to_remove.append(outlet)
+    def create_components(self, yaml_key, items, parent_id, parent_type="device", context=None):
+        """Create component templates of one kind for one parent, skipping those that exist.
 
-            for outlet in outlets_to_remove:
-                items.remove(outlet)
+        The registry row for *yaml_key* supplies the endpoint, the cache name, the log label
+        and which name references have to become NetBox ids, so every component type takes
+        the same path.
 
-            if outlets_to_remove:
-                skipped_names = [o["name"] for o in outlets_to_remove]
-                ctx = f" (Context: {context})" if context else ""
-                self.handle.log(
-                    f"Skipped {len(outlets_to_remove)} module power outlet(s) with invalid power port refs: "
-                    f"{skipped_names}{ctx}"
-                )
-
-        self._create_generic(
-            power_outlets,
-            module_type,
-            self.netbox.dcim.power_outlet_templates,
-            "Module Power Outlet",
-            parent_type="module",
-            post_process=link_ports,
-            context=context,
-            cache_name="power_outlet_templates",
-        )
-
-    def create_module_console_server_ports(self, console_server_ports, module_type, context=None):
-        """Create console server port templates for a module type."""
-        self._create_generic(
-            console_server_ports,
-            module_type,
-            self.netbox.dcim.console_server_port_templates,
-            "Module Console Server Port",
-            parent_type="module",
-            context=context,
-            cache_name="console_server_port_templates",
-        )
-
-    def create_module_rear_ports(self, rear_ports, module_type, context=None):
-        """Create rear-port templates for a module type in NetBox.
-
-        Adds any rear port templates from `rear_ports` that do not already exist for the specified `module_type`.
         Args:
-            rear_ports (list[dict]): List of rear-port template definitions to create; each item
-                must include a `name` and any other template fields required by NetBox.
-            module_type (int|object): The module type identifier or object used to associate
-                created templates with the parent module type.
-            context (str, optional): Optional context string used for logging to identify the source of these templates.
+            yaml_key (str): YAML component key, e.g. ``"interfaces"``.
+            items (list[dict]): Component definitions from the YAML file.
+            parent_id (int): NetBox ID of the parent device or module type.
+            parent_type (str): ``"device"`` or ``"module"``.
+            context (str | None): Optional context string appended to log messages.
         """
+        component = BY_YAML_KEY[yaml_key]
+        label = component.create_label(parent_type)
+
+        post_process = None
+        if component.link == LINK_POWER_PORT:
+            post_process = self._build_link_power_port(parent_type, label, context)
+        elif component.link == LINK_REAR_PORTS:
+            post_process = self._build_link_rear_ports(parent_type, label, context)
+
+        bridged = {}
+        if component.link == LINK_BRIDGE:
+            # NetBox wants the bridge partner's id, so hold the names back until it exists.
+            for item in items:
+                if "bridge" in item:
+                    bridged[item["name"]] = item.pop("bridge")
+
         self._create_generic(
-            rear_ports,
-            module_type,
-            self.netbox.dcim.rear_port_templates,
-            "Module Rear Port",
-            parent_type="module",
+            component,
+            items,
+            parent_id,
+            parent_type=parent_type,
+            post_process=post_process,
             context=context,
-            cache_name="rear_port_templates",
         )
 
-    def create_module_front_ports(self, front_ports, module_type, context=None):
-        """Create front-port templates for a module type, resolving rear-port references."""
-        self._create_generic(
-            front_ports,
-            module_type,
-            self.netbox.dcim.front_port_templates,
-            "Module Front Port",
-            parent_type="module",
-            post_process=self._build_link_rear_ports("module", "Module Front Port", context),
-            context=context,
-            cache_name="front_port_templates",
-        )
+        if bridged:
+            self._link_bridges(bridged, parent_id, parent_type, context)
 
     def upload_images(self, baseurl, token, images, device_type):
         """Upload front and/or rear image files to the specified NetBox device type.

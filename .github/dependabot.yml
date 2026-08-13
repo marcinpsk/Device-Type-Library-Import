@@ -13,6 +13,8 @@ updates:
       github-actions:
         patterns:
           - "*"
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: "uv"
     directory: "/"
@@ -26,6 +28,8 @@ updates:
       python-deps:
         patterns:
           - "*"
+    cooldown:
+      default-days: 7
 
   - package-ecosystem: "docker"
     directory: "/"
@@ -39,3 +43,5 @@ updates:
       docker-deps:
         patterns:
           - "*"
+    cooldown:
+      default-days: 7

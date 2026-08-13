@@ -1,5 +1,6 @@
 """Git repository helpers for cloning, updating, and parsing the device-type library."""
 
+import concurrent.futures
 import json
 import os
 import pickle
@@ -9,7 +10,48 @@ from typing import Optional
 from urllib.parse import urlparse
 from git import Repo, exc
 import yaml
-import concurrent.futures
+
+from core.errors import FatalError, UnknownError
+
+
+class GitCommandError(FatalError):
+    """A Git command that failed for a repository."""
+
+    def __init__(self, repository: str, cause=None):
+        """Name the repository whose Git command failed."""
+        super().__init__(f'Git error for repo "{repository}".', cause=cause)
+
+
+class GitInvalidRepositoryError(FatalError):
+    """A path that does not contain a valid Git repository."""
+
+    def __init__(self, repository: str, cause=None):
+        """Name the invalid repository."""
+        super().__init__(f'The repo "{repository}" is not a valid git repo.', cause=cause)
+
+
+class GitBranchNotFoundError(FatalError):
+    """A configured branch that is absent from the remote repository."""
+
+    def __init__(self, branch: str):
+        """Name the missing branch."""
+        super().__init__(f'Branch "{branch}" was not found in the remote repository. Check your REPO_BRANCH setting.')
+
+
+class InvalidGitURLError(FatalError):
+    """A Git URL that does not use an accepted protocol."""
+
+    def __init__(self, url: str, reason="URL must use HTTPS, SSH, or file protocol"):
+        """Name the invalid Git URL."""
+        super().__init__(f"Invalid Git URL: {url}.", reason=reason)
+
+
+class InvalidRepoPathError(FatalError):
+    """A local repository path that cannot be used."""
+
+    def __init__(self, path: str, reason=None):
+        """Name the invalid local repository path."""
+        super().__init__(f'Invalid repository path "{path}".', reason=reason)
 
 
 class _RestrictedUnpickler(pickle.Unpickler):
@@ -374,7 +416,7 @@ class DTLRepo:
     for locating YAML device and module type files, and exposes a parallel file parser.
     """
 
-    def __init__(self, args, repo_path, exception_handler):
+    def __init__(self, config, handle):
         """Initialize repository management, updating an existing clone or creating a new one.
 
         If the target path already holds a Git clone, the repository will be updated from
@@ -384,28 +426,24 @@ class DTLRepo:
         working directory).
 
         Args:
-            args: An object with `url` (str) and `branch` (str) attributes specifying the
-                remote repository URL and branch to use.
-            repo_path (str): Filesystem path where the repository should be cloned or where
-                an existing clone is located.
-            exception_handler: An object exposing `exception(name, context, message)` used
-                to report validation and Git errors.
+            config (RunConfig): Supplies `repo_url`, `repo_branch`, and `repo_path`.
+            handle (LogHandler): Sink for repository progress messages.
         """
-        self.handle = exception_handler
+        self.handle = handle
         self.yaml_extensions = ["yaml", "yml"]
         # Duplicate (manufacturer_slug, model) definitions found while parsing.
         # Populated by parse_files; consumed by the run summary so users can fix upstream.
         # Each entry: {"manufacturer": str, "model": str, "kept": str, "ignored": [str, ...]}
         self.duplicate_definitions = []
-        self.url = args.url
-        self.repo_path = repo_path
-        self.branch = args.branch
+        self.url = config.repo_url
+        self.repo_path = config.repo_path
+        self.branch = config.repo_branch
         self.repo = None
         self.cwd = os.getcwd()
 
         is_path_valid, path_error = validate_repo_path(self.repo_path)
         if not is_path_valid:
-            self.handle.exception("InvalidRepoPath", self.repo_path, path_error)
+            raise InvalidRepoPathError(self.repo_path, reason=path_error)
 
         # Test for .git, not the directory itself: a mounted-but-empty volume must still clone.
         # exists(), not isdir(): worktrees and submodules hold .git as a file.
@@ -416,7 +454,7 @@ class DTLRepo:
             # Validate URL only when cloning a new repo
             is_valid, error_msg = validate_git_url(self.url)
             if not is_valid:
-                self.handle.exception("InvalidGitURL", self.url, error_msg)
+                raise InvalidGitURLError(self.url, reason=error_msg)
             self.clone_repo()
 
     def get_relative_path(self):
@@ -457,57 +495,62 @@ class DTLRepo:
 
         Opens the existing clone at ``self.repo_path``, validates the origin URL (updating it
         if REPO_URL has changed), fetches from origin, and checks out ``self.branch``.
-        Reports errors via the configured exception handler.
+        Raises a typed fatal error when validation or a Git operation fails.
         """
+        remote_label = self.url or self.repo_path
         try:
             self.handle.log(
                 "Package devicetype-library is already installed, " + f"updating {self.get_absolute_path()}"
             )
             self.repo = Repo(self.repo_path)
             origin_url = self.repo.remotes.origin.url
+            remote_label = origin_url
 
             # If the configured URL differs from the current remote, update it so the
             # fetch pulls from the right place (e.g. user switched forks in .env).
             if self.url and origin_url != self.url:
                 is_valid, error_msg = validate_git_url(self.url)
                 if not is_valid:
-                    self.handle.exception("InvalidGitURL", self.url, error_msg)
+                    raise InvalidGitURLError(self.url, reason=error_msg)
                 self.handle.verbose_log(f"Remote URL changed ({origin_url} → {self.url}), updating origin")
                 self.repo.remotes.origin.set_url(self.url)
             else:
                 is_valid, error_msg = validate_git_url(origin_url)
                 if not is_valid:
-                    self.handle.exception("InvalidGitURL", origin_url, error_msg)
+                    raise InvalidGitURLError(origin_url, reason=error_msg)
 
             self.repo.remotes.origin.fetch(prune=True)
 
             remote_branch_names = [ref.name for ref in self.repo.remotes.origin.refs]
             if f"origin/{self.branch}" not in remote_branch_names:
-                self.handle.exception("GitBranchNotFound", self.branch)
+                raise GitBranchNotFoundError(self.branch)
 
             # -B creates the branch if absent or resets it to the remote ref if present
             self.repo.git.checkout("-B", self.branch, f"origin/{self.branch}")
             self.handle.verbose_log(f"Updated repo from {self.repo.remotes.origin.url} (branch: {self.branch})")
+        except FatalError:
+            raise
+        except exc.InvalidGitRepositoryError as git_error:
+            raise GitInvalidRepositoryError(self.repo_path, cause=git_error) from git_error
         except exc.GitCommandError as git_error:
-            self.handle.exception("GitCommandError", self.repo.remotes.origin.url, git_error)
+            raise GitCommandError(remote_label, cause=git_error) from git_error
         except Exception as git_error:
-            self.handle.exception("Exception", "Git Repository Error", git_error)
+            raise UnknownError("Git Repository Error", cause=git_error) from git_error
 
     def clone_repo(self):
         """Clone the configured Git repository into the configured local path and record the cloned Repo instance.
 
         Attempts to clone from the repository URL into the absolute repository path and set
         self.repo to the resulting Repo; on success logs the origin URL via the configured
-        handler. If cloning or Git operations fail, the exception is reported to the
-        configured exception handler.
+        handler. Raises a typed fatal error when cloning or another Git operation fails.
         """
         try:
             self.repo = Repo.clone_from(self.url, self.get_absolute_path(), branch=self.branch)
             self.handle.log(f"Package Installed {self.repo.remotes.origin.url}")
         except exc.GitCommandError as git_error:
-            self.handle.exception("GitCommandError", self.url, git_error)
+            raise GitCommandError(self.url, cause=git_error) from git_error
         except Exception as git_error:
-            self.handle.exception("Exception", "Git Repository Error", git_error)
+            raise UnknownError("Git Repository Error", cause=git_error) from git_error
 
     def get_devices(self, base_path, vendors: list = None):
         """Discover device YAML files and vendor directories under a base path.
@@ -681,9 +724,10 @@ class DTLRepo:
                 items_iterator = progress if progress is not None else files_list
                 results = executor.map(parse_single_file, files_list)
 
-                for _, data in zip(items_iterator, results, strict=True):
+                for _, src, data in zip(items_iterator, files_list, results, strict=True):
                     if isinstance(data, str) and data.startswith("Error:"):
-                        self.handle.verbose_log(data)
+                        # A file that will not parse is one the run cannot import, so say so.
+                        self.handle.log(f"[yellow]Skipping {src}: {data.removeprefix('Error: ')}[/yellow]")
                         continue
 
                     if slugs:
