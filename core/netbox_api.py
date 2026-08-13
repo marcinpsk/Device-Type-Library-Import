@@ -38,12 +38,12 @@ from core.update_failure_resolver import (
 class SSLVerificationError(FatalError):
     """A TLS certificate verification failure."""
 
-    def __init__(self, ignore_ssl_errors: bool, stack_trace=None):
+    def __init__(self, ignore_ssl_errors: bool, cause=None):
         """Report the active TLS verification setting."""
         super().__init__(
             f"SSL verification failed. IGNORE_SSL_ERRORS is {ignore_ssl_errors}. "
             "Set IGNORE_SSL_ERRORS to True if you want to ignore this error. EXITING.",
-            stack_trace,
+            cause=cause,
         )
 
 
@@ -555,7 +555,7 @@ class NetBox:
                 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
                 self.netbox.http_session.verify = False
         except Exception as e:
-            raise UnknownError("NetBox API Error", e) from e
+            raise UnknownError("NetBox API Error", cause=e) from e
 
     def verify_compatibility(self):
         """Check the connected NetBox version and configure feature flags accordingly.
@@ -568,7 +568,7 @@ class NetBox:
         try:
             nb_version = self.netbox.version
         except requests.exceptions.SSLError as e:
-            raise SSLVerificationError(self.ignore_ssl, e) from e
+            raise SSLVerificationError(self.ignore_ssl, cause=e) from e
         except requests.exceptions.ProxyError as e:
             raise NetBoxError(
                 f"Proxy error while connecting to NetBox at {self.url}: {e}\n"

@@ -5,7 +5,7 @@ import pathlib
 import textwrap
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 import requests
 
 from core.graphql_client import DotDict, NetBoxGraphQLClient
@@ -106,14 +106,34 @@ class TestDotDict:
 class TestNetBoxGraphQLClient:
     """Tests for NetBoxGraphQLClient initialization and configuration."""
 
-    def test_logging_dependency_uses_the_common_handle_name(self):
+    def test_logging_dependency_has_a_public_read_only_handle(self):
         from core.graphql_client import NetBoxGraphQLClient
         from core.log_handler import LogHandler
 
         handle = LogHandler(False)
         client = NetBoxGraphQLClient("http://netbox.local", "tok", handle=handle)
 
-        assert client._handle is handle
+        assert client.handle is handle
+        with pytest.raises(AttributeError):
+            client.handle = LogHandler(True)
+
+    def test_clone_uses_an_independent_session_with_the_same_settings(self):
+        handle = MagicMock()
+        sessions = [MagicMock(), MagicMock()]
+
+        with patch("core.graphql_client.requests.Session", side_effect=sessions):
+            client = NetBoxGraphQLClient("http://netbox.local", "token", True, handle, 250)
+            clone = client.clone()
+
+        assert clone is not client
+        assert clone._session is sessions[1]
+        assert (clone.url, clone.token, clone.ignore_ssl, clone.handle, clone.DEFAULT_PAGE_SIZE) == (
+            client.url,
+            client.token,
+            client.ignore_ssl,
+            client.handle,
+            client.DEFAULT_PAGE_SIZE,
+        )
 
     def test_init_stores_config(self):
         from core.graphql_client import NetBoxGraphQLClient

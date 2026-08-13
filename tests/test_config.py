@@ -20,7 +20,12 @@ def _resolve(**env):
 
 def _run_cli(*argv, **env_overrides):
     """Run the real CLI in a fresh process and return the completed process."""
-    env = {**os.environ, **env_overrides}
+    env = {
+        **os.environ,
+        "NETBOX_URL": "http://netbox.invalid",
+        "NETBOX_TOKEN": "token",
+        **env_overrides,
+    }
     return subprocess.run(
         [sys.executable, str(_ENTRY), *argv],
         capture_output=True,
@@ -42,8 +47,11 @@ class TestConfigurationIsNotReadAtImport:
         assert "usage: nb-dt-import.py" in result.stdout
 
     @pytest.mark.parametrize("variable", ["GRAPHQL_PAGE_SIZE", "PRELOAD_THREADS"])
-    def test_an_invalid_value_is_reported_without_a_traceback(self, variable):
+    def test_an_invalid_value_is_reported_without_a_traceback(self, variable, monkeypatch):
         """The value is a user mistake, so it deserves a message rather than a stack trace."""
+        # Empty inherited values prevent load_dotenv from hiding a missing helper default.
+        monkeypatch.setenv("NETBOX_URL", "")
+        monkeypatch.setenv("NETBOX_TOKEN", "")
         result = _run_cli(**{variable: "abc"})
 
         assert result.returncode != 0
@@ -52,14 +60,29 @@ class TestConfigurationIsNotReadAtImport:
         assert variable in combined
 
 
+@pytest.mark.parametrize("value", ["true", "TRUE", " True ", "1", "yes", "YES"])
+def test_ignore_ssl_errors_accepts_common_true_values(value):
+    """Boolean environment values are trimmed and parsed without case sensitivity."""
+    assert _resolve(IGNORE_SSL_ERRORS=value).ignore_ssl_errors is True
+
+
+@pytest.mark.parametrize("value", ["false", "FALSE", " False ", "0", "no", "NO"])
+def test_ignore_ssl_errors_accepts_common_false_values(value):
+    """Common false values preserve the secure default."""
+    assert _resolve(IGNORE_SSL_ERRORS=value).ignore_ssl_errors is False
+
+
 class TestOptionalVariablesUseTheirDefault:
     """README marks REPO_URL optional with a default, so demanding it contradicts the default."""
 
-    def test_an_absent_repo_url_does_not_stop_the_run(self):
-        """--export-diff returns before any clone, so this reaches the check without network use."""
-        result = _run_cli("--export-diff", REPO_URL="")
+    def test_an_absent_repo_url_does_not_stop_the_run(self, monkeypatch):
+        """An invalid numeric value stops this after resolution but before any network request."""
+        monkeypatch.setenv("NETBOX_URL", "")
+        monkeypatch.setenv("NETBOX_TOKEN", "")
+        result = _run_cli("--export-diff", REPO_URL="", GRAPHQL_PAGE_SIZE="invalid")
 
         assert 'Environment variable "REPO_URL" is not set' not in result.stdout + result.stderr
+        assert 'Environment variable "NETBOX_URL" is not set' not in result.stdout + result.stderr
 
 
 class TestRequiredVariables:

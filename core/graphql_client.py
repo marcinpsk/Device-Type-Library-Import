@@ -171,6 +171,15 @@ class NetBoxGraphQLClient:
 
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+    @property
+    def handle(self):
+        """Return the log handle supplied at construction time."""
+        return self._handle
+
+    def clone(self):
+        """Return an independent client with the same connection settings."""
+        return type(self)(self.url, self.token, self.ignore_ssl, self.handle, self.DEFAULT_PAGE_SIZE)
+
     def close(self):
         """Close the underlying HTTP session."""
         self._session.close()

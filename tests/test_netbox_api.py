@@ -95,6 +95,13 @@ class _NoComponents:
         """Return no records for any endpoint."""
         return []
 
+    def clone(self):
+        """Return this session-free fake for a worker."""
+        return self
+
+    def close(self):
+        """Match the GraphQL client cleanup contract."""
+
 
 def _mark_cache_ready(device_types):
     """Run the real prefetch against an empty NetBox, so later lookups do not start one."""
@@ -1478,7 +1485,7 @@ class TestConnectApiException:
         with pytest.raises(UnknownError) as exc_info:
             nb.connect_api()
 
-        assert exc_info.value.stack_trace.args == ("connection failed",)
+        assert "RuntimeError: connection failed" in exc_info.value.formatted_traceback
 
 
 # ---------------------------------------------------------------------------

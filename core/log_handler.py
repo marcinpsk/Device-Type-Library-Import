@@ -68,6 +68,8 @@ class LogHandler:
             parent_type: ``"device"`` or ``"module"``.
             port_type (str): Human-readable port type label used in log messages.
         """
+        if not self.verbose:
+            return
         parent_attribute = f"{parent_type}_type"
         for port in created_ports:
             self.verbose_log(

@@ -5,6 +5,7 @@ real ComponentCache, so the prefetch, the index and the fallbacks are the code u
 test rather than a mock's idea of them.
 """
 
+import threading
 import time
 
 import pytest
@@ -100,6 +101,13 @@ class FakeGraphQL:
         if on_page is not None and records:
             on_page(len(records))
         return records
+
+    def clone(self):
+        """Return this session-free fake; production clients return an independent session."""
+        return self
+
+    def close(self):
+        """Match the production client cleanup contract."""
 
     def get_module_types(self, manufacturer_slugs=None):
         if self.module_types_error is not None:
@@ -345,6 +353,64 @@ class TestPrefetch:
         cache.ensure_ready()
 
         assert set(graphql.slugs_seen) == {"cisco"}
+
+    def test_each_prefetch_worker_owns_and_closes_its_graphql_client(self):
+        """Concurrent endpoint requests must not share a requests session."""
+
+        class WorkerClient:
+            instances = []
+
+            def __init__(self, *args, **kwargs):
+                self.thread_id = None
+                self.closed = False
+                self.instances.append(self)
+
+            def get_component_templates(self, endpoint_name, manufacturer_slug=None, on_page=None):
+                self.thread_id = threading.get_ident()
+                time.sleep(0.05)
+                return []
+
+            def close(self):
+                self.closed = True
+
+        graphql = FakeGraphQL()
+        graphql.clone = WorkerClient
+
+        make_cache(graphql=graphql, max_threads=4).ensure_ready()
+
+        assert len(WorkerClient.instances) > 1
+        assert len(WorkerClient.instances) == len({client.thread_id for client in WorkerClient.instances})
+        assert all(client.closed for client in WorkerClient.instances)
+
+    def test_close_waits_for_workers_and_closes_their_graphql_clients(self):
+        """Cancelling a prefetch must not leak the sessions of workers already running."""
+
+        class WorkerClient:
+            instances = []
+            started = threading.Event()
+
+            def __init__(self, *args, **kwargs):
+                self.closed = False
+                self.instances.append(self)
+
+            def get_component_templates(self, endpoint_name, manufacturer_slug=None, on_page=None):
+                self.started.set()
+                time.sleep(0.02)
+                return []
+
+            def close(self):
+                self.closed = True
+
+        graphql = FakeGraphQL()
+        graphql.clone = WorkerClient
+        cache = make_cache(graphql=graphql, max_threads=2)
+
+        cache.begin_prefetch()
+        assert WorkerClient.started.wait(timeout=1)
+        cache.close()
+
+        assert WorkerClient.instances
+        assert all(client.closed for client in WorkerClient.instances)
 
     def test_begin_prefetch_twice_does_not_start_a_second_job(self):
         graphql = FakeGraphQL()

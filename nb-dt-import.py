@@ -165,8 +165,8 @@ def main():
     try:
         return _run(config)
     except FatalError as exc:
-        if config.verbose and exc.stack_trace:
-            print(exc.stack_trace)
+        if config.verbose and exc.formatted_traceback:
+            print(exc.formatted_traceback, end="")
         raise SystemExit(str(exc))
     except requests.exceptions.ConnectionError as exc:
         print(

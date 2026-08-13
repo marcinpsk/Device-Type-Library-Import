@@ -123,6 +123,15 @@ class TestLogPortsCreated:
 
         assert " - 3 - 7" in mock_emit.call_args.args[0]
 
+    def test_non_verbose_logging_does_not_inspect_created_ports(self):
+        """Disabled verbose output must not construct messages or dereference records."""
+
+        class ExplodingRecords:
+            def __iter__(self):
+                raise AssertionError("created records were inspected")
+
+        LogHandler(False).log_ports_created(ExplodingRecords(), "device", "Interface")
+
 
 def test_progress_group_buffers_logs_until_end():
     handle = LogHandler(False)

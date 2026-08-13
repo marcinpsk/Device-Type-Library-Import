@@ -150,7 +150,7 @@ class TestDTLRepoInit:
         invalid_path.write_text("not a directory")
         config = MagicMock(repo_url="https://github.com/org/repo.git", repo_branch="master")
 
-        with pytest.raises(InvalidRepoPathError, match="Invalid repository path"):
+        with pytest.raises(InvalidRepoPathError, match="exists but is not a directory"):
             _dtl_repo(config, str(invalid_path), LogHandler(False))
 
 
@@ -373,7 +373,18 @@ class TestPullRepo:
             MockRepo.return_value = mock_git_repo
             with pytest.raises(GitCommandError) as exc_info:
                 _dtl_repo(mock_args, "/tmp/repo", LogHandler(False))
-        assert isinstance(exc_info.value.stack_trace, git_exc.GitCommandError)
+        assert "cmdline: fetch" in exc_info.value.formatted_traceback
+
+    def test_repo_open_git_error_uses_the_configured_url_without_reading_self_repo(self):
+        """Repo construction can fail before self.repo or its origin exists."""
+        mock_args = MagicMock(repo_url="https://example.invalid/repo.git", repo_branch="master")
+        failure = git_exc.GitCommandError("status", 1)
+
+        with _clone_present(), patch("core.repo.Repo", side_effect=failure):
+            with pytest.raises(GitCommandError, match="https://example.invalid/repo.git") as exc_info:
+                _dtl_repo(mock_args, "/tmp/repo", LogHandler(False))
+
+        assert "cmdline: status" in exc_info.value.formatted_traceback
 
     def test_pull_repo_generic_error_raises(self):
         mock_args = MagicMock()
@@ -389,7 +400,7 @@ class TestPullRepo:
             MockRepo.return_value = mock_git_repo
             with pytest.raises(UnknownError) as exc_info:
                 _dtl_repo(mock_args, "/tmp/repo", LogHandler(False))
-        assert exc_info.value.stack_trace.args == ("network error",)
+        assert "RuntimeError: network error" in exc_info.value.formatted_traceback
 
     def test_invalid_git_repository_raises_its_catalogue_error(self):
         mock_args = MagicMock(repo_url="https://github.com/org/repo.git", repo_branch="master")

@@ -11,6 +11,7 @@ state and the readiness flag stay inside.  Callers used to sequence those by han
 
 import concurrent.futures
 import queue
+import threading
 
 from core.compat import (
     device_type_filter_key,
@@ -171,18 +172,34 @@ class ComponentCache:
         updates = queue.Queue()
         max_workers = max(1, min(len(COMPONENT_TYPES), self.max_threads))
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        worker_state = threading.local()
+        worker_clients = []
+        worker_clients_lock = threading.Lock()
+
+        def fetch(endpoint_name):
+            """Fetch one endpoint through the client owned by this worker thread."""
+            client = getattr(worker_state, "graphql", None)
+            if client is None:
+                client = self.graphql.clone()
+                worker_state.graphql = client
+                with worker_clients_lock:
+                    worker_clients.append(client)
+            return self._fetch_endpoint(
+                client,
+                endpoint_name,
+                lambda name, advance: updates.put((name, advance)),
+                manufacturer_slug,
+            )
+
         try:
             futures = {
-                endpoint_name: executor.submit(
-                    self._fetch_endpoint,
-                    endpoint_name,
-                    lambda name, advance: updates.put((name, advance)),
-                    manufacturer_slug,
-                )
+                endpoint_name: executor.submit(fetch, endpoint_name)
                 for endpoint_name in (component.endpoint for component in COMPONENT_TYPES)
             }
         except Exception:
-            executor.shutdown(wait=False, cancel_futures=True)
+            executor.shutdown(wait=True, cancel_futures=True)
+            for client in worker_clients:
+                client.close()
             for component in COMPONENT_TYPES:
                 display.discard(component.endpoint)
             raise
@@ -194,6 +211,7 @@ class ComponentCache:
             "display": display,
             "done": set(),
             "manufacturer_slug": manufacturer_slug,
+            "worker_clients": worker_clients,
         }
 
     def pump(self):
@@ -256,10 +274,12 @@ class ComponentCache:
         for future in job["futures"].values():
             if not future.done():
                 future.cancel()
-        job["executor"].shutdown(wait=False, cancel_futures=True)
+        job["executor"].shutdown(wait=True, cancel_futures=True)
         for endpoint_name in job["futures"]:
             if endpoint_name not in job["done"]:
                 job["display"].discard(endpoint_name)
+        for client in job["worker_clients"]:
+            client.close()
 
     def __enter__(self):
         """Return the cache, so a run can scope the prefetch to a ``with`` block."""
@@ -332,9 +352,9 @@ class ComponentCache:
 
     # ── Fetching ─────────────────────────────────────────────────────────────
 
-    def _fetch_endpoint(self, endpoint_name, on_advance, manufacturer_slug):
+    def _fetch_endpoint(self, graphql, endpoint_name, on_advance, manufacturer_slug):
         """Return every record for *endpoint_name*, reporting each page through *on_advance*."""
-        records = self.graphql.get_component_templates(
+        records = graphql.get_component_templates(
             endpoint_name,
             manufacturer_slug=manufacturer_slug,
             on_page=lambda n: n and on_advance(endpoint_name, n),
@@ -399,6 +419,8 @@ class ComponentCache:
         finally:
             job["executor"].shutdown(wait=True)
             self._job = None
+            for client in job["worker_clients"]:
+                client.close()
 
     # ── Vendor-scoped checks ─────────────────────────────────────────────────
 

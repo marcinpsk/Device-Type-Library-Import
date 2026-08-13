@@ -44,8 +44,18 @@ def test_fatal_error_messages_match_the_old_catalogue(error, message):
     assert str(error) == message
 
 
-def test_unknown_error_preserves_the_catalogue_message_and_trace():
-    error = UnknownError("Git Repository Error", stack_trace="trace detail")
+def test_fatal_error_formats_the_originating_exception_traceback():
+    try:
+        raise RuntimeError("network failed")
+    except RuntimeError as cause:
+        error = UnknownError("Git Repository Error", cause=cause)
 
     assert str(error) == 'An unknown error occurred: "Git Repository Error"'
-    assert error.stack_trace == "trace detail"
+    assert "Traceback (most recent call last)" in error.formatted_traceback
+    assert "RuntimeError: network failed" in error.formatted_traceback
+
+
+def test_validation_reason_is_part_of_the_user_facing_message():
+    error = InvalidRepoPathError("bad-path", "The path is a file.")
+
+    assert str(error) == 'Invalid repository path "bad-path". The path is a file.'

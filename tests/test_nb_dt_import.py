@@ -1482,7 +1482,7 @@ class TestFatalErrorPolicy:
     def test_main_turns_a_fatal_error_into_system_exit(self, nb_dt_import, make_config, capsys):
         from core.errors import UnknownError
 
-        error = UnknownError("Git Repository Error", stack_trace="diagnostic detail")
+        error = UnknownError("Git Repository Error")
         with (
             patch.object(nb_dt_import, "resolve_run_config", return_value=make_config(verbose=False)),
             patch.object(nb_dt_import, "_run", side_effect=error),
@@ -1493,10 +1493,13 @@ class TestFatalErrorPolicy:
         assert str(exc_info.value) == 'An unknown error occurred: "Git Repository Error"'
         assert capsys.readouterr().out == ""
 
-    def test_main_prints_fatal_diagnostic_detail_only_in_verbose_mode(self, nb_dt_import, make_config, capsys):
+    def test_main_prints_the_cause_traceback_only_in_verbose_mode(self, nb_dt_import, make_config, capsys):
         from core.errors import UnknownError
 
-        error = UnknownError("NetBox API Error", stack_trace="diagnostic detail")
+        try:
+            raise RuntimeError("diagnostic detail")
+        except RuntimeError as cause:
+            error = UnknownError("NetBox API Error", cause=cause)
         with (
             patch.object(nb_dt_import, "resolve_run_config", return_value=make_config(verbose=True)),
             patch.object(nb_dt_import, "_run", side_effect=error),
@@ -1504,7 +1507,9 @@ class TestFatalErrorPolicy:
             with pytest.raises(SystemExit):
                 nb_dt_import.main()
 
-        assert capsys.readouterr().out == "diagnostic detail\n"
+        output = capsys.readouterr().out
+        assert "Traceback (most recent call last)" in output
+        assert "RuntimeError: diagnostic detail" in output
 
 
 class TestExportDiffFlags:

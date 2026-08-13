@@ -372,7 +372,7 @@ class TestExporterHonoursTheConfiguredPageSize:
 
         exporter = Exporter(_make_settings(tmp_path), handle, str(tmp_path / "extra"), False, None)
 
-        assert exporter.graphql._handle is handle
+        assert exporter.graphql.handle is handle
 
 
 class TestExporterRequiresTheLibrary:

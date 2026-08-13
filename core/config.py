@@ -27,12 +27,12 @@ class ConfigError(FatalError):
 class EnvironmentVariableError(ConfigError):
     """A required environment variable that is not set."""
 
-    def __init__(self, names, stack_trace=None):
+    def __init__(self, names):
         """Name the required environment variables."""
         names = (names,) if isinstance(names, str) else tuple(names)
         message = "\n".join(f'Environment variable "{name}" is not set.' for name in names)
         message += f"\n\nRequired: {', '.join(REQUIRED_ENV_VARS)}"
-        super().__init__(message, stack_trace)
+        super().__init__(message)
 
 
 @dataclass(frozen=True)
@@ -268,7 +268,7 @@ def resolve_run_config(argv=None, env=None):
     return RunConfig(
         netbox_url=_text(env, "NETBOX_URL"),
         netbox_token=_text(env, "NETBOX_TOKEN"),
-        ignore_ssl_errors=env.get("IGNORE_SSL_ERRORS", "False") == "True",
+        ignore_ssl_errors=(_text(env, "IGNORE_SSL_ERRORS", "False") or "False").casefold() in {"true", "1", "yes"},
         graphql_page_size=_positive_int(env, "GRAPHQL_PAGE_SIZE", DEFAULT_GRAPHQL_PAGE_SIZE),
         preload_threads=_positive_int(env, "PRELOAD_THREADS", DEFAULT_PRELOAD_THREADS),
         repo_url=args.url,
