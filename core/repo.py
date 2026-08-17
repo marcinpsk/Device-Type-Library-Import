@@ -419,11 +419,13 @@ class DTLRepo:
     def __init__(self, config, handle):
         """Initialize repository management, updating an existing clone or creating a new one.
 
-        If the target path already holds a Git clone, the repository will be updated from
-        its configured remote; otherwise the provided URL is validated and a new clone is
-        created. The initializer sets instance attributes used by other methods (handler,
-        supported YAML extensions, URL, repo path, branch, repo reference, and current
-        working directory).
+        If REPO_URL is the sentinel "local", no git operation of any kind is performed —
+        REPO_PATH is used as-is and must already contain the device-type file tree.
+        Otherwise, if the target path already holds a Git clone, the repository will be
+        updated from its configured remote; if not, the provided URL is validated and a new
+        clone is created. The initializer sets instance attributes used by other methods
+        (handler, supported YAML extensions, URL, repo path, branch, repo reference, and
+        current working directory).
 
         Args:
             config (RunConfig): Supplies `repo_url`, `repo_branch`, and `repo_path`.
@@ -440,6 +442,14 @@ class DTLRepo:
         self.branch = config.repo_branch
         self.repo = None
         self.cwd = os.getcwd()
+
+        if str(self.url).strip().casefold() == "local":
+            if not os.path.isdir(self.get_absolute_path()):
+                raise InvalidRepoPathError(
+                    self.repo_path, reason="REPO_URL=local requires REPO_PATH to already contain the library files"
+                )
+            self.handle.log(f"REPO_URL=local: using {self.get_absolute_path()} as-is, no git operations")
+            return
 
         is_path_valid, path_error = validate_repo_path(self.repo_path)
         if not is_path_valid:
