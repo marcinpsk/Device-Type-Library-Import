@@ -1,15 +1,15 @@
 # NetBox Device Type Import
 
 [![Tests](https://github.com/marcinpsk/Device-Type-Library-Import/actions/workflows/tests.yml/badge.svg)](https://github.com/marcinpsk/Device-Type-Library-Import/actions/workflows/tests.yml)
-[![NetBox main](https://github.com/marcinpsk/Device-Type-Library-Import/actions/workflows/test-netbox-main.yaml/badge.svg)](https://github.com/marcinpsk/Device-Type-Library-Import/actions/workflows/test-netbox-main.yaml)
-[![NetBox](https://img.shields.io/badge/NetBox-3.2%2B_through_4.5%2B-blue)](https://netbox.dev)
+[![Live NetBox](https://github.com/marcinpsk/Device-Type-Library-Import/actions/workflows/test-netbox.yaml/badge.svg)](https://github.com/marcinpsk/Device-Type-Library-Import/actions/workflows/test-netbox.yaml)
+[![NetBox](https://img.shields.io/badge/NetBox-4.3%2B-blue)](https://netbox.dev)
 [![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org)
 [![Container image](https://img.shields.io/badge/ghcr.io-device--type--library--import-2496ED?logo=docker&logoColor=white)](https://github.com/marcinpsk/Device-Type-Library-Import/pkgs/container/device-type-library-import)
 
 This library is intended to be your friend and help you import all the device-types defined within
 the [NetBox Device Type Library Repository](https://github.com/netbox-community/devicetype-library).
 
-> **Tested working with NetBox 3.2+ through 4.5+** (weekly CI run against NetBox `main`)
+> **Requires NetBox 4.3 or later.** Every pull request and manual CI run exercises the full import pipeline against the latest 4.3, 4.4, and 4.5 patch releases plus NetBox `main`; a weekly scheduled run tracks NetBox `main`.
 
 ## Description
 
