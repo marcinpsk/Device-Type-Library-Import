@@ -1980,6 +1980,108 @@ class TestVendorScopedComponentTemplates:
 
         return NetBoxGraphQLClient("http://netbox.local", "tok")
 
+    @staticmethod
+    def _response(body):
+        response = MagicMock()
+        response.status_code = 200
+        response.raise_for_status = MagicMock()
+        response.json.return_value = body
+        return response
+
+    def _netbox_44_power_outlet_transport(self, reject_device_filter=True):
+        requests_seen = []
+        component_records = [
+            {
+                "id": "1",
+                "name": "Target device outlet",
+                "device_type": {"id": "101"},
+                "module_type": None,
+            },
+            {
+                "id": "2",
+                "name": "Target module outlet",
+                "device_type": None,
+                "module_type": {"id": "201"},
+            },
+            {
+                "id": "3",
+                "name": "Foreign device outlet",
+                "device_type": {"id": "102"},
+                "module_type": None,
+            },
+            {
+                "id": "4",
+                "name": "Foreign module outlet",
+                "device_type": None,
+                "module_type": {"id": "202"},
+            },
+        ]
+        device_types = [
+            {
+                "id": 101,
+                "model": "Target device",
+                "slug": "target-device",
+                "manufacturer": {"id": 1, "name": "Acme", "slug": "acme"},
+            }
+        ]
+        module_types = [
+            {
+                "id": 201,
+                "model": "Target module",
+                "manufacturer": {"id": 1, "name": "Acme", "slug": "acme"},
+            }
+        ]
+
+        def post(_url, *, json, timeout):
+            query = json["query"]
+            variables = json["variables"]
+            offset = variables["pagination"]["offset"]
+            requests_seen.append((query, variables))
+
+            if "power_outlet_template_list" in query and "filters: {device_type:" in query:
+                if reject_device_filter:
+                    return self._response(
+                        {
+                            "errors": [
+                                {
+                                    "message": (
+                                        "Field 'device_type' is not defined by type "
+                                        "'PowerOutletTemplateFilter'. Did you mean 'device_id' or 'device'?"
+                                    )
+                                }
+                            ]
+                        }
+                    )
+                page = [component_records[0]] if offset == 0 else []
+                return self._response({"data": {"power_outlet_template_list": page}})
+            if "power_outlet_template_list" in query and "filters: {module_type:" in query:
+                return self._response(
+                    {
+                        "errors": [
+                            {
+                                "message": (
+                                    "Field 'module_type' is not defined by type "
+                                    "'PowerOutletTemplateFilter'. Did you mean 'module_id' or 'module'?"
+                                )
+                            }
+                        ]
+                    }
+                )
+            if "power_outlet_template_list" in query:
+                page = component_records if offset == 0 else []
+                return self._response({"data": {"power_outlet_template_list": page}})
+            if "device_type_list" in query:
+                assert variables["manufacturer_slug"] == "acme"
+                page = device_types if offset == 0 else []
+                return self._response({"data": {"device_type_list": page}})
+            if "module_type_list" in query:
+                assert variables["manufacturer_slug"] == "acme"
+                page = module_types if offset == 0 else []
+                return self._response({"data": {"module_type_list": page}})
+            raise AssertionError(f"Unexpected GraphQL query: {query}")
+
+        return post, requests_seen
+
     def test_unfiltered_query(self, mock_post):
         """Test that manufacturer_slug=None produces unfiltered behavior."""
         data = {
@@ -2057,6 +2159,67 @@ class TestVendorScopedComponentTemplates:
         assert device_vars["manufacturer_slug"] == "cisco"
         assert "filters: {module_type: {manufacturer: {slug: {exact: $manufacturer_slug}}}}" in module_query
         assert module_vars["manufacturer_slug"] == "cisco"
+
+    def test_vendor_scope_falls_back_to_one_unfiltered_scan_for_rejected_filters(self, mock_post):
+        """A NetBox 4.4 filter rejection falls back to one client-scoped endpoint scan."""
+        post, requests_seen = self._netbox_44_power_outlet_transport()
+        mock_post.side_effect = post
+
+        client = self._make_client()
+        result = client.get_component_templates("power_outlet_templates", manufacturer_slug="acme")
+
+        assert {record.name for record in result} == {"Target device outlet", "Target module outlet"}
+        component_requests = [
+            (query, variables) for query, variables in requests_seen if "power_outlet_template_list" in query
+        ]
+        assert sum("filters: {device_type:" in query for query, _variables in component_requests) == 1
+        assert not any("filters: {module_type:" in query for query, _variables in component_requests)
+        unfiltered_offsets = [
+            variables["pagination"]["offset"] for query, variables in component_requests if "filters:" not in query
+        ]
+        assert unfiltered_offsets == [0, 4]
+
+    def test_module_leg_schema_rejection_falls_back_without_device_scan(self, mock_post):
+        """A module-leg-only rejection scans unfiltered for module parents alone."""
+        post, requests_seen = self._netbox_44_power_outlet_transport(reject_device_filter=False)
+        mock_post.side_effect = post
+
+        client = self._make_client()
+        result = client.get_component_templates("power_outlet_templates", manufacturer_slug="acme")
+
+        assert sorted(record.name for record in result) == ["Target device outlet", "Target module outlet"]
+        queries = [query for query, _variables in requests_seen]
+        assert not any("device_type_list" in query for query in queries)
+        component_requests = [
+            (query, variables) for query, variables in requests_seen if "power_outlet_template_list" in query
+        ]
+        device_leg_offsets = [
+            variables["pagination"]["offset"]
+            for query, variables in component_requests
+            if "filters: {device_type:" in query
+        ]
+        assert device_leg_offsets == [0, 1]
+        assert sum("filters: {module_type:" in query for query, _variables in component_requests) == 1
+        unfiltered_offsets = [
+            variables["pagination"]["offset"] for query, variables in component_requests if "filters:" not in query
+        ]
+        assert unfiltered_offsets == [0, 4]
+
+    @pytest.mark.usefixtures("no_retry_backoff")
+    def test_transport_failure_does_not_trigger_vendor_scope_fallback(self, mock_post):
+        """An exhausted connection retry remains a transport error without an unfiltered scan."""
+        from core.graphql_client import GraphQLError, GraphQLSchemaError
+
+        mock_post.side_effect = requests.exceptions.ConnectionError("connection refused")
+
+        client = self._make_client()
+        with pytest.raises(GraphQLError, match="connection refused") as excinfo:
+            client.get_component_templates("power_outlet_templates", manufacturer_slug="acme")
+
+        assert not isinstance(excinfo.value, GraphQLSchemaError)
+        assert mock_post.call_count == 4
+        queries = [call.kwargs["json"]["query"] for call in mock_post.call_args_list]
+        assert all("filters: {device_type:" in query for query in queries)
 
     def test_vendor_scoped_device_bay_single_query(self, mock_post):
         """Test that device_bay_templates makes only one query (no module_type field)."""
