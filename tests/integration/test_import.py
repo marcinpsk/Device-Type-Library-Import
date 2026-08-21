@@ -289,6 +289,20 @@ def _test_images(fd: dict, fd_id: int) -> None:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+def front_port_mappings(fp: dict) -> list:
+    """Normalize a front-port template's rear-port linkage across NetBox versions.
+
+    NetBox >= 4.5 serves an M2M ``rear_ports`` list of PortMapping entries;
+    older releases serve a scalar ``rear_port`` object plus ``rear_port_position``.
+    """
+    if "rear_ports" in fp:
+        return fp.get("rear_ports") or []
+    rear_port = fp.get("rear_port")
+    if not rear_port:
+        return []
+    return [{"rear_port": rear_port["id"], "rear_port_position": fp.get("rear_port_position")}]
+
+
 def test_front_port_multiposition() -> None:
     print("\n=== Scenario E: Front-port multi-position linkage ===")
     fd = get_one("/dcim/device-types/", slug="testvendor-full-device")
@@ -299,17 +313,17 @@ def test_front_port_multiposition() -> None:
 
     for name, expected_pos in [("FP1", 1), ("FP2", 2)]:
         fp = fps[name]
-        mapping = fp.get("rear_ports", [])
+        mapping = front_port_mappings(fp)
         if not mapping:
-            fail(f"{name}: rear_ports is empty — M2M linkage not created")
+            fail(f"{name}: rear-port linkage is empty — mapping not created")
         pos = mapping[0].get("rear_port_position")
         if pos != expected_pos:
             fail(f"{name}: rear_port_position = {pos!r}, expected {expected_pos}")
         ok(f"{name}: rear_port_position = {pos}")
 
     # Both front ports should point to the same rear port
-    rp1_id = fps["FP1"]["rear_ports"][0]["rear_port"]
-    rp2_id = fps["FP2"]["rear_ports"][0]["rear_port"]
+    rp1_id = front_port_mappings(fps["FP1"])[0]["rear_port"]
+    rp2_id = front_port_mappings(fps["FP2"])[0]["rear_port"]
     if rp1_id != rp2_id:
         fail(f"FP1 and FP2 point to different rear ports ({rp1_id} vs {rp2_id}), expected same RP1")
     ok("FP1 and FP2 both map to the same rear port (RP1)")
@@ -317,10 +331,10 @@ def test_front_port_multiposition() -> None:
     # Also check patch-panel front ports
     pp = get_one("/dcim/device-types/", slug="testvendor-patch-panel-4")
     pp_fps = api("/dcim/front-port-templates/", device_type_id=pp["id"])["results"]
-    broken = [fp["name"] for fp in pp_fps if not fp.get("rear_ports")]
+    broken = [fp["name"] for fp in pp_fps if not front_port_mappings(fp)]
     if broken:
-        fail(f"patch-panel-4: {len(broken)} front ports have empty rear_ports: {broken}")
-    ok(f"patch-panel-4: all {len(pp_fps)} front ports have rear_ports mapping")
+        fail(f"patch-panel-4: {len(broken)} front ports have empty rear-port linkage: {broken}")
+    ok(f"patch-panel-4: all {len(pp_fps)} front ports have a rear-port mapping")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -354,10 +368,10 @@ def test_module_types() -> None:
 
     # Front port linkage for module type
     mt_fps = api("/dcim/front-port-templates/", module_type_id=mt_id)["results"]
-    broken = [fp["name"] for fp in mt_fps if not fp.get("rear_ports")]
+    broken = [fp["name"] for fp in mt_fps if not front_port_mappings(fp)]
     if broken:
-        fail(f"full-module: {len(broken)} front ports have empty rear_ports: {broken}")
-    ok("full-module: front port rear_ports mapping set correctly")
+        fail(f"full-module: {len(broken)} front ports have empty rear-port linkage: {broken}")
+    ok("full-module: front port rear-port mapping set correctly")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
