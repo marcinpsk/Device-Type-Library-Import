@@ -1,10 +1,13 @@
 # SPDX-License-Identifier: MIT
-name: Weekly test against NetBox main
+name: Test against live NetBox
 
 on:
   schedule:
     - cron: '0 6 * * 1'  # Every Monday at 06:00 UTC
   workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/test-netbox.yaml'
 
 permissions:
   contents: read
@@ -16,6 +19,12 @@ concurrency:
 jobs:
   integration-test:
     runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Latest patch release of every supported NetBox line, plus main.
+        netbox_ref: [main, v4.5.10, v4.4.10, v4.3.7]
 
     services:
       postgres:
@@ -54,13 +63,13 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Checkout NetBox main
+      - name: Checkout NetBox ${{ matrix.netbox_ref }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           repository: netbox-community/netbox
           path: netbox
-          ref: main
+          ref: ${{ matrix.netbox_ref }}
 
       - name: Install NetBox dependencies
         run: pip install -r netbox/requirements.txt
@@ -92,7 +101,7 @@ jobs:
               # (June 2026) enforces object-level 'view' permission when serving
               # /media/devicetype-images/ and /media/image-attachments/ via MediaView, and that
               # view's TokenConditionalLoginRequiredMixin only authenticates the API token when
-              # LOGIN_REQUIRED is True. With it True, the integration test's Bearer-token session
+              # LOGIN_REQUIRED is True. With it True, the integration test's token-authenticated session
               # resolves to the admin superuser, restrict() grants access, and the image is
               # served (a genuinely missing file still 404s through django.views.static.serve).
               # NOTE: this also gates the REST API, so the readiness curl below must send the token.
@@ -115,10 +124,17 @@ jobs:
           user = get_user_model().objects.get(username='admin')
           t = Token(user=user)
           t.save()
-          # v2 token credential: nbt_<key>.<plaintext> (plaintext only available right after save)
-          print(f'nbt_{t.key}.{t.token}')
+          # v2 credential nbt_<key>.<plaintext> (NetBox >= 4.5, plaintext only available
+          # right after save) or the classic plaintext key on 4.3/4.4.
+          token = getattr(t, 'token', None)
+          print(f'nbt_{t.key}.{token}' if token else t.key)
           " 2>/dev/null | tail -1)
           echo "NETBOX_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          # The importer picks the scheme the same way: Bearer for nbt_, else Token.
+          case "$TOKEN" in
+            nbt_*) echo "NETBOX_AUTH_SCHEME=Bearer" >> "$GITHUB_ENV" ;;
+            *)     echo "NETBOX_AUTH_SCHEME=Token" >> "$GITHUB_ENV" ;;
+          esac
           echo "Created API token"
 
       - name: Start NetBox dev server
@@ -132,14 +148,14 @@ jobs:
           # anonymous curl would 403 and never report ready.
           # Wait up to 60 s for NetBox to respond
           for i in $(seq 1 30); do
-            if curl -sf -H "Authorization: Bearer $NETBOX_TOKEN" http://localhost:8000/api/ > /dev/null 2>&1; then
+            if curl -sf -H "Authorization: $NETBOX_AUTH_SCHEME $NETBOX_TOKEN" http://localhost:8000/api/ > /dev/null 2>&1; then
               echo "NetBox is ready (attempt $i)"
               break
             fi
             echo "Waiting for NetBox... ($i/30)"
             sleep 2
           done
-          curl -sf -H "Authorization: Bearer $NETBOX_TOKEN" http://localhost:8000/api/ > /dev/null || { echo "NetBox did not start"; exit 1; }
+          curl -sf -H "Authorization: $NETBOX_AUTH_SCHEME $NETBOX_TOKEN" http://localhost:8000/api/ > /dev/null || { echo "NetBox did not start"; exit 1; }
 
       - name: Install importer dependencies
         working-directory: importer
@@ -175,6 +191,6 @@ jobs:
       - name: Print NetBox version on failure
         if: failure()
         run: |
-          curl -s -H "Authorization: Bearer $NETBOX_TOKEN" http://localhost:8000/api/status/ | python3 -m json.tool || true
+          curl -s -H "Authorization: $NETBOX_AUTH_SCHEME $NETBOX_TOKEN" http://localhost:8000/api/status/ | python3 -m json.tool || true
           echo "--- NetBox server log ---"
           cat /tmp/netbox.log 2>/dev/null | tail -50 || true
