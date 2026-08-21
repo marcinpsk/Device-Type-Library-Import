@@ -6,8 +6,6 @@ on:
     - cron: '0 6 * * 1'  # Every Monday at 06:00 UTC
   workflow_dispatch:
   pull_request:
-    paths:
-      - '.github/workflows/test-netbox.yaml'
 
 permissions:
   contents: read
@@ -23,8 +21,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Latest patch release of every supported NetBox line, plus main.
-        netbox_ref: [main, v4.5.10, v4.4.10, v4.3.7]
+        # Weekly runs track the moving target (main) only; released tags are
+        # immutable, so the full supported matrix (latest patch of each line)
+        # runs on pull requests and on demand instead.
+        netbox_ref: ${{ github.event_name == 'schedule' && fromJSON('["main"]') || fromJSON('["main", "v4.5.10", "v4.4.10", "v4.3.7"]') }}
 
     services:
       postgres:
