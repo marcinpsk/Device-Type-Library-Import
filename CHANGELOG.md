@@ -2,6 +2,25 @@
 
 <!-- version list -->
 
+## v1.8.2 (2026-08-21)
+
+### Bug Fixes
+
+- **graphql**: Fall back to client-side vendor scoping when netbox rejects template filters (#121, [`7eab324`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/7eab3246f677be203aa2ad12b51eb87587f3b7f1))
+
+
+### Chores
+
+- **deps**: Bump the python-deps group with 2 updates (#119, [`88e7f6e`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/88e7f6e2ff6b9b7004a5d3b4e36ea7e1173fe017))
+- **ci**: Rename pull request image build job (#118, [`53982ea`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/53982ea2a1bf8025aac46c23851c2e88dbdc1d2e))
+- **ci**: Rename pull request image build job (#118, [`53982ea`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/53982ea2a1bf8025aac46c23851c2e88dbdc1d2e))
+
+
+
+### Contributors
+
+@dependabot[bot], @marcinpsk
+
 ## v1.8.1 (2026-08-13)
 
 ### Bug Fixes
