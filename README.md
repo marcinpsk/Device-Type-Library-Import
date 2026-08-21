@@ -9,7 +9,7 @@
 This library is intended to be your friend and help you import all the device-types defined within
 the [NetBox Device Type Library Repository](https://github.com/netbox-community/devicetype-library).
 
-> **Requires NetBox 4.3 or later.** A weekly CI run exercises the full import pipeline against the latest 4.3, 4.4, and 4.5 patch releases plus NetBox `main`.
+> **Requires NetBox 4.3 or later.** Every pull request and manual CI run exercises the full import pipeline against the latest 4.3, 4.4, and 4.5 patch releases plus NetBox `main`; a weekly scheduled run tracks NetBox `main`.
 
 ## Description
 
