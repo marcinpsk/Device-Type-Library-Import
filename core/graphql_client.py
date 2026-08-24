@@ -792,6 +792,45 @@ class NetBoxGraphQLClient:
         if component.module_types:
             parent_fields += "\n            module_type { id }"
 
+        def _unfiltered_vendor_items(include_device_parent, include_module_parent):
+            all_items = self._query_component_endpoint(
+                list_key=list_key,
+                filter_clause="",
+                endpoint_name=endpoint_name,
+                fields=fields,
+                parent_fields=parent_fields,
+                on_page=on_page,
+            )
+
+            device_type_ids = set()
+            if include_device_parent:
+                device_types, _ = self.get_device_types(manufacturer_slugs=[manufacturer_slug])
+                device_type_ids = {str(record.id) for record in device_types.values()}
+
+            module_type_ids = set()
+            if include_module_parent:
+                module_types = self.get_module_types(manufacturer_slugs=[manufacturer_slug])
+                module_type_ids = {
+                    str(record.id)
+                    for manufacturer_types in module_types.values()
+                    for record in manufacturer_types.values()
+                }
+
+            return [
+                item
+                for item in all_items
+                if (
+                    include_device_parent
+                    and item.get("device_type")
+                    and str(item["device_type"].get("id")) in device_type_ids
+                )
+                or (
+                    include_module_parent
+                    and item.get("module_type")
+                    and str(item["module_type"].get("id")) in module_type_ids
+                )
+            ]
+
         if manufacturer_slug is None:
             # Unfiltered query (original behavior)
             items = self._query_component_endpoint(
@@ -807,23 +846,10 @@ class NetBoxGraphQLClient:
             extra_vars = {"manufacturer_slug": manufacturer_slug}
             # Vendor-scoped: query device-type-filtered templates
             device_filter = "filters: {device_type: {manufacturer: {slug: {exact: $manufacturer_slug}}}}, "
-            device_items = self._query_component_endpoint(
-                list_key=list_key,
-                filter_clause=device_filter,
-                endpoint_name=endpoint_name,
-                fields=fields,
-                parent_fields=parent_fields,
-                on_page=on_page,
-                var_decl=var_decl,
-                extra_variables=extra_vars,
-            )
-
-            # If endpoint supports module_type, also query module-type-filtered templates
-            if component.module_types:
-                module_filter = "filters: {module_type: {manufacturer: {slug: {exact: $manufacturer_slug}}}}, "
-                module_items = self._query_component_endpoint(
+            try:
+                device_items = self._query_component_endpoint(
                     list_key=list_key,
-                    filter_clause=module_filter,
+                    filter_clause=device_filter,
                     endpoint_name=endpoint_name,
                     fields=fields,
                     parent_fields=parent_fields,
@@ -831,8 +857,31 @@ class NetBoxGraphQLClient:
                     var_decl=var_decl,
                     extra_variables=extra_vars,
                 )
-                items = device_items + module_items
+            except GraphQLSchemaError:
+                # Only a schema rejection may trigger this expensive unfiltered scan.
+                # It replaces both filtered legs because each template has one parent.
+                items = _unfiltered_vendor_items(True, component.module_types)
             else:
-                items = device_items
+                # If endpoint supports module_type, also query module-type-filtered templates
+                if component.module_types:
+                    module_filter = "filters: {module_type: {manufacturer: {slug: {exact: $manufacturer_slug}}}}, "
+                    try:
+                        module_items = self._query_component_endpoint(
+                            list_key=list_key,
+                            filter_clause=module_filter,
+                            endpoint_name=endpoint_name,
+                            fields=fields,
+                            parent_fields=parent_fields,
+                            on_page=on_page,
+                            var_decl=var_decl,
+                            extra_variables=extra_vars,
+                        )
+                    except GraphQLSchemaError:
+                        # Only a schema rejection may trigger this expensive unfiltered scan.
+                        # Keep only module parents because the device leg already succeeded.
+                        module_items = _unfiltered_vendor_items(False, True)
+                    items = device_items + module_items
+                else:
+                    items = device_items
 
         return [_to_dotdict(item) for item in items]
