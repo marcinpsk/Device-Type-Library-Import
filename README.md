@@ -261,7 +261,7 @@ and device, creating anything that is missing from NetBox while skipping entries
 | --- | --- | --- | --- |
 | `NETBOX_URL` | ✅ | — | URL of your NetBox instance |
 | `NETBOX_TOKEN` | ✅ | — | API token with write access |
-| `REPO_URL` | | community library | Git URL of the device-type library to clone |
+| `REPO_URL` | | community library | Git URL of the device-type library to clone. Set to `local` to read `REPO_PATH` as it stands, with no git operation (see [Offline / local library](#offline--local-library)) |
 | `REPO_BRANCH` | | `master` | Branch to check out |
 | `REPO_PATH` | | `./repo` | Local path where the library is cloned. Accepts absolute or relative paths. |
 | `VENDORS` | | all | Comma-separated vendors to import (same effect as `--vendors`) |
@@ -434,6 +434,29 @@ uv run nb-dt-import.py --vendors nokia --verify-images
   still knows about images, but the files are gone
 - After replacing a local image file with a higher-quality version and wanting NetBox to pick
   it up
+
+#### Offline / local library
+
+Set `REPO_URL=local` to point the importer at a directory that already holds the library and
+skip git completely: no clone, no fetch, and no `.git` needed. `REPO_PATH` must contain at
+least one of `device-types/`, `module-types/`, or `rack-types/`, and an import stops with an
+error if it does not, rather than reporting an empty library as nothing to do.
+
+Nothing in an import writes to `REPO_PATH`, so a read-only mount works. `REPO_BRANCH` is
+ignored in this mode, and a run that sets both says so.
+
+```shell
+REPO_URL=local REPO_PATH=/srv/devicetype-library uv run nb-dt-import.py
+```
+
+```shell
+docker run --rm -e REPO_URL=local -e REPO_PATH=/library \
+  -v /srv/devicetype-library:/library:ro \
+  -e NETBOX_URL -e NETBOX_TOKEN ghcr.io/marcinpsk/device-type-library-import
+```
+
+**When to use**: air-gapped networks, a library you version yourself, or any run that must not
+reach the network for the library.
 
 #### Export Mode
 

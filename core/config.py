@@ -11,6 +11,8 @@ from core.errors import FatalError
 
 DEFAULT_REPO_URL = "https://github.com/netbox-community/devicetype-library.git"
 DEFAULT_REPO_BRANCH = "master"
+# REPO_URL value that reads REPO_PATH as it stands, with no git operation at all.
+LOCAL_REPO_URL = "local"
 DEFAULT_GRAPHQL_PAGE_SIZE = 5000
 DEFAULT_PRELOAD_THREADS = 8
 
@@ -18,6 +20,11 @@ DEFAULT_PRELOAD_THREADS = 8
 REQUIRED_ENV_VARS = ("NETBOX_URL", "NETBOX_TOKEN")
 
 _DEFAULT_REPO_PATH = f"{os.path.dirname(os.path.dirname(os.path.realpath(__file__)))}/repo"
+
+
+def is_local_repo_url(url):
+    """Return True when *url* is the sentinel that turns off every git operation."""
+    return str(url or "").strip().casefold() == LOCAL_REPO_URL
 
 
 class ConfigError(FatalError):
@@ -102,7 +109,7 @@ def build_argument_parser(env):
         "--url",
         "--git",
         default=_text(env, "REPO_URL", DEFAULT_REPO_URL),
-        help="Git URL with valid Device Type YAML files",
+        help=f'Git URL with valid Device Type YAML files, or "{LOCAL_REPO_URL}" to read REPO_PATH with no git',
     )
     parser.add_argument(
         "--slugs",
@@ -264,6 +271,11 @@ def resolve_run_config(argv=None, env=None):
         # Only the environment can reach here: an explicit --slugs is rejected above.
         notices.append("Ignoring SLUGS from the environment: --export-diff does not filter by slug.")
         slugs = ()
+    if is_local_repo_url(args.url) and args.branch != DEFAULT_REPO_BRANCH:
+        notices.append(
+            f"Ignoring REPO_BRANCH={args.branch}: REPO_URL={LOCAL_REPO_URL} reads REPO_PATH as it stands "
+            "and checks out no branch."
+        )
 
     return RunConfig(
         netbox_url=_text(env, "NETBOX_URL"),

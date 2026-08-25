@@ -1485,3 +1485,33 @@ class TestSanitizeAttachmentFilename:
         for ct, ext in _CONTENT_TYPE_EXT.items():
             result = _sanitize_attachment_filename("img", "/media/img", ct)
             assert result.endswith(ext), f"Expected {ext} for {ct}, got {result}"
+
+
+class TestRepoAvailability:
+    """Export mode and REPO_URL=local must agree on what makes a directory a library checkout."""
+
+    def _exporter(self, tmp_path, repo_path):
+        settings = replace(_make_settings(tmp_path), repo_path=str(repo_path))
+        return Exporter(settings, _make_handle(), str(tmp_path / "extra"), False, None)
+
+    @pytest.mark.parametrize("present", ["device-types", "module-types", "rack-types"])
+    def test_one_library_directory_is_enough(self, present, tmp_path):
+        repo = tmp_path / "repo"
+        (repo / present).mkdir(parents=True)
+
+        self._exporter(tmp_path, repo)._verify_repo_available()
+
+    def test_a_directory_without_library_directories_stops_the_export(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        with pytest.raises(FileNotFoundError, match="No device-type library found"):
+            self._exporter(tmp_path, repo)._verify_repo_available()
+
+    def test_a_stray_file_named_like_a_library_directory_stops_the_export(self, tmp_path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / "device-types").write_text("not a directory")
+
+        with pytest.raises(FileNotFoundError, match="No device-type library found"):
+            self._exporter(tmp_path, repo)._verify_repo_available()

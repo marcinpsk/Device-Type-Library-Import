@@ -120,3 +120,22 @@ class TestRepoPathHasOneResolution:
         config = _resolve(REPO_PATH=str(tmp_path))
 
         assert config.repo_path == str(tmp_path)
+
+
+class TestLocalRepoUrlIgnoresTheBranch:
+    """REPO_URL=local checks out nothing, so a REPO_BRANCH set beside it silently does nothing."""
+
+    def test_a_branch_set_beside_the_sentinel_is_reported_as_ignored(self):
+        config = _resolve(REPO_URL="local", REPO_BRANCH="feature")
+
+        assert any("REPO_BRANCH" in notice for notice in config.notices), config.notices
+
+    def test_the_sentinel_alone_needs_no_notice(self):
+        config = _resolve(REPO_URL="local")
+
+        assert not any("REPO_BRANCH" in notice for notice in config.notices), config.notices
+
+    def test_a_branch_set_beside_a_real_url_needs_no_notice(self):
+        config = _resolve(REPO_URL="https://example.com/repo.git", REPO_BRANCH="feature")
+
+        assert not any("REPO_BRANCH" in notice for notice in config.notices), config.notices

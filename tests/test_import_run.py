@@ -8,6 +8,7 @@ import pytest
 from core.errors import VendorSelectionError
 from core.import_run import ImportRun, RunSummary, VendorPlan, _process_device_types
 from core.log_handler import LogHandler
+from core.repo import DTLRepo
 
 
 class _ComponentCache:
@@ -277,3 +278,33 @@ def test_execute_releases_console_when_progress_setup_fails(make_config, tmp_pat
     assert progress_factory.exited is True
     assert handle.console is None
     assert netbox.device_types.components.close_count == 1
+
+
+class TestPartialLibraryLayouts:
+    """A local checkout may hold one type root only, so planning must not read the absent ones."""
+
+    TYPE_DIRS = ("device-types", "module-types", "rack-types")
+
+    def _repo(self, tmp_path, present, make_config):
+        """Build a real DTLRepo over a checkout holding *present* alone."""
+        vendor = tmp_path / present / "TestVendor"
+        vendor.mkdir(parents=True)
+        (vendor / "thing.yaml").write_text("manufacturer: TestVendor\nmodel: Test\nslug: test\n")
+        config = make_config(repo_url="local", repo_path=str(tmp_path))
+        return DTLRepo(config, LogHandler(False)), config
+
+    @pytest.mark.parametrize("present", TYPE_DIRS)
+    def test_one_type_root_plans_without_reading_the_absent_ones(self, present, make_config, tmp_path):
+        repo, config = self._repo(tmp_path, present, make_config)
+        run = ImportRun(config, repo, _NetBoxBoundary(), LogHandler(False), _ProgressFactory())
+
+        selection = run.discover()
+        plan = run.plan_vendor(selection, {"name": "TestVendor", "slug": "testvendor"})
+
+        parsed = {
+            "device-types": len(plan.device_types),
+            "module-types": len(plan.module_types),
+            "rack-types": len(plan.rack_types),
+        }
+        assert parsed[present] == 1, parsed
+        assert sum(parsed.values()) == 1, parsed
