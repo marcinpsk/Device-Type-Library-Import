@@ -529,12 +529,15 @@ def _log_run_summary(handle, summary):
         handle.log("These duplicates would otherwise oscillate on every run. Please report/fix them upstream.")
 
 
-def _parse_vendor_racks(repo, racks_path, vendor_name, slugs):
-    """Parse rack types for one vendor when the rack path exists."""
-    if not os.path.isdir(racks_path):
+def _parse_vendor_files(repo, base_path, vendor_name, slugs):
+    """Parse one vendor's types under *base_path*, treating an absent type root as empty.
+
+    A local library may ship only some of the three type roots, which is a layout, not a fault.
+    """
+    if not os.path.isdir(base_path):
         return []
-    rack_files, _ = repo.get_devices(racks_path, [vendor_name.casefold()])
-    return repo.parse_files(rack_files, slugs=slugs)
+    files, _ = repo.get_devices(base_path, [vendor_name.casefold()])
+    return repo.parse_files(files, slugs=slugs)
 
 
 def _finalize_task_registry(progress, task_registry):
@@ -641,16 +644,18 @@ class ImportRun:
             device_files = slug_resolved["device_files"].get(vendor["slug"], [])
             device_types = self.repo.parse_files(device_files) if device_files else []
         else:
-            device_files, _ = self.repo.get_devices(selection.devices_path, [vendor["name"].casefold()])
-            device_types = self.repo.parse_files(device_files, slugs=self.config.slugs or [])
+            device_types = _parse_vendor_files(
+                self.repo, selection.devices_path, vendor["name"], self.config.slugs or []
+            )
 
         if self.netbox.modules:
             module_hint = slug_resolved["module_vendors"] if slug_resolved is not None else None
             if module_hint is not None and vendor["slug"] not in module_hint:
                 module_types = []
             else:
-                module_files, _ = self.repo.get_devices(selection.modules_path, [vendor["name"].casefold()])
-                module_types = self.repo.parse_files(module_files, slugs=self.config.slugs or [])
+                module_types = _parse_vendor_files(
+                    self.repo, selection.modules_path, vendor["name"], self.config.slugs or []
+                )
         else:
             module_types = []
 
@@ -659,7 +664,7 @@ class ImportRun:
             if rack_hint is not None and vendor["slug"] not in rack_hint:
                 rack_types = []
             else:
-                rack_types = _parse_vendor_racks(
+                rack_types = _parse_vendor_files(
                     self.repo,
                     selection.racks_path,
                     vendor["name"],
