@@ -2,6 +2,33 @@
 
 <!-- version list -->
 
+## v1.8.3 (2026-08-25)
+
+### Bug Fixes
+
+- **repo**: Add repo_url=local sentinel to bypass git entirely (#127, [`c148384`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/c148384b06cc7a5d47b120fcf85eae270021b6e5))
+- **repo**: Add repo_url=local sentinel to bypass git entirely (#127, [`c148384`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/c148384b06cc7a5d47b120fcf85eae270021b6e5))
+- **repo**: Validate the local library layout and share the check with export (#127, [`c148384`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/c148384b06cc7a5d47b120fcf85eae270021b6e5))
+- **repo**: Validate the local library layout and share the check with export (#127, [`c148384`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/c148384b06cc7a5d47b120fcf85eae270021b6e5))
+- **import**: Treat an absent type root as empty instead of crashing (#127, [`c148384`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/c148384b06cc7a5d47b120fcf85eae270021b6e5))
+
+
+### Chores
+
+- **deps**: Bump the python-deps group with 2 updates (#125, [`823663a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/823663a152eb2086fc6a15eb6a6672e054d3dd92))
+- **deps**: Bump the github-actions group with 2 updates (#123, [`65248e7`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/65248e72eff57c80627b3b76f99b364c21c02560))
+
+
+### Continuous Integration
+
+- Run ci against older netbox (#122, [`4255da7`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4255da7cbc2e3803e80796ded6899f5e6591e3bf))
+
+
+
+### Contributors
+
+@dependabot[bot], @marcinpsk
+
 ## v1.8.2 (2026-08-21)
 
 ### Bug Fixes
