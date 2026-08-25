@@ -11,7 +11,11 @@ from urllib.parse import urlparse
 from git import Repo, exc
 import yaml
 
+from core.config import LOCAL_REPO_URL, is_local_repo_url
 from core.errors import FatalError, UnknownError
+
+# Top-level directories that make a checkout a device-type library.
+LIBRARY_TYPE_DIRS = ("device-types", "module-types", "rack-types")
 
 
 class GitCommandError(FatalError):
@@ -182,6 +186,11 @@ def _safe_index_load(path: str):
     if path.endswith(".json"):
         return _safe_json_load(path)
     return _safe_pickle_load(path)
+
+
+def library_dirs_present(path):
+    """Return True when *path* holds at least one device-type library directory."""
+    return any(os.path.isdir(os.path.join(str(path), name)) for name in LIBRARY_TYPE_DIRS)
 
 
 def validate_git_url(url):
@@ -419,11 +428,11 @@ class DTLRepo:
     def __init__(self, config, handle):
         """Initialize repository management, updating an existing clone or creating a new one.
 
-        If REPO_URL is the sentinel "local", no git operation of any kind is performed —
-        REPO_PATH is used as-is and must already contain the device-type file tree.
-        Otherwise, if the target path already holds a Git clone, the repository will be
-        updated from its configured remote; if not, the provided URL is validated and a new
-        clone is created. The initializer sets instance attributes used by other methods
+        If REPO_URL is the sentinel "local", no git operation runs at all: REPO_PATH is read
+        as it stands and must already hold the device-type file tree. Otherwise, if the target
+        path already holds a Git clone, the repository will be updated from its configured
+        remote; if not, the provided URL is validated and a new clone is created. The
+        initializer sets instance attributes used by other methods
         (handler, supported YAML extensions, URL, repo path, branch, repo reference, and
         current working directory).
 
@@ -443,12 +452,8 @@ class DTLRepo:
         self.repo = None
         self.cwd = os.getcwd()
 
-        if str(self.url).strip().casefold() == "local":
-            if not os.path.isdir(self.get_absolute_path()):
-                raise InvalidRepoPathError(
-                    self.repo_path, reason="REPO_URL=local requires REPO_PATH to already contain the library files"
-                )
-            self.handle.log(f"REPO_URL=local: using {self.get_absolute_path()} as-is, no git operations")
+        if is_local_repo_url(self.url):
+            self._use_local_checkout()
             return
 
         is_path_valid, path_error = validate_repo_path(self.repo_path)
@@ -466,6 +471,28 @@ class DTLRepo:
             if not is_valid:
                 raise InvalidGitURLError(self.url, reason=error_msg)
             self.clone_repo()
+
+    def _use_local_checkout(self):
+        """Accept REPO_PATH as it stands: no clone, no fetch, and no .git needed.
+
+        Skips validate_repo_path on purpose: it demands write access, which a read-only
+        or air-gapped mount cannot give, and no import step writes to REPO_PATH.
+        """
+        path = self.get_absolute_path()
+        if not os.path.isdir(path):
+            raise InvalidRepoPathError(
+                self.repo_path,
+                reason=f"REPO_URL={LOCAL_REPO_URL} needs REPO_PATH to be an existing directory",
+            )
+        if not library_dirs_present(path):
+            raise InvalidRepoPathError(
+                self.repo_path,
+                reason=(
+                    f"No device-type library found: expected at least one of {', '.join(LIBRARY_TYPE_DIRS)} "
+                    f"inside it. REPO_URL={LOCAL_REPO_URL} does not clone the library."
+                ),
+            )
+        self.handle.log(f"REPO_URL={LOCAL_REPO_URL}: reading {path} as it stands, with no git operation")
 
     def get_relative_path(self):
         """Get the repository path configured for this instance relative to the current working directory.

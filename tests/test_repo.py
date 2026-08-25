@@ -154,6 +154,97 @@ class TestDTLRepoInit:
             _dtl_repo(config, str(invalid_path), LogHandler(False))
 
 
+class TestDTLRepoLocalMode:
+    """REPO_URL=local reads REPO_PATH as it stands: no clone, no fetch, no .git."""
+
+    @staticmethod
+    def _make_library(path, *dir_names):
+        """Create a library checkout at *path* holding one YAML file under each named directory."""
+        path.mkdir(parents=True, exist_ok=True)
+        for name in dir_names:
+            vendor = path / name / "TestVendor"
+            vendor.mkdir(parents=True)
+            (vendor / "device.yaml").write_text("manufacturer: TestVendor\nmodel: Test\n")
+        return path
+
+    def _init_local(self, repo_path, url="local", handle=None):
+        config = MagicMock(repo_url=url, repo_branch="master")
+        return _dtl_repo(config, str(repo_path), handle or LogHandler(False))
+
+    def test_reads_the_checkout_without_running_git(self, tmp_path, mock_git_repo):
+        """The whole point of the sentinel: the files are read and git is never reached."""
+        library = self._make_library(tmp_path / "library", "device-types")
+
+        repo = self._init_local(library)
+        files, vendors = repo.get_devices(repo.get_devices_path())
+
+        assert [os.path.basename(path) for path in files] == ["device.yaml"]
+        assert vendors == [{"name": "TestVendor", "slug": "testvendor"}]
+        assert [parsed["model"] for parsed in repo.parse_files(files)] == ["Test"]
+        assert not (library / ".git").exists()
+        mock_git_repo.assert_not_called()
+        mock_git_repo.clone_from.assert_not_called()
+
+    @pytest.mark.parametrize("value", ["local", "LOCAL", "Local", "  local  "])
+    def test_the_sentinel_ignores_case_and_padding(self, value, tmp_path, mock_git_repo):
+        library = self._make_library(tmp_path / "library", "device-types")
+
+        self._init_local(library, url=value)
+
+        mock_git_repo.assert_not_called()
+        mock_git_repo.clone_from.assert_not_called()
+
+    @pytest.mark.parametrize("present", ["device-types", "module-types", "rack-types"])
+    def test_one_library_directory_is_enough(self, present, tmp_path, mock_git_repo):
+        """Export mode accepts any one of the three, so local import mode must agree."""
+        library = self._make_library(tmp_path / "library", present)
+
+        self._init_local(library)
+
+        mock_git_repo.assert_not_called()
+
+    def test_a_missing_directory_is_reported_as_a_path_error(self, tmp_path):
+        with pytest.raises(InvalidRepoPathError, match="existing directory"):
+            self._init_local(tmp_path / "absent")
+
+    def test_a_directory_without_library_directories_is_rejected(self, tmp_path):
+        """An unrelated path would otherwise import nothing and still exit successfully."""
+        empty = tmp_path / "library"
+        empty.mkdir()
+
+        with pytest.raises(InvalidRepoPathError, match="No device-type library found"):
+            self._init_local(empty)
+
+    def test_a_stray_file_named_like_a_library_directory_is_rejected(self, tmp_path):
+        library = tmp_path / "library"
+        library.mkdir()
+        (library / "device-types").write_text("not a directory")
+
+        with pytest.raises(InvalidRepoPathError, match="No device-type library found"):
+            self._init_local(library)
+
+    @pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root ignores the write bit")
+    def test_a_read_only_checkout_is_accepted(self, tmp_path):
+        """The air-gapped case: nothing writes to REPO_PATH, so a read-only mount must work."""
+        library = self._make_library(tmp_path / "library", "device-types")
+        library.chmod(0o555)
+
+        try:
+            repo = self._init_local(library)
+            assert repo.get_devices(repo.get_devices_path())[0]
+        finally:
+            library.chmod(0o755)
+
+    def test_the_branch_is_left_unused(self, tmp_path, mock_git_repo):
+        """No checkout happens, so REPO_BRANCH must not reach git (config warns about it instead)."""
+        library = self._make_library(tmp_path / "library", "device-types")
+        config = MagicMock(repo_url="local", repo_branch="a-branch-that-does-not-exist")
+
+        _dtl_repo(config, str(library), LogHandler(False))
+
+        mock_git_repo.assert_not_called()
+
+
 class TestDTLRepoRealGit:
     """Clone/pull branching driven against a real local Git repository (no git mocks)."""
 

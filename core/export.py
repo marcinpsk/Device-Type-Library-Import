@@ -28,11 +28,9 @@ from core.nb_serializer import (
     serialize_rack_type,
 )
 from core.netbox_api import IMAGE_EXTENSIONS, _build_auth_header
+from core.repo import LIBRARY_TYPE_DIRS, library_dirs_present
 
 _SKIP = object()  # sentinel: image already exists, no download needed
-
-# Top-level directories that make a checkout a device-type library.
-_LIBRARY_TYPE_DIRS = ("device-types", "module-types", "rack-types")
 
 # Maps Content-Type to a canonical extension for extension-less attachments.
 _CONTENT_TYPE_EXT = {
@@ -474,11 +472,11 @@ class Exporter:
 
     def _verify_repo_available(self) -> None:
         """Raise FileNotFoundError when the library is absent, which would otherwise read as an empty one."""
-        if any((self.repo_path / name).is_dir() for name in _LIBRARY_TYPE_DIRS):
+        if library_dirs_present(self.repo_path):
             return
         raise FileNotFoundError(
             f"No device-type library found at {self.repo_path}: expected at least one of "
-            f"{', '.join(_LIBRARY_TYPE_DIRS)}. Export mode does not clone the library. "
+            f"{', '.join(LIBRARY_TYPE_DIRS)}. Export mode does not clone the library. "
             "Clone it to that path, or run an import first, which clones it for you."
         )
 
