@@ -308,13 +308,27 @@ _NB_DT_IMPORT_PATH = str(Path(__file__).resolve().parents[1] / "nb-dt-import.py"
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
+_LIBRARY_ROOT = None
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _real_library_root(tmp_path_factory):
+    """Point the repo mocks at a real library tree: the pipeline stats these paths before reading them."""
+    global _LIBRARY_ROOT
+    root = tmp_path_factory.mktemp("library")
+    for name in ("device-types", "module-types", "rack-types"):
+        (root / name).mkdir()
+    _LIBRARY_ROOT = root
+    yield root
+
+
 def _make_mock_repo(device_types=None):
     """Return a pre-configured DTLRepo mock with no files by default."""
     mock_repo = MagicMock()
     mock_repo.get_devices.return_value = ([], [])
-    mock_repo.get_devices_path.return_value = "/tmp/devices"
-    mock_repo.get_modules_path.return_value = "/tmp/modules"
-    mock_repo.get_racks_path.return_value = "/tmp/rack-types"
+    mock_repo.get_devices_path.return_value = str(_LIBRARY_ROOT / "device-types")
+    mock_repo.get_modules_path.return_value = str(_LIBRARY_ROOT / "module-types")
+    mock_repo.get_racks_path.return_value = str(_LIBRARY_ROOT / "rack-types")
     mock_repo.discover_vendors.return_value = []
     mock_repo.parse_files.return_value = device_types if device_types is not None else []
     mock_repo.resolve_slug_files.return_value = None  # no pickle available by default
@@ -905,7 +919,7 @@ class TestMain:
             repo = _make_mock_repo()
             repo.discover_vendors.return_value = [{"name": "Vendor One", "slug": "vendor-one"}]
             repo.get_devices.side_effect = lambda path, vendors=None: (
-                (["module.yaml"], []) if "modules" in path else ([], [])
+                (["module.yaml"], []) if "module-types" in path else ([], [])
             )
             repo.parse_files.side_effect = lambda files, slugs=None: [module_type] if files == ["module.yaml"] else []
             MockRepo.return_value = repo
@@ -1600,13 +1614,13 @@ class TestDirectHelpers:
         assert bar.total == 1.0
         assert bar.completed == 0.0
 
-    def test_parse_vendor_racks_calls_repo_when_directory_exists(self, nb_dt_import):
+    def test_parse_vendor_files_calls_repo_when_directory_exists(self, nb_dt_import):
         repo = MagicMock()
         repo.get_devices.return_value = (["rack.yaml"], [])
         repo.parse_files.return_value = [{"model": "Rack"}]
 
         with patch("core.import_run.os.path.isdir", return_value=True):
-            result = import_run_module._parse_vendor_racks(repo, "/racks", "nokia", ["rack"])
+            result = import_run_module._parse_vendor_files(repo, "/racks", "nokia", ["rack"])
 
         assert result == [{"model": "Rack"}]
         repo.get_devices.assert_called_once_with("/racks", ["nokia"])
@@ -1844,7 +1858,7 @@ class TestMainAdditionalCoverage:
             return []
 
         mock_repo.get_devices.side_effect = lambda path, vendors=None: (
-            (["device.yaml"], []) if path == "/tmp/devices" else ([], [])
+            (["device.yaml"], []) if path.endswith("device-types") else ([], [])
         )
         mock_repo.parse_files.side_effect = _parse_files
         mock_nb = _make_mock_netbox()
@@ -1878,7 +1892,7 @@ class TestMainAdditionalCoverage:
         mock_repo = _make_mock_repo()
         mock_repo.discover_vendors.return_value = [{"name": "Cisco", "slug": "cisco"}]
         mock_repo.get_devices.side_effect = lambda path, vendors=None: (
-            (["device.yaml"], []) if path == "/tmp/devices" else ([], [])
+            (["device.yaml"], []) if path.endswith("device-types") else ([], [])
         )
         mock_repo.parse_files.side_effect = lambda files, slugs=None, progress=None: (
             [{"manufacturer": {"slug": "cisco"}, "model": "X", "slug": "x"}] if files == ["device.yaml"] else []
@@ -1964,14 +1978,14 @@ class TestMainAdditionalCoverage:
         dtl_repo = _make_mock_repo()
         dtl_repo.get_devices.side_effect = lambda path, vendors=None: (
             ([f"{vendors[0]}-{path.split('/')[-1]}.yaml"], [])
-            if vendors and vendors[0] == "cisco" and path in {"/tmp/modules", "/tmp/rack-types"}
+            if vendors and vendors[0] == "cisco" and path.endswith(("module-types", "rack-types"))
             else ([], [])
         )
         dtl_repo.parse_files.side_effect = lambda files, slugs=None, progress=None: (
             [{"manufacturer": {"slug": "cisco"}, "model": "X", "slug": "x"}]
             if files == ["resolved.yaml"]
             else [{"manufacturer": {"slug": "cisco"}, "model": "M", "slug": "m"}]
-            if files == ["cisco-modules.yaml"]
+            if files == ["cisco-module-types.yaml"]
             else []
         )
         netbox = _make_mock_netbox(modules=True)
@@ -2030,7 +2044,7 @@ class TestMainAdditionalCoverage:
         dtl_repo = _make_mock_repo()
         dtl_repo.discover_vendors.return_value = [{"slug": "cisco", "name": "Cisco"}]
         dtl_repo.get_devices.side_effect = lambda path, vendors=None: (
-            (["device.yaml"], []) if path == "/tmp/devices" else ([], [])
+            (["device.yaml"], []) if path.endswith("device-types") else ([], [])
         )
         dtl_repo.parse_files.side_effect = lambda files, slugs=None, progress=None: (
             [{"manufacturer": {"slug": "cisco"}, "model": "X", "slug": "x"}] if files == ["device.yaml"] else []
