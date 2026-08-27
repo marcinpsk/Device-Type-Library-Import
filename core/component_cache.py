@@ -12,6 +12,7 @@ state and the readiness flag stay inside.  Callers used to sequence those by han
 import concurrent.futures
 import queue
 import threading
+from typing import Any
 
 from core.compat import (
     device_type_filter_key,
@@ -136,9 +137,9 @@ class ComponentCache:
         self.max_threads = max_threads
         self._wrap_record = wrap_record or (lambda record: record)
 
-        self._entries = {}
+        self._entries: dict = {}
         self._ready = False
-        self._job = None
+        self._job: Any = None
 
     # ── State ────────────────────────────────────────────────────────────────
 
@@ -169,7 +170,7 @@ class ComponentCache:
         for component in COMPONENT_TYPES:
             display.add(component.endpoint, component.plural_label)
 
-        updates = queue.Queue()
+        updates: queue.Queue = queue.Queue()
         max_workers = max(1, min(len(COMPONENT_TYPES), self.max_threads))
         executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
         worker_state = threading.local()
@@ -369,7 +370,7 @@ class ComponentCache:
 
     def _drain_updates(self):
         """Apply every queued page count to the display, coalescing per endpoint."""
-        totals = {}
+        totals: dict = {}
         while True:
             try:
                 endpoint_name, advance = self._job["updates"].get_nowait()

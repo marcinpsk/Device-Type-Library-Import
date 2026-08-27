@@ -19,6 +19,14 @@ repos:
         language: system
         types: [python]
         require_serial: true
+      # No filenames: mypy reads its own scope (core/ and nb-dt-import.py) from pyproject.toml.
+      - id: mypy
+        name: mypy
+        entry: uv run --native-tls mypy
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
       - id: interrogate
         name: interrogate
         entry: uv run --native-tls interrogate

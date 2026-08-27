@@ -16,12 +16,14 @@ dependencies = [
 [dependency-groups]
 dev = [
     "interrogate>=1.7.0",
+    "mypy>=2.3.1",
     "pre-commit>=4.6.2",
     "pytest>=9.1.1",
     "pytest-cov>=6.0",
     "pytest-mock>=3.15.1",
     "pytest-timeout>=2.4.0",
     "ruff>=0.16.2",
+    "types-pyyaml>=6.0.12.20260815",
     "zizmor==1.29.0",
 ]
 
@@ -51,6 +53,17 @@ max-complexity = 15
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["D102", "D103"]  # test functions don't need docstrings
+
+[tool.mypy]
+python_version = "3.12"
+files = ["core", "nb-dt-import.py"]
+# Most of core/ carries no annotations, and mypy skips unannotated bodies by default.
+# Those bodies are where this bug class hides: a tuple reaching a list-typed parameter.
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["pynetbox.*"]
+ignore_missing_imports = true
 
 [tool.interrogate]
 # Measure docstring coverage on first-party source only. The vendored

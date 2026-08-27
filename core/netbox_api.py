@@ -12,6 +12,7 @@ import requests
 import os
 import glob
 from pathlib import Path
+from typing import Any, Optional
 
 from core.change_detector import ChangeDetector, ChangeType
 from core.component_cache import ComponentCache
@@ -213,7 +214,7 @@ def _is_image_hash_changed(local_path: str, hash_cache: dict, log_fn=None) -> bo
     return current != cached
 
 
-def _load_image_hash_cache(path: str, log_fn=None) -> dict:
+def _load_image_hash_cache(path: Optional[str], log_fn=None) -> dict:
     """Load the image-hash cache from *path* (JSON), returning an empty dict when it cannot be read.
 
     An absent file is the normal first run and stays quiet.  Anything else means the
@@ -448,7 +449,7 @@ class NetBox:
         self.repo_path = config.repo_path
         self.verbose = config.verbose
         self.handle = handle
-        self.netbox = None
+        self.netbox: Any = None
         self.ignore_ssl = config.ignore_ssl_errors
         self.modules = False
         self.new_filters = False
@@ -465,7 +466,7 @@ class NetBox:
         _cache_dir = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "nb-dt-import"
         try:
             _cache_dir.mkdir(parents=True, exist_ok=True)
-            self._image_hash_cache_path = str(_cache_dir / "image-hashes.json")
+            self._image_hash_cache_path: Optional[str] = str(_cache_dir / "image-hashes.json")
         except OSError as exc:
             self.handle.log(
                 "[yellow]Warning: could not create image hash cache directory "
@@ -2019,6 +2020,7 @@ class _FrontPortRecordWithMappings:
         """
         object.__setattr__(self, "_record", record)
         mappings_raw = getattr(record, "mappings", None)
+        canonical: Optional[list]
         if mappings_raw is not None:
             # NetBox >= 4.5: mappings is a list of PortTemplateMapping objects
             canonical = []
@@ -2407,8 +2409,8 @@ class DeviceTypes:
             parent_type: "device" or "module"
         """
         # Group changes by component type and change type
-        changes_to_update = {}
-        changes_to_add = {}
+        changes_to_update: dict = {}
+        changes_to_add: dict = {}
         for change in component_changes:
             if change.change_type == ChangeType.COMPONENT_CHANGED:
                 if change.component_type not in changes_to_update:
@@ -2437,7 +2439,7 @@ class DeviceTypes:
         removals = [c for c in component_changes if c.change_type == ChangeType.COMPONENT_REMOVED]
 
         # Group removals by component type
-        removals_by_type = {}
+        removals_by_type: dict = {}
         for removal in removals:
             if removal.component_type not in removals_by_type:
                 removals_by_type[removal.component_type] = []

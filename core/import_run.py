@@ -5,6 +5,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 import os
+from typing import Any
 
 from core.change_detector import ChangeDetector, ChangeType, IMAGE_PROPERTIES
 from core.component_cache import NullTaskDisplay, RichTaskDisplay
@@ -575,7 +576,7 @@ class ImportRun:
         self.reporter = reporter
         self.progress_factory = progress_factory
         self.started_at = started_at or datetime.now()
-        self.progress = None
+        self.progress: Any = None
         self.task_registry = None
         self.vendor_task_id = None
 

@@ -6,7 +6,7 @@ import os
 import pickle
 from glob import glob
 from re import sub as re_sub
-from typing import Optional
+from typing import Optional, Sequence
 from urllib.parse import urlparse
 from git import Repo, exc
 import yaml
@@ -320,7 +320,7 @@ def normalize_port_mappings(data):
 
     # --- Old inline format ---
     # Collect rear_port references declared directly on front-port entries.
-    inline_mappings = {}  # {front_port_name: [mapping_dict, ...]}
+    inline_mappings: dict = {}  # {front_port_name: [mapping_dict, ...]}
     for fp in front_ports:
         rp_name = fp.get("rear_port")
         if rp_name is None:
@@ -339,7 +339,7 @@ def normalize_port_mappings(data):
         )
 
     # --- New port-mappings stanza ---
-    stanza_mappings = {}  # {front_port_name: [mapping_dict, ...]}
+    stanza_mappings: dict = {}  # {front_port_name: [mapping_dict, ...]}
     if "port-mappings" in data:
         for entry in port_mappings_stanza or []:
             fp_name = entry.get("front_port")
@@ -589,7 +589,7 @@ class DTLRepo:
         except Exception as git_error:
             raise UnknownError("Git Repository Error", cause=git_error) from git_error
 
-    def get_devices(self, base_path, vendors: list = None):
+    def get_devices(self, base_path, vendors: Optional[Sequence[str]] = None):
         """Discover device YAML files and vendor directories under a base path.
 
         Args:
@@ -663,7 +663,7 @@ class DTLRepo:
         slugs_lower = [s.casefold() for s in slugs]
 
         # --- device types --------------------------------------------------
-        device_files = {}  # vendor_slug -> [abs_path]
+        device_files: dict = {}  # vendor_slug -> [abs_path]
         try:
             known_slugs = _safe_index_load(device_index)
         except Exception:
@@ -733,7 +733,7 @@ class DTLRepo:
         # Return sorted list by slug
         return sorted(vendors_dict.values(), key=lambda v: v["slug"])
 
-    def parse_files(self, files: list, slugs: list = None, progress=None):
+    def parse_files(self, files: list, slugs: Optional[Sequence[str]] = None, progress=None):
         """Parse YAML device files into device type dicts, optionally filtering and tracking progress.
 
         Args:
@@ -787,7 +787,7 @@ class DTLRepo:
         # for the user to fix upstream.
         deduped = []
         seen = {}  # key -> kept item
-        groups = {}  # key -> list of all srcs in sorted order
+        groups: dict = {}  # key -> list of all srcs in sorted order
         for item in sorted(deviceTypes, key=lambda d: d.get("src", "")):
             try:
                 key = (item["manufacturer"]["slug"], item.get("model"))
