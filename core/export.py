@@ -9,7 +9,7 @@ import re
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Optional, Sequence
 
 import requests
 import yaml
@@ -30,7 +30,12 @@ from core.nb_serializer import (
 from core.netbox_api import IMAGE_EXTENSIONS, _build_auth_header
 from core.repo import LIBRARY_TYPE_DIRS, library_dirs_present
 
-_SKIP = object()  # sentinel: image already exists, no download needed
+
+class _SkipSentinel:
+    """Type of the ``_SKIP`` sentinel: the image already exists, so no download is needed."""
+
+
+_SKIP = _SkipSentinel()
 
 # Maps Content-Type to a canonical extension for extension-less attachments.
 _CONTENT_TYPE_EXT = {
@@ -191,13 +196,17 @@ def _is_subset(sub: Any, sup: Any) -> bool:
 class Exporter:
     """Exports NetBox device/module/rack types to a local directory in DTL format."""
 
-    def __init__(self, config, handle, export_dir: str, force_overwrite: bool, vendor_slugs: Optional[List[str]]):
+    def __init__(self, config, handle, export_dir: str, force_overwrite: bool, vendor_slugs: Optional[Sequence[str]]):
         """Initialize the Exporter from the resolved run configuration."""
         self.config = config
         self.handle = handle
         self.export_dir = Path(export_dir)
         self.force_overwrite = force_overwrite
-        self.vendor_slugs = vendor_slugs  # None means all vendors
+        # tuple("cisco") is five single-character slugs, each one valid to the GraphQL layer.
+        if isinstance(vendor_slugs, (str, bytes)):
+            raise ValueError("vendor_slugs must be None or a sequence of vendor slugs, not a bare string")
+        # None means all vendors. The GraphQL layer rejects an empty sequence, so normalize one here.
+        self.vendor_slugs = tuple(vendor_slugs) if vendor_slugs else None
         self.repo_path = Path(config.repo_path)
         self.base_url = config.netbox_url.rstrip("/")
         self.token = config.netbox_token
@@ -233,11 +242,9 @@ class Exporter:
         self.handle.log(f"Export-diff: fetching NetBox device/module/rack types{scope}")
 
         # ── Fetch all types from NetBox ──────────────────────────────────────
-        by_model, by_slug = self.graphql.get_device_types(
-            manufacturer_slugs=self.vendor_slugs if self.vendor_slugs else None
-        )
-        all_mt = self.graphql.get_module_types(manufacturer_slugs=self.vendor_slugs if self.vendor_slugs else None)
-        all_rt = self.graphql.get_rack_types(manufacturer_slugs=self.vendor_slugs if self.vendor_slugs else None)
+        by_model, by_slug = self.graphql.get_device_types(manufacturer_slugs=self.vendor_slugs)
+        all_mt = self.graphql.get_module_types(manufacturer_slugs=self.vendor_slugs)
+        all_rt = self.graphql.get_rack_types(manufacturer_slugs=self.vendor_slugs)
 
         total_dt = len(by_model)
         total_mt = sum(len(v) for v in all_mt.values())
@@ -671,6 +678,7 @@ class Exporter:
             manifest_key = f"{mfr_name}/{rec.slug}"
 
             repo_yaml = repo_dt_by_slug.get((mfr_slug, rec.slug))
+            reason: Optional[str]
             if repo_yaml is None:
                 reason = "absent"
             elif _repo_supersedes(repo_yaml, serialized):
@@ -911,7 +919,9 @@ class Exporter:
                 ok = False
         return ok
 
-    def _download_image(self, url_path: str, dest: Path, content_type_out: "Optional[list]" = None) -> "Optional[str]":
+    def _download_image(
+        self, url_path: str, dest: Path, content_type_out: "Optional[list]" = None
+    ) -> "str | _SkipSentinel | None":
         """Download an image from NetBox and write to *dest*.
 
         Returns SHA-256 hex digest on success, None on failure, or the module-level

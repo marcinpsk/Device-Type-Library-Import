@@ -22,7 +22,7 @@ from rich.progress import (
 )
 from rich.text import Text
 
-from core.config import ConfigError, resolve_run_config
+from core.config import ConfigError, RunConfig, resolve_run_config
 from core.errors import FatalError
 from core.graphql_client import GraphQLError
 from core.import_run import ImportRun
@@ -112,7 +112,7 @@ def get_progress_panel(show_remaining_time=False):
         yield progress
 
 
-def _run_export_diff(config, handle):
+def _run_export_diff(config: RunConfig, handle):
     """Run the export-diff pipeline."""
     from core.export import Exporter
 
@@ -121,7 +121,7 @@ def _run_export_diff(config, handle):
         handle=handle,
         export_dir=config.export_diff_dir,
         force_overwrite=config.force_export_overwrite,
-        vendor_slugs=config.vendors if config.vendors else None,
+        vendor_slugs=config.vendors,
     )
     with get_progress_panel(config.show_remaining_time) as progress:
         if progress is not None:
@@ -133,7 +133,7 @@ def _run_export_diff(config, handle):
                 handle.set_console(None)
 
 
-def _run(config):
+def _run(config: RunConfig):
     """Build and execute the selected run pipeline."""
     started_at = datetime.now()
     handle = LogHandler(config.verbose)

@@ -5,7 +5,7 @@ comparison against existing repo YAML files.
 """
 
 import warnings
-from typing import Any
+from typing import Any, Sequence
 
 from core.component_registry import BY_ENDPOINT, COMPONENT_TYPES
 
@@ -114,7 +114,7 @@ def _should_include(field: str, val: Any) -> bool:
     return True
 
 
-def _serialize_component(record: Any, fields: list) -> dict:
+def _serialize_component(record: Any, fields: Sequence[str]) -> dict:
     """Serialize a single component template record to a YAML-ready dict."""
     result = {}
     for field in fields:

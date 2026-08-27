@@ -15,7 +15,7 @@ class LogHandler:
         self.verbose = verbose
         self.console = None
         self._defer_depth = 0
-        self._deferred_messages = []
+        self._deferred_messages: list = []
 
     def _timestamp(self):
         """Return the current time formatted as HH:MM:SS."""
