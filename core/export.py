@@ -202,6 +202,9 @@ class Exporter:
         self.handle = handle
         self.export_dir = Path(export_dir)
         self.force_overwrite = force_overwrite
+        # tuple("cisco") is five single-character slugs, each one valid to the GraphQL layer.
+        if isinstance(vendor_slugs, (str, bytes)):
+            raise ValueError("vendor_slugs must be None or a sequence of vendor slugs, not a bare string")
         # None means all vendors. The GraphQL layer rejects an empty sequence, so normalize one here.
         self.vendor_slugs = tuple(vendor_slugs) if vendor_slugs else None
         self.repo_path = Path(config.repo_path)

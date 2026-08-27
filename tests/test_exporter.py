@@ -732,6 +732,12 @@ class TestVendorSlugNormalization:
         assert self._make_exporter(tmp_path, ("nokia",)).vendor_slugs == ("nokia",)
         assert self._make_exporter(tmp_path, ["nokia"]).vendor_slugs == ("nokia",)
 
+    @pytest.mark.parametrize("bare", ["cisco", b"cisco"], ids=["str", "bytes"])
+    def test_bare_string_raises_value_error(self, tmp_path, bare):
+        """tuple("cisco") would filter on five single-character slugs, and every one of them is valid."""
+        with pytest.raises(ValueError, match="vendor_slugs must be None or a sequence"):
+            self._make_exporter(tmp_path, bare)
+
 
 class TestVendorDirSlugNormalization:
     """Tests for Exporter._vendor_dirs slug-based directory matching."""
