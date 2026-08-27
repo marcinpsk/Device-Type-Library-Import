@@ -1682,6 +1682,53 @@ class TestGraphQLQueryErrorPaths:
 # ── Vendor-scoped filtering tests ─────────────────────────────────────────
 
 
+class TestBuildManufacturerFilter:
+    """Tests for _build_manufacturer_filter() input handling."""
+
+    def _make_client(self):
+        from core.graphql_client import NetBoxGraphQLClient
+
+        return NetBoxGraphQLClient("http://netbox.local", "tok")
+
+    def test_single_slug_tuple_matches_list(self):
+        """config.vendors is a tuple, so a tuple must build the same filter as a list."""
+        client = self._make_client()
+        assert client._build_manufacturer_filter(("cisco",)) == client._build_manufacturer_filter(["cisco"])
+
+    def test_multiple_slug_tuple_matches_list(self):
+        """A multi-slug tuple must build the same filter as the equivalent list."""
+        client = self._make_client()
+        assert client._build_manufacturer_filter(("cisco", "juniper")) == client._build_manufacturer_filter(
+            ["cisco", "juniper"]
+        )
+
+    def test_tuple_slugs_are_stripped_and_sent_as_list(self):
+        """The GraphQL variable must be a JSON-serializable list, not the incoming tuple."""
+        client = self._make_client()
+        var_decl, filter_fragment, variables = client._build_manufacturer_filter((" cisco ", "juniper "))
+        assert var_decl == ", $manufacturer_slugs: [String!]!"
+        assert filter_fragment == "filters: {manufacturer: {slug: {in_list: $manufacturer_slugs}}}, "
+        assert variables == {"manufacturer_slugs": ["cisco", "juniper"]}
+
+    def test_bare_string_raises_value_error(self):
+        """A bare string is a sequence of characters, not a sequence of slugs."""
+        client = self._make_client()
+        with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty"):
+            client._build_manufacturer_filter("cisco")
+
+    def test_non_string_item_raises_value_error(self):
+
+        client = self._make_client()
+        with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty"):
+            client._build_manufacturer_filter(("cisco", 5))
+
+    def test_blank_item_raises_value_error(self):
+
+        client = self._make_client()
+        with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty"):
+            client._build_manufacturer_filter(("cisco", "   "))
+
+
 class TestVendorScopedDeviceTypes:
     """Tests for vendor-scoped filtering in get_device_types()."""
 
@@ -1690,7 +1737,8 @@ class TestVendorScopedDeviceTypes:
 
         return NetBoxGraphQLClient("http://netbox.local", "tok")
 
-    def test_single_vendor_filter(self, mock_post):
+    @pytest.mark.parametrize("slugs", [["cisco"], ("cisco",)], ids=["list", "tuple"])
+    def test_single_vendor_filter(self, mock_post, slugs):
         """Test filtering by a single manufacturer slug."""
         data = {
             "device_type_list": [
@@ -1716,7 +1764,7 @@ class TestVendorScopedDeviceTypes:
         mock_post.side_effect = _make_paged_responses(data, "device_type_list")
 
         client = self._make_client()
-        by_model, by_slug = client.get_device_types(manufacturer_slugs=["cisco"])
+        by_model, by_slug = client.get_device_types(manufacturer_slugs=slugs)
 
         assert ("cisco", "Catalyst 3850") in by_model
         assert by_model[("cisco", "Catalyst 3850")].model == "Catalyst 3850"
@@ -1728,7 +1776,8 @@ class TestVendorScopedDeviceTypes:
         assert "$manufacturer_slug: String!" in query
         assert variables["manufacturer_slug"] == "cisco"
 
-    def test_multiple_vendor_filter(self, mock_post):
+    @pytest.mark.parametrize("slugs", [["cisco", "juniper"], ("cisco", "juniper")], ids=["list", "tuple"])
+    def test_multiple_vendor_filter(self, mock_post, slugs):
         """Test filtering by multiple manufacturer slugs."""
         data = {
             "device_type_list": [
@@ -1771,7 +1820,7 @@ class TestVendorScopedDeviceTypes:
         mock_post.side_effect = _make_paged_responses(data, "device_type_list")
 
         client = self._make_client()
-        by_model, by_slug = client.get_device_types(manufacturer_slugs=["cisco", "juniper"])
+        by_model, by_slug = client.get_device_types(manufacturer_slugs=slugs)
 
         assert ("cisco", "Catalyst 3850") in by_model
         assert ("juniper", "EX4300") in by_model
@@ -1818,11 +1867,12 @@ class TestVendorScopedDeviceTypes:
         assert "filters:" not in query
         assert "manufacturer_slug" not in variables
 
-    def test_empty_list_raises_value_error(self):
-        """Passing [] for manufacturer_slugs should raise ValueError immediately."""
+    @pytest.mark.parametrize("slugs", [[], ()], ids=["list", "tuple"])
+    def test_empty_sequence_raises_value_error(self, slugs):
+        """An empty manufacturer_slugs sequence should raise ValueError immediately."""
         client = self._make_client()
-        with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty list"):
-            client.get_device_types(manufacturer_slugs=[])
+        with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty"):
+            client.get_device_types(manufacturer_slugs=slugs)
 
 
 class TestVendorScopedModuleTypes:
@@ -1833,7 +1883,8 @@ class TestVendorScopedModuleTypes:
 
         return NetBoxGraphQLClient("http://netbox.local", "tok")
 
-    def test_single_vendor_filter(self, mock_post):
+    @pytest.mark.parametrize("slugs", [["cisco"], ("cisco",)], ids=["list", "tuple"])
+    def test_single_vendor_filter(self, mock_post, slugs):
         """Test filtering by a single manufacturer slug."""
         data = {
             "module_type_list": [
@@ -1853,7 +1904,7 @@ class TestVendorScopedModuleTypes:
         mock_post.side_effect = _make_paged_responses(data, "module_type_list")
 
         client = self._make_client()
-        result = client.get_module_types(manufacturer_slugs=["cisco"])
+        result = client.get_module_types(manufacturer_slugs=slugs)
 
         assert "cisco" in result
         assert "C9300-NM-8X" in result["cisco"]
@@ -1865,7 +1916,8 @@ class TestVendorScopedModuleTypes:
         assert "$manufacturer_slug: String!" in query
         assert variables["manufacturer_slug"] == "cisco"
 
-    def test_multiple_vendor_filter(self, mock_post):
+    @pytest.mark.parametrize("slugs", [["cisco", "juniper"], ("cisco", "juniper")], ids=["list", "tuple"])
+    def test_multiple_vendor_filter(self, mock_post, slugs):
         """Test filtering by multiple manufacturer slugs."""
         data = {
             "module_type_list": [
@@ -1896,7 +1948,7 @@ class TestVendorScopedModuleTypes:
         mock_post.side_effect = _make_paged_responses(data, "module_type_list")
 
         client = self._make_client()
-        result = client.get_module_types(manufacturer_slugs=["cisco", "juniper"])
+        result = client.get_module_types(manufacturer_slugs=slugs)
 
         assert "cisco" in result
         assert "juniper" in result
@@ -1908,11 +1960,12 @@ class TestVendorScopedModuleTypes:
         assert "$manufacturer_slugs: [String!]!" in query
         assert variables["manufacturer_slugs"] == ["cisco", "juniper"]
 
-    def test_empty_list_raises_value_error(self):
-        """Passing [] for manufacturer_slugs should raise ValueError immediately."""
+    @pytest.mark.parametrize("slugs", [[], ()], ids=["list", "tuple"])
+    def test_empty_sequence_raises_value_error(self, slugs):
+        """An empty manufacturer_slugs sequence should raise ValueError immediately."""
         client = self._make_client()
-        with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty list"):
-            client.get_module_types(manufacturer_slugs=[])
+        with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty"):
+            client.get_module_types(manufacturer_slugs=slugs)
 
 
 class TestVendorScopedRackTypes:
@@ -1923,7 +1976,8 @@ class TestVendorScopedRackTypes:
 
         return NetBoxGraphQLClient("http://netbox.local", "tok")
 
-    def test_single_vendor_filter(self, mock_post):
+    @pytest.mark.parametrize("slugs", [["apc"], ("apc",)], ids=["list", "tuple"])
+    def test_single_vendor_filter(self, mock_post, slugs):
         """Test filtering by a single manufacturer slug."""
         data = {
             "rack_type_list": [
@@ -1953,7 +2007,7 @@ class TestVendorScopedRackTypes:
         mock_post.side_effect = _make_paged_responses(data, "rack_type_list")
 
         client = self._make_client()
-        result = client.get_rack_types(manufacturer_slugs=["apc"])
+        result = client.get_rack_types(manufacturer_slugs=slugs)
 
         assert "apc" in result
         assert "AR1300" in result["apc"]
@@ -1965,11 +2019,12 @@ class TestVendorScopedRackTypes:
         assert "$manufacturer_slug: String!" in query
         assert variables["manufacturer_slug"] == "apc"
 
-    def test_empty_list_raises_value_error(self):
-        """Passing [] for manufacturer_slugs should raise ValueError immediately."""
+    @pytest.mark.parametrize("slugs", [[], ()], ids=["list", "tuple"])
+    def test_empty_sequence_raises_value_error(self, slugs):
+        """An empty manufacturer_slugs sequence should raise ValueError immediately."""
         client = self._make_client()
-        with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty list"):
-            client.get_rack_types(manufacturer_slugs=[])
+        with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty"):
+            client.get_rack_types(manufacturer_slugs=slugs)
 
 
 class TestVendorScopedComponentTemplates:
@@ -2106,6 +2161,17 @@ class TestVendorScopedComponentTemplates:
         call_args = mock_post.call_args_list[0]
         query = call_args[1]["json"]["query"]
         assert "filters:" not in query
+
+    @pytest.mark.parametrize(
+        "slug",
+        ["", "   ", ("cisco",), ["cisco"], 5],
+        ids=["empty", "blank", "tuple", "list", "int"],
+    )
+    def test_non_string_or_blank_slug_raises_value_error(self, slug):
+        """The endpoint takes one slug: a sequence would build a filter that matches nothing."""
+        client = self._make_client()
+        with pytest.raises(ValueError, match="manufacturer_slug must be None or a non-empty string"):
+            client.get_component_templates("interface_templates", manufacturer_slug=slug)
 
     def test_vendor_scoped_two_queries(self, mock_post):
         """Test that vendor-scoped query makes two separate queries (device + module)."""

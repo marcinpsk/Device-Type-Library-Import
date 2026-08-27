@@ -7,6 +7,7 @@ compatible with the existing REST-based code in ``netbox_api.py``.
 
 import threading
 import time
+from collections.abc import Sequence
 
 import requests
 
@@ -78,7 +79,7 @@ def _to_dotdict(obj):
     IDs as strings but the rest of the codebase expects integer IDs.
     """
     if isinstance(obj, dict):
-        converted = {}
+        converted: dict = {}
         for k, v in obj.items():
             if k == "id" and isinstance(v, str):
                 try:
@@ -363,15 +364,21 @@ class NetBoxGraphQLClient:
         :meth:`query_all`.
 
         Args:
-            slugs: ``None`` or a non-empty list of manufacturer slug strings.
+            slugs: ``None`` or a non-empty sequence (list or tuple) of manufacturer
+                slug strings.
 
         Returns:
             tuple[str, str, dict]
         """
         if not slugs:
             return "", "", {}
-        if not isinstance(slugs, list) or any(not isinstance(s, str) or not s.strip() for s in slugs):
-            raise ValueError("manufacturer_slugs must be None or a non-empty list of non-empty strings")
+        # A str is itself a Sequence of characters, so reject it before the item check.
+        if (
+            isinstance(slugs, (str, bytes))
+            or not isinstance(slugs, Sequence)
+            or any(not isinstance(s, str) or not s.strip() for s in slugs)
+        ):
+            raise ValueError("manufacturer_slugs must be None or a non-empty sequence of non-empty strings")
         slugs = [s.strip() for s in slugs]
         if len(slugs) == 1:
             return (
@@ -389,8 +396,9 @@ class NetBoxGraphQLClient:
         """Fetch all device types and return two lookup indexes.
 
         Args:
-            manufacturer_slugs: Optional list of manufacturer slugs to filter by.
-                When provided, only device types from the specified manufacturers are returned.
+            manufacturer_slugs: Optional sequence (list or tuple) of manufacturer slugs
+                to filter by.  When provided, only device types from the specified
+                manufacturers are returned.
 
         Returns:
             tuple[dict, dict]:
@@ -398,10 +406,10 @@ class NetBoxGraphQLClient:
                 - ``by_slug``: ``{(manufacturer_slug, slug): record}``
 
         Raises:
-            ValueError: If *manufacturer_slugs* is an empty list.
+            ValueError: If *manufacturer_slugs* is an empty sequence.
         """
         if manufacturer_slugs is not None and len(manufacturer_slugs) == 0:
-            raise ValueError("manufacturer_slugs must be None or a non-empty list")
+            raise ValueError("manufacturer_slugs must be None or a non-empty sequence")
 
         var_decl, filter_fragment, extra_vars = self._build_manufacturer_filter(manufacturer_slugs)
 
@@ -452,17 +460,18 @@ class NetBoxGraphQLClient:
         """Fetch all module types and return them indexed by manufacturer slug and model.
 
         Args:
-            manufacturer_slugs: Optional list of manufacturer slugs to filter by.
-                When provided, only module types from the specified manufacturers are returned.
+            manufacturer_slugs: Optional sequence (list or tuple) of manufacturer slugs
+                to filter by.  When provided, only module types from the specified
+                manufacturers are returned.
 
         Returns:
             dict: ``{manufacturer_slug: {model: record}}``
 
         Raises:
-            ValueError: If *manufacturer_slugs* is an empty list.
+            ValueError: If *manufacturer_slugs* is an empty sequence.
         """
         if manufacturer_slugs is not None and len(manufacturer_slugs) == 0:
-            raise ValueError("manufacturer_slugs must be None or a non-empty list")
+            raise ValueError("manufacturer_slugs must be None or a non-empty sequence")
 
         var_decl, filter_fragment, extra_vars = self._build_manufacturer_filter(manufacturer_slugs)
 
@@ -488,7 +497,7 @@ class NetBoxGraphQLClient:
         """
         items = self.query_all(query, list_key="module_type_list", variables=extra_vars or None)
 
-        result = {}
+        result: dict = {}
         for item in items:
             record = _to_dotdict(item)
             mfr_slug = record.manufacturer.slug
@@ -500,17 +509,18 @@ class NetBoxGraphQLClient:
         """Fetch all rack types and return them indexed by manufacturer slug and model.
 
         Args:
-            manufacturer_slugs: Optional list of manufacturer slugs to filter by.
-                When provided, only rack types from the specified manufacturers are returned.
+            manufacturer_slugs: Optional sequence (list or tuple) of manufacturer slugs
+                to filter by.  When provided, only rack types from the specified
+                manufacturers are returned.
 
         Returns:
             dict: ``{manufacturer_slug: {model: record}}``
 
         Raises:
-            ValueError: If *manufacturer_slugs* is an empty list.
+            ValueError: If *manufacturer_slugs* is an empty sequence.
         """
         if manufacturer_slugs is not None and len(manufacturer_slugs) == 0:
-            raise ValueError("manufacturer_slugs must be None or a non-empty list")
+            raise ValueError("manufacturer_slugs must be None or a non-empty sequence")
 
         var_decl, filter_fragment, extra_vars = self._build_manufacturer_filter(manufacturer_slugs)
 
@@ -545,7 +555,7 @@ class NetBoxGraphQLClient:
         }}
         """
         items = self.query_all(query, list_key="rack_type_list", variables=extra_vars or None)
-        result = {}
+        result: dict = {}
         for item in items:
             record = _to_dotdict(item)
             mfr_slug = record.manufacturer.slug
@@ -600,7 +610,7 @@ class NetBoxGraphQLClient:
                 and (i.get("object_type") or {}).get("model") == "moduletype"
             ]
 
-        result = {}
+        result: dict = {}
         for item in items:
             name = item.get("name")
             if not name:
@@ -660,7 +670,7 @@ class NetBoxGraphQLClient:
                 and (i.get("object_type") or {}).get("model") == "moduletype"
             ]
 
-        result = {}
+        result: dict = {}
         for item in items:
             name = item.get("name")
             if not name:
@@ -743,7 +753,8 @@ class NetBoxGraphQLClient:
         # Only a schema rejection means the tier is unsupported. Transport failures
         # propagate: falling back on those queries an older tier against a server that
         # supports the newer one, silently dropping the mappings data.
-        original_exc = last_exc = None
+        original_exc: GraphQLSchemaError | None = None
+        last_exc: GraphQLSchemaError | None = None
         for variant in field_variants:
             try:
                 return self.query_all(
@@ -754,6 +765,8 @@ class NetBoxGraphQLClient:
                 if original_exc is None:
                     original_exc = exc
 
+        if last_exc is None:  # pragma: no cover - every variant list carries at least one entry
+            raise GraphQLError(f"No field variant was attempted for {list_key}")
         if original_exc is last_exc:
             raise last_exc
         raise last_exc from original_exc
@@ -776,13 +789,14 @@ class NetBoxGraphQLClient:
 
         Raises:
             ValueError: If *endpoint_name* is not a recognized component template endpoint.
-            ValueError: If *manufacturer_slug* is an empty string.
+            ValueError: If *manufacturer_slug* is anything but None or a non-blank string.
         """
         component = BY_ENDPOINT.get(endpoint_name)
         if component is None:
             raise ValueError(f"Unknown component endpoint: {endpoint_name}")
 
-        if manufacturer_slug is not None and len(manufacturer_slug) == 0:
+        # A sequence would pass a bare length check and build a filter that matches nothing.
+        if manufacturer_slug is not None and (not isinstance(manufacturer_slug, str) or not manufacturer_slug.strip()):
             raise ValueError("manufacturer_slug must be None or a non-empty string")
 
         fields = component.graphql_fields

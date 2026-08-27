@@ -715,6 +715,24 @@ class TestModuleTypeExport:
         assert items[0].kind == "module-type"
 
 
+class TestVendorSlugNormalization:
+    """vendor_slugs reaches every downstream call, so the Exporter normalizes it once."""
+
+    def _make_exporter(self, tmp_path, vendor_slugs):
+        settings = _make_settings(tmp_path)
+        return Exporter(settings, _make_handle(), str(tmp_path / "extra"), False, vendor_slugs)
+
+    @pytest.mark.parametrize("empty", [(), [], None], ids=["tuple", "list", "none"])
+    def test_empty_selection_becomes_all_vendors(self, tmp_path, empty):
+        """The GraphQL layer rejects an empty sequence, so an empty selection must not reach it."""
+        assert self._make_exporter(tmp_path, empty).vendor_slugs is None
+
+    def test_selection_is_kept_as_a_tuple(self, tmp_path):
+        """--vendors arrives from the CLI as a tuple and stays one."""
+        assert self._make_exporter(tmp_path, ("nokia",)).vendor_slugs == ("nokia",)
+        assert self._make_exporter(tmp_path, ["nokia"]).vendor_slugs == ("nokia",)
+
+
 class TestVendorDirSlugNormalization:
     """Tests for Exporter._vendor_dirs slug-based directory matching."""
 
@@ -725,7 +743,7 @@ class TestVendorDirSlugNormalization:
     def test_single_word_dir_matches_slug(self, tmp_path):
         root = tmp_path / "device-types"
         (root / "Nokia").mkdir(parents=True)
-        exporter = self._make_exporter(tmp_path, ["nokia"])
+        exporter = self._make_exporter(tmp_path, ("nokia",))
         dirs = list(exporter._vendor_dirs(root))
         assert len(dirs) == 1
         assert dirs[0].name == "Nokia"
@@ -734,7 +752,7 @@ class TestVendorDirSlugNormalization:
         """'Extreme Networks' dir must match slug 'extreme-networks'."""
         root = tmp_path / "device-types"
         (root / "Extreme Networks").mkdir(parents=True)
-        exporter = self._make_exporter(tmp_path, ["extreme-networks"])
+        exporter = self._make_exporter(tmp_path, ("extreme-networks",))
         dirs = list(exporter._vendor_dirs(root))
         assert len(dirs) == 1
         assert dirs[0].name == "Extreme Networks"
@@ -743,7 +761,7 @@ class TestVendorDirSlugNormalization:
         root = tmp_path / "device-types"
         (root / "Nokia").mkdir(parents=True)
         (root / "Juniper").mkdir(parents=True)
-        exporter = self._make_exporter(tmp_path, ["nokia"])
+        exporter = self._make_exporter(tmp_path, ("nokia",))
         dirs = list(exporter._vendor_dirs(root))
         assert len(dirs) == 1
         assert dirs[0].name == "Nokia"
