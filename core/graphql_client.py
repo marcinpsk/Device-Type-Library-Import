@@ -363,19 +363,26 @@ class NetBoxGraphQLClient:
         ``extra_variables`` is the dict to pass as ``variables`` to
         :meth:`query_all`.
 
+        This is the one place manufacturer_slugs is validated, for every caller.
+
         Args:
             slugs: ``None`` or a non-empty sequence (list or tuple) of manufacturer
                 slug strings.
 
         Returns:
             tuple[str, str, dict]
+
+        Raises:
+            ValueError: If *slugs* is anything but None or a non-empty sequence of
+                non-blank strings.
         """
-        if not slugs:
+        if slugs is None:
             return "", "", {}
         # A str is itself a Sequence of characters, so reject it before the item check.
         if (
             isinstance(slugs, (str, bytes))
             or not isinstance(slugs, Sequence)
+            or not slugs
             or any(not isinstance(s, str) or not s.strip() for s in slugs)
         ):
             raise ValueError("manufacturer_slugs must be None or a non-empty sequence of non-empty strings")
@@ -406,11 +413,9 @@ class NetBoxGraphQLClient:
                 - ``by_slug``: ``{(manufacturer_slug, slug): record}``
 
         Raises:
-            ValueError: If *manufacturer_slugs* is an empty sequence.
+            ValueError: If *manufacturer_slugs* is anything but None or a non-empty
+                sequence of non-blank strings.
         """
-        if manufacturer_slugs is not None and len(manufacturer_slugs) == 0:
-            raise ValueError("manufacturer_slugs must be None or a non-empty sequence")
-
         var_decl, filter_fragment, extra_vars = self._build_manufacturer_filter(manufacturer_slugs)
 
         query = f"""
@@ -468,11 +473,9 @@ class NetBoxGraphQLClient:
             dict: ``{manufacturer_slug: {model: record}}``
 
         Raises:
-            ValueError: If *manufacturer_slugs* is an empty sequence.
+            ValueError: If *manufacturer_slugs* is anything but None or a non-empty
+                sequence of non-blank strings.
         """
-        if manufacturer_slugs is not None and len(manufacturer_slugs) == 0:
-            raise ValueError("manufacturer_slugs must be None or a non-empty sequence")
-
         var_decl, filter_fragment, extra_vars = self._build_manufacturer_filter(manufacturer_slugs)
 
         query = f"""
@@ -517,11 +520,9 @@ class NetBoxGraphQLClient:
             dict: ``{manufacturer_slug: {model: record}}``
 
         Raises:
-            ValueError: If *manufacturer_slugs* is an empty sequence.
+            ValueError: If *manufacturer_slugs* is anything but None or a non-empty
+                sequence of non-blank strings.
         """
-        if manufacturer_slugs is not None and len(manufacturer_slugs) == 0:
-            raise ValueError("manufacturer_slugs must be None or a non-empty sequence")
-
         var_decl, filter_fragment, extra_vars = self._build_manufacturer_filter(manufacturer_slugs)
 
         query = f"""

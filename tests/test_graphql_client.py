@@ -1728,6 +1728,25 @@ class TestBuildManufacturerFilter:
         with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty"):
             client._build_manufacturer_filter(("cisco", "   "))
 
+    @pytest.mark.parametrize("slugs", [5, 5.0, object()], ids=["int", "float", "object"])
+    def test_non_sequence_raises_value_error(self, slugs):
+        """Garbage input is a caller error, not a TypeError from a length check."""
+        client = self._make_client()
+        with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty"):
+            client._build_manufacturer_filter(slugs)
+
+    @pytest.mark.parametrize("slugs", [(), []], ids=["tuple", "list"])
+    def test_empty_sequence_raises_value_error(self, slugs):
+        """An empty selection would silently widen the query to every manufacturer."""
+        client = self._make_client()
+        with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty"):
+            client._build_manufacturer_filter(slugs)
+
+    def test_none_builds_no_filter(self):
+        """Only None means "every manufacturer"."""
+        client = self._make_client()
+        assert client._build_manufacturer_filter(None) == ("", "", {})
+
 
 class TestVendorScopedDeviceTypes:
     """Tests for vendor-scoped filtering in get_device_types()."""
@@ -1874,6 +1893,12 @@ class TestVendorScopedDeviceTypes:
         with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty"):
             client.get_device_types(manufacturer_slugs=slugs)
 
+    def test_non_sequence_raises_value_error(self):
+        """Garbage input must fail as a caller error, not as a TypeError from a length check."""
+        client = self._make_client()
+        with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty"):
+            client.get_device_types(manufacturer_slugs=5)
+
 
 class TestVendorScopedModuleTypes:
     """Tests for vendor-scoped filtering in get_module_types()."""
@@ -1967,6 +1992,12 @@ class TestVendorScopedModuleTypes:
         with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty"):
             client.get_module_types(manufacturer_slugs=slugs)
 
+    def test_non_sequence_raises_value_error(self):
+        """Garbage input must fail as a caller error, not as a TypeError from a length check."""
+        client = self._make_client()
+        with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty"):
+            client.get_module_types(manufacturer_slugs=5)
+
 
 class TestVendorScopedRackTypes:
     """Tests for vendor-scoped filtering in get_rack_types()."""
@@ -2025,6 +2056,12 @@ class TestVendorScopedRackTypes:
         client = self._make_client()
         with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty"):
             client.get_rack_types(manufacturer_slugs=slugs)
+
+    def test_non_sequence_raises_value_error(self):
+        """Garbage input must fail as a caller error, not as a TypeError from a length check."""
+        client = self._make_client()
+        with pytest.raises(ValueError, match="manufacturer_slugs must be None or a non-empty"):
+            client.get_rack_types(manufacturer_slugs=5)
 
 
 class TestVendorScopedComponentTemplates:
