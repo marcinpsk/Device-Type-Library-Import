@@ -2,6 +2,23 @@
 
 <!-- version list -->
 
+## v1.8.4 (2026-09-01)
+
+### Bug Fixes
+
+- **export**: Accept vendor tuples in the graphql manufacturer filter (#128, [`668a5c2`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/668a5c20c98d9807ad18aa574643d60d632ebe68))
+
+
+### Chores
+
+- **deps-dev**: Bump ruff in the python-deps group (#129, [`22898fc`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/22898fcb52b9c8fd4cd03617b07b5f145b875be1))
+
+
+
+### Contributors
+
+@dependabot[bot], @marcinpsk
+
 ## v1.8.3 (2026-08-25)
 
 ### Bug Fixes
