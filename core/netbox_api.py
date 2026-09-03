@@ -33,6 +33,7 @@ from core.schema_reader import load_properties_for_type
 from core.update_failure_resolver import (
     FailureKind,
     classify_device_type_update_failure,
+    extract_error_payload,
 )
 
 
@@ -2197,12 +2198,18 @@ class DeviceTypes:
                 self.components.invalidate(cache_name, parent_type, parent_id)
             except pynetbox.RequestError as excep:
                 context_str = f" (Context: {context})" if context else ""
-                if isinstance(excep.error, list):
-                    for i, error in enumerate(excep.error):
-                        if error:
-                            item_name = to_create[i].get("name", "Unknown") if i < len(to_create) else f"index {i}"
-                            self.handle.log(f"Failed to create {component_name} '{item_name}': {error}{context_str}")
-                else:
+                # NetBox answers a rejected bulk create with one error object per submitted
+                # item, positionally aligned, so name the items it actually rejected.
+                payload = extract_error_payload(excep.error)
+                per_item = payload if isinstance(payload, list) and len(payload) == len(to_create) else []
+                reported = 0
+                for item, error in zip(to_create, per_item):
+                    if error:
+                        reported += 1
+                        self.handle.log(
+                            f"Failed to create {component_name} '{item.get('name', 'Unknown')}': {error}{context_str}"
+                        )
+                if not reported:
                     failed_items = [x["name"] for x in to_create]
                     self.handle.log(
                         f"Error '{excep.error}' creating {component_name}. Items: {failed_items}{context_str}"

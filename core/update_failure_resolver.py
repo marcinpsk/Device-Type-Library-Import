@@ -81,7 +81,7 @@ _SUBDEVICE_ROLE_MARKERS = (
 )
 
 
-def _extract_error_payload(error: Any) -> Any:
+def extract_error_payload(error: Any) -> Any:
     """Best-effort decode of ``pynetbox.RequestError.error`` into a dict/str.
 
     pynetbox surfaces the body either pre-parsed (dict) or as a JSON string;
@@ -198,7 +198,7 @@ def classify_device_type_update_failure(
         A :class:`FailureResolution` describing the constraint and (when safe)
         the steps required to clear it.
     """
-    payload = _extract_error_payload(error)
+    payload = extract_error_payload(error)
 
     if not _matches_subdevice_role_constraint(payload):
         return FailureResolution(

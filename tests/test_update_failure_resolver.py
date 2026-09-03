@@ -9,7 +9,7 @@ import pytest
 
 from core.update_failure_resolver import (
     FailureKind,
-    _extract_error_payload,
+    extract_error_payload,
     classify_device_type_update_failure,
 )
 
@@ -198,7 +198,7 @@ class _BrokenBytes(bytes):
 
 def test_extract_error_payload_returns_original_bytes_on_decode_failure():
     payload = _BrokenBytes(b"bad")
-    assert _extract_error_payload(payload) is payload
+    assert extract_error_payload(payload) is payload
 
 
 @pytest.mark.parametrize(

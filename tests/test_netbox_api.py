@@ -687,12 +687,33 @@ class TestFrontPortRecordWithMappings:
         assert wrapped.name == "FP1"
 
 
+def _request_error(body: bytes):
+    """Build a real pynetbox.RequestError from a real HTTP response body.
+
+    pynetbox sets ``RequestError.error`` to ``response.text``, so it is always a
+    string.  Building the error from a real ``requests.Response`` keeps the test
+    honest: a MagicMock response makes ``.error`` a MagicMock and lets the
+    production branch under test go unexercised.
+    """
+    import pynetbox as real_pynb
+    import requests
+
+    response = requests.Response()
+    response.status_code = 400
+    response.reason = "Bad Request"
+    response._content = body
+    response.url = "http://netbox.local/api/dcim/interface-templates/"
+    response.request = requests.Request("POST", response.url).prepare()
+    return real_pynb.RequestError(response)
+
+
 class TestCreateGenericError:
     """Tests for TestCreateGenericError."""
 
-    def test_list_error_logs_each_item(
+    def test_per_item_error_names_only_the_failing_item(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
     ):
+        """A bulk create rejected for one item names that item, not the whole batch."""
         import pynetbox as real_pynb
 
         mock_pynetbox.RequestError = real_pynb.RequestError
@@ -700,9 +721,65 @@ class TestCreateGenericError:
         dt = make_device_types(nb_api=mock_nb_api)
         dt.components.record("interface_templates", "device", 1, {})
 
-        err = real_pynb.RequestError(MagicMock(status_code=400, content=b'{"detail":"bad"}'))
-        err.error = ["Name already exists", ""]
-        mock_nb_api.dcim.interface_templates.create.side_effect = err
+        mock_nb_api.dcim.interface_templates.create.side_effect = _request_error(
+            b'[{"rf_role":["Wireless role may be set only on wireless interfaces."]},{},{}]'
+        )
+
+        dt._create_generic(
+            BY_YAML_KEY["interfaces"],
+            [{"name": "Uplink"}, {"name": "Downlink 1"}, {"name": "Downlink 2"}],
+            1,
+            parent_type="device",
+            context="EAP725-Wall.yaml",
+        )
+
+        messages = [call.args[0] for call in mock_handle.log.call_args_list]
+        assert len(messages) == 1
+        assert "Uplink" in messages[0]
+        assert "Wireless role may be set only on wireless interfaces." in messages[0]
+        assert "Downlink 1" not in messages[0]
+        assert "Downlink 2" not in messages[0]
+        assert "EAP725-Wall.yaml" in messages[0]
+
+    def test_per_item_error_reports_every_failing_item(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """Each rejected item gets its own line; accepted items get none."""
+        import pynetbox as real_pynb
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        dt = make_device_types(nb_api=mock_nb_api)
+        dt.components.record("interface_templates", "device", 1, {})
+
+        mock_nb_api.dcim.interface_templates.create.side_effect = _request_error(
+            b'[{"name":["This field must be unique."]},{},{"type":["Invalid choice."]}]'
+        )
+
+        dt._create_generic(
+            BY_YAML_KEY["interfaces"],
+            [{"name": "eth0"}, {"name": "eth1"}, {"name": "eth2"}],
+            1,
+            parent_type="device",
+        )
+
+        messages = [call.args[0] for call in mock_handle.log.call_args_list]
+        assert len(messages) == 2
+        assert "eth0" in messages[0] and "This field must be unique." in messages[0]
+        assert "eth2" in messages[1] and "Invalid choice." in messages[1]
+
+    def test_non_list_error_logs_failed_items(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """A whole-request error (not per item) falls back to listing every item."""
+        import pynetbox as real_pynb
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        dt = make_device_types(nb_api=mock_nb_api)
+        dt.components.record("interface_templates", "device", 1, {})
+
+        mock_nb_api.dcim.interface_templates.create.side_effect = _request_error(b'{"detail":"Something went wrong"}')
 
         dt._create_generic(
             BY_YAML_KEY["interfaces"],
@@ -710,11 +787,16 @@ class TestCreateGenericError:
             1,
             parent_type="device",
         )
-        mock_handle.log.assert_called()
 
-    def test_string_error_logs_failed_items(
+        messages = [call.args[0] for call in mock_handle.log.call_args_list]
+        assert len(messages) == 1
+        assert "Something went wrong" in messages[0]
+        assert "['eth0', 'eth1']" in messages[0]
+
+    def test_length_mismatch_falls_back_to_whole_batch(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
     ):
+        """A list that does not line up with the submitted items is not mapped by index."""
         import pynetbox as real_pynb
 
         mock_pynetbox.RequestError = real_pynb.RequestError
@@ -722,17 +804,42 @@ class TestCreateGenericError:
         dt = make_device_types(nb_api=mock_nb_api)
         dt.components.record("interface_templates", "device", 1, {})
 
-        err = real_pynb.RequestError(MagicMock(status_code=400, content=b'{"detail":"bad"}'))
-        err.error = "Something went wrong"
-        mock_nb_api.dcim.interface_templates.create.side_effect = err
+        mock_nb_api.dcim.interface_templates.create.side_effect = _request_error(b'["Unrelated top-level message"]')
 
         dt._create_generic(
             BY_YAML_KEY["interfaces"],
-            [{"name": "eth0"}],
+            [{"name": "eth0"}, {"name": "eth1"}],
             1,
             parent_type="device",
         )
-        mock_handle.log.assert_called()
+
+        messages = [call.args[0] for call in mock_handle.log.call_args_list]
+        assert len(messages) == 1
+        assert "['eth0', 'eth1']" in messages[0]
+
+    def test_all_empty_list_still_reports_the_batch(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """A per-item list carrying no message must not swallow the failure."""
+        import pynetbox as real_pynb
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        dt = make_device_types(nb_api=mock_nb_api)
+        dt.components.record("interface_templates", "device", 1, {})
+
+        mock_nb_api.dcim.interface_templates.create.side_effect = _request_error(b"[{},{}]")
+
+        dt._create_generic(
+            BY_YAML_KEY["interfaces"],
+            [{"name": "eth0"}, {"name": "eth1"}],
+            1,
+            parent_type="device",
+        )
+
+        messages = [call.args[0] for call in mock_handle.log.call_args_list]
+        assert len(messages) == 1
+        assert "['eth0', 'eth1']" in messages[0]
 
 
 class TestRemoveComponents:
