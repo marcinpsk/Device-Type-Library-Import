@@ -7,6 +7,7 @@ import pytest
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from unittest.mock import MagicMock, patch
 from core.component_registry import BY_YAML_KEY, COMPONENT_TYPES
+from core.outcomes import EntityKind, Outcome
 from core.netbox_api import (
     NetBox,
     NetBoxError,
@@ -15,7 +16,7 @@ from core.netbox_api import (
     _delete_image_attachment,
     _FrontPortRecordWithMappings,
 )
-from helpers import paginate_dispatch
+from helpers import paginate_dispatch, recording_handle
 
 
 # All component list keys used by the GraphQL client for empty-response fallback.
@@ -687,12 +688,33 @@ class TestFrontPortRecordWithMappings:
         assert wrapped.name == "FP1"
 
 
+def _request_error(body: bytes):
+    """Build a real pynetbox.RequestError from a real HTTP response body.
+
+    pynetbox sets ``RequestError.error`` to ``response.text``, so it is always a
+    string.  Building the error from a real ``requests.Response`` keeps the test
+    honest: a MagicMock response makes ``.error`` a MagicMock and lets the
+    production branch under test go unexercised.
+    """
+    import pynetbox as real_pynb
+    import requests
+
+    response = requests.Response()
+    response.status_code = 400
+    response.reason = "Bad Request"
+    response._content = body
+    response.url = "http://netbox.local/api/dcim/interface-templates/"
+    response.request = requests.Request("POST", response.url).prepare()
+    return real_pynb.RequestError(response)
+
+
 class TestCreateGenericError:
     """Tests for TestCreateGenericError."""
 
-    def test_list_error_logs_each_item(
+    def test_per_item_error_names_only_the_failing_item(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
     ):
+        """A bulk create rejected for one item names that item, not the whole batch."""
         import pynetbox as real_pynb
 
         mock_pynetbox.RequestError = real_pynb.RequestError
@@ -700,9 +722,65 @@ class TestCreateGenericError:
         dt = make_device_types(nb_api=mock_nb_api)
         dt.components.record("interface_templates", "device", 1, {})
 
-        err = real_pynb.RequestError(MagicMock(status_code=400, content=b'{"detail":"bad"}'))
-        err.error = ["Name already exists", ""]
-        mock_nb_api.dcim.interface_templates.create.side_effect = err
+        mock_nb_api.dcim.interface_templates.create.side_effect = _request_error(
+            b'[{"rf_role":["Wireless role may be set only on wireless interfaces."]},{},{}]'
+        )
+
+        dt._create_generic(
+            BY_YAML_KEY["interfaces"],
+            [{"name": "Uplink"}, {"name": "Downlink 1"}, {"name": "Downlink 2"}],
+            1,
+            parent_type="device",
+            context="EAP725-Wall.yaml",
+        )
+
+        messages = [call.args[0] for call in mock_handle.log.call_args_list]
+        assert len(messages) == 1
+        assert "Uplink" in messages[0]
+        assert "Wireless role may be set only on wireless interfaces." in messages[0]
+        assert "Downlink 1" not in messages[0]
+        assert "Downlink 2" not in messages[0]
+        assert "EAP725-Wall.yaml" in messages[0]
+
+    def test_per_item_error_reports_every_failing_item(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """Each rejected item gets its own line; accepted items get none."""
+        import pynetbox as real_pynb
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        dt = make_device_types(nb_api=mock_nb_api)
+        dt.components.record("interface_templates", "device", 1, {})
+
+        mock_nb_api.dcim.interface_templates.create.side_effect = _request_error(
+            b'[{"name":["This field must be unique."]},{},{"type":["Invalid choice."]}]'
+        )
+
+        dt._create_generic(
+            BY_YAML_KEY["interfaces"],
+            [{"name": "eth0"}, {"name": "eth1"}, {"name": "eth2"}],
+            1,
+            parent_type="device",
+        )
+
+        messages = [call.args[0] for call in mock_handle.log.call_args_list]
+        assert len(messages) == 2
+        assert "eth0" in messages[0] and "This field must be unique." in messages[0]
+        assert "eth2" in messages[1] and "Invalid choice." in messages[1]
+
+    def test_non_list_error_logs_failed_items(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """A whole-request error (not per item) falls back to listing every item."""
+        import pynetbox as real_pynb
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        dt = make_device_types(nb_api=mock_nb_api)
+        dt.components.record("interface_templates", "device", 1, {})
+
+        mock_nb_api.dcim.interface_templates.create.side_effect = _request_error(b'{"detail":"Something went wrong"}')
 
         dt._create_generic(
             BY_YAML_KEY["interfaces"],
@@ -710,11 +788,16 @@ class TestCreateGenericError:
             1,
             parent_type="device",
         )
-        mock_handle.log.assert_called()
 
-    def test_string_error_logs_failed_items(
+        messages = [call.args[0] for call in mock_handle.log.call_args_list]
+        assert len(messages) == 1
+        assert "Something went wrong" in messages[0]
+        assert "['eth0', 'eth1']" in messages[0]
+
+    def test_length_mismatch_falls_back_to_whole_batch(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
     ):
+        """A list that does not line up with the submitted items is not mapped by index."""
         import pynetbox as real_pynb
 
         mock_pynetbox.RequestError = real_pynb.RequestError
@@ -722,17 +805,42 @@ class TestCreateGenericError:
         dt = make_device_types(nb_api=mock_nb_api)
         dt.components.record("interface_templates", "device", 1, {})
 
-        err = real_pynb.RequestError(MagicMock(status_code=400, content=b'{"detail":"bad"}'))
-        err.error = "Something went wrong"
-        mock_nb_api.dcim.interface_templates.create.side_effect = err
+        mock_nb_api.dcim.interface_templates.create.side_effect = _request_error(b'["Unrelated top-level message"]')
 
         dt._create_generic(
             BY_YAML_KEY["interfaces"],
-            [{"name": "eth0"}],
+            [{"name": "eth0"}, {"name": "eth1"}],
             1,
             parent_type="device",
         )
-        mock_handle.log.assert_called()
+
+        messages = [call.args[0] for call in mock_handle.log.call_args_list]
+        assert len(messages) == 1
+        assert "['eth0', 'eth1']" in messages[0]
+
+    def test_all_empty_list_still_reports_the_batch(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """A per-item list carrying no message must not swallow the failure."""
+        import pynetbox as real_pynb
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        dt = make_device_types(nb_api=mock_nb_api)
+        dt.components.record("interface_templates", "device", 1, {})
+
+        mock_nb_api.dcim.interface_templates.create.side_effect = _request_error(b"[{},{}]")
+
+        dt._create_generic(
+            BY_YAML_KEY["interfaces"],
+            [{"name": "eth0"}, {"name": "eth1"}],
+            1,
+            parent_type="device",
+        )
+
+        messages = [call.args[0] for call in mock_handle.log.call_args_list]
+        assert len(messages) == 1
+        assert "['eth0', 'eth1']" in messages[0]
 
 
 class TestRemoveComponents:
@@ -1769,7 +1877,7 @@ class TestCreateDeviceTypesUpdatePath:
         """RequestError during property update is caught and logged.
 
         Regression: when the property PATCH fails AND there are no component
-        changes, ``device_types_failed`` must be incremented and the misleading
+        changes, a DEVICE_TYPE failure must be recorded and the misleading
         "Device Type Updated" log MUST NOT be emitted.
         """
         import pynetbox as real_pynb2
@@ -1812,7 +1920,7 @@ class TestCreateDeviceTypesUpdatePath:
         # Error path was logged.
         mock_handle.log.assert_called()
         # Failure surfaced via dedicated counter so summary can show it.
-        assert nb.counter["device_types_failed"] == 1
+        assert len([r for r in nb.outcomes.failures() if r.kind == EntityKind.DEVICE_TYPE]) == 1
         # Counters that imply a successful PATCH must NOT be bumped.
         assert nb.counter["properties_updated"] == 0
         # "Device Type Updated" is misleading when nothing was applied — must
@@ -1825,7 +1933,6 @@ class TestCreateDeviceTypesUpdatePath:
         # The failure log must surface the model so operators can find it.
         assert any("Device Type Update Failed" in msg and "TestSwitch" in msg for msg in all_calls)
         # Outcome.FAILED must also be recorded in the registry so the end-of-run report reflects it.
-        from core.outcomes import EntityKind, Outcome
 
         failures = nb.outcomes.failures()
         assert len(failures) == 1
@@ -1915,14 +2022,13 @@ class TestCreateDeviceTypesUpdatePath:
         # PATCH must have been attempted exactly once (no retry).
         mock_nb_api.dcim.device_types.update.assert_called_once()
         # Failure counter bumped, success counter not.
-        assert nb.counter["device_types_failed"] == 1
+        assert len([r for r in nb.outcomes.failures() if r.kind == EntityKind.DEVICE_TYPE]) == 1
         assert nb.counter["properties_updated"] == 0
         # Hint mentions the flag and the blocking template.
         all_logs = [c.args[0] for c in mock_handle.log.call_args_list]
         assert any("--force-resolve-conflicts" in m for m in all_logs), all_logs
         assert any("module-bay-1" in m for m in all_logs), all_logs
         # Failure recorded into the OutcomeRegistry with structured context.
-        from core.outcomes import EntityKind, Outcome
 
         failures = nb.outcomes.failures()
         assert len(failures) == 1
@@ -1947,7 +2053,7 @@ class TestCreateDeviceTypesUpdatePath:
         blocking_template.delete.assert_called_once()
         assert mock_nb_api.dcim.device_types.update.call_count == 2
         assert nb.counter["properties_updated"] == 1
-        assert nb.counter["device_types_failed"] == 0
+        assert [r for r in nb.outcomes.failures() if r.kind == EntityKind.DEVICE_TYPE] == []
         # Successful retry path must NOT record a failure into the registry.
         assert nb.outcomes.failures() == []
 
@@ -1968,7 +2074,7 @@ class TestCreateDeviceTypesUpdatePath:
         blocking_template.delete.assert_called_once()
         assert mock_nb_api.dcim.device_types.update.call_count == 2
         assert nb.counter["properties_updated"] == 0
-        assert nb.counter["device_types_failed"] == 1
+        assert len([r for r in nb.outcomes.failures() if r.kind == EntityKind.DEVICE_TYPE]) == 1
         # The failed retry must surface in the structured failure report exactly once.
         failures = nb.outcomes.failures()
         assert len(failures) == 1
@@ -1993,7 +2099,7 @@ class TestCreateDeviceTypesUpdatePath:
         # Safety gate honoured: no delete, no retry.
         blocking_template.delete.assert_not_called()
         mock_nb_api.dcim.device_types.update.assert_called_once()
-        assert nb.counter["device_types_failed"] == 1
+        assert len([r for r in nb.outcomes.failures() if r.kind == EntityKind.DEVICE_TYPE]) == 1
         all_logs = [c.args[0] for c in mock_handle.log.call_args_list]
         assert any("router-1" in m for m in all_logs), all_logs
 
@@ -2046,10 +2152,10 @@ class TestCreateDeviceTypesUpdatePath:
         assert nb.counter["device_types_component_updates"] == 1
         assert nb.counter.get("properties_updated", 0) == 0
 
-    def test_component_changes_all_fail_increments_device_types_failed(
+    def test_component_changes_all_fail_records_a_device_type_failure(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
     ):
-        """When component API calls are issued but all fail, device_types_failed must be incremented.
+        """When component API calls are issued but all fail, a DEVICE_TYPE failure must be recorded.
 
         Regression: the old code set component_attempted by comparing counters
         before/after the API calls, so a total component failure was silently
@@ -2061,7 +2167,6 @@ class TestCreateDeviceTypesUpdatePath:
             ComponentChange,
             DeviceTypeChange,
         )
-        from core.outcomes import EntityKind, Outcome
 
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
@@ -2096,7 +2201,7 @@ class TestCreateDeviceTypesUpdatePath:
         nb.create_device_types([device_type], update=True, change_report=report)
 
         dt.update_components.assert_called_once()
-        assert nb.counter["device_types_failed"] == 1
+        assert len([r for r in nb.outcomes.failures() if r.kind == EntityKind.DEVICE_TYPE]) == 1
         assert nb.counter.get("device_types_component_updates", 0) == 0
         failures = nb.outcomes.failures()
         assert len(failures) == 1
@@ -2119,7 +2224,6 @@ class TestCreateDeviceTypesUpdatePath:
             ComponentChange,
             DeviceTypeChange,
         )
-        from core.outcomes import EntityKind, Outcome
 
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
@@ -2161,7 +2265,7 @@ class TestCreateDeviceTypesUpdatePath:
         nb.create_device_types([device_type], update=True, change_report=report)
 
         dt.update_components.assert_called_once()
-        assert nb.counter["device_types_failed"] == 0
+        assert [r for r in nb.outcomes.failures() if r.kind == EntityKind.DEVICE_TYPE] == []
         assert nb.counter.get("device_types_component_updates", 0) == 1
         partials = nb.outcomes.partials()
         assert len(partials) == 1
@@ -2216,6 +2320,43 @@ class TestCreateDeviceTypesUpdatePath:
         nb.create_device_types([device_type], update=True, change_report=report)
         assert nb.counter.get("properties_updated", 0) == 0
         assert nb.counter["device_types_component_updates"] == 1
+
+    def test_create_failure_reaches_the_end_of_run_failure_report(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """A device type that fails to be CREATED must appear in the failure report.
+
+        Only the update path recorded outcomes, so a rejected create was logged
+        inline and then vanished from the end-of-run summary.
+        """
+        import pynetbox as real_pynb
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+        mock_nb_api.dcim.device_types.create.side_effect = _request_error(
+            b"{\"manufacturer\":[\"Related object not found using the provided attributes: {'slug': 'ribbon'}\"]}"
+        )
+
+        dt = make_device_types(nb_api=mock_nb_api)
+        dt.existing_device_types = {}
+        dt.existing_device_types_by_slug = {}
+        nb = NetBox(mock_settings, mock_handle)
+        nb.device_types = dt
+
+        device_type = {
+            "manufacturer": {"slug": "ribbon"},
+            "model": "SBC 5400",
+            "slug": "ribbon-communications-sbc-5400",
+            "src": "/repo/device-types/Ribbon Communications/SBC-5400.yaml",
+        }
+        nb.create_device_types([device_type], only_new=True)
+
+        report = "\n".join(nb.outcomes.render_failure_report())
+        assert "FAILED / PARTIAL UPDATE REPORT" in report
+        assert "ribbon/SBC 5400" in report
+        assert "Related object not found" in report
+        assert len([r for r in nb.outcomes.failures() if r.kind == EntityKind.DEVICE_TYPE]) == 1
 
     def test_update_verbose_log_when_change_applied(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
@@ -6185,7 +6326,7 @@ class TestAdditionalModuleTypeCoverage:
         )
 
         nb.device_types.ensure_components_ready.assert_called_once_with(manufacturer_slug="cisco")
-        assert nb.counter["module_update_failed"] == 1
+        assert len([r for r in nb.outcomes.failures() if r.kind == EntityKind.MODULE_TYPE]) == 1
         assert nb.outcomes.failures()[0].reason == "Scalar PATCH failed; no component changes detected."
 
     def test_apply_module_type_component_updates_marks_partial_on_partial_component_success(
@@ -6214,7 +6355,7 @@ class TestAdditionalModuleTypeCoverage:
             {"manufacturer": {"slug": "cisco"}}, module_type_res, False, False, patch_ok=True
         )
 
-        assert nb.counter["module_partial_update"] == 1
+        assert len([r for r in nb.outcomes.partials() if r.kind == EntityKind.MODULE_TYPE]) == 1
 
     def test_apply_module_type_component_updates_marks_partial_when_properties_only_succeed(
         self, mock_settings, mock_pynetbox, mock_handle
@@ -6235,7 +6376,7 @@ class TestAdditionalModuleTypeCoverage:
             {"manufacturer": {"slug": "cisco"}}, module_type_res, True, False, patch_ok=True
         )
 
-        assert nb.counter["module_partial_update"] == 1
+        assert len([r for r in nb.outcomes.partials() if r.kind == EntityKind.MODULE_TYPE]) == 1
 
     def test_apply_module_type_component_updates_records_failed_when_no_changes_apply(
         self, mock_settings, mock_pynetbox, mock_handle
@@ -6255,7 +6396,7 @@ class TestAdditionalModuleTypeCoverage:
             {"manufacturer": {"slug": "cisco"}}, module_type_res, False, False, patch_ok=False
         )
 
-        assert nb.counter["module_update_failed"] == 1
+        assert len([r for r in nb.outcomes.failures() if r.kind == EntityKind.MODULE_TYPE]) == 1
         assert nb.outcomes.failures()[0].reason == "Scalar PATCH failed; no component changes were actionable."
 
 
@@ -6952,7 +7093,467 @@ class TestProcessSingleModuleTypeRemoveComponents:
         assert result is True
         nb.device_types.remove_components.assert_called_once()
         assert nb.counter["module_updated"] == 0
-        assert nb.counter["module_update_failed"] == 1
+        assert len([r for r in nb.outcomes.failures() if r.kind == EntityKind.MODULE_TYPE]) == 1
         failures = nb.outcomes.failures()
         assert len(failures) == 1
         assert "CM-Fail-Patch" in failures[0].identity
+
+
+class TestFailuresReachTheRunReport:
+    """Every failure path must reach the end-of-run FAILED / PARTIAL report."""
+
+    def _netbox(self, mock_settings, mock_handle, mock_pynetbox):
+        import pynetbox as real_pynb
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_pynetbox.api.return_value.version = "4.1"
+        return NetBox(mock_settings, mock_handle)
+
+    def test_rack_type_create_failure_is_reported(self, mock_settings, mock_pynetbox, mock_handle):
+        """A rejected rack-type create must appear in the report, not just inline."""
+        nb = self._netbox(mock_settings, mock_handle, mock_pynetbox)
+        mock_pynetbox.api.return_value.dcim.rack_types.create.side_effect = _request_error(
+            b'{"description":["Ensure this field has no more than 200 characters."]}'
+        )
+        rack_type = {
+            "manufacturer": {"slug": "lenovo"},
+            "model": "1410HPB",
+            "slug": "lenovo-1410hpb",
+            "src": "/repo/rack-types/Lenovo/1410HPB.yaml",
+        }
+        nb.create_rack_types([rack_type], all_rack_types={})
+
+        report = "\n".join(nb.outcomes.render_failure_report())
+        assert "[rack_type] lenovo/1410HPB" in report
+        assert "no more than 200 characters" in report
+
+    def test_module_type_create_failure_is_reported(self, mock_settings, mock_pynetbox, mock_handle):
+        """A rejected module-type create must appear in the report."""
+        nb = self._netbox(mock_settings, mock_handle, mock_pynetbox)
+        mock_pynetbox.api.return_value.dcim.module_types.create.side_effect = _request_error(
+            b'{"model":["This field may not be blank."]}'
+        )
+        curr_mt = {"manufacturer": {"slug": "panduit"}, "model": "FAP6WBUSC", "slug": "fap6wbusc"}
+
+        result = nb._process_single_module_type(
+            curr_mt, "/repo/module-types/Panduit/FAP6WBUSC.yaml", {}, {}, only_new=False
+        )
+        assert result is False
+
+        report = "\n".join(nb.outcomes.render_failure_report())
+        assert "[module_type] panduit/FAP6WBUSC" in report
+        assert "may not be blank" in report
+
+    def test_rack_type_update_failure_is_reported(self, mock_settings, mock_pynetbox, mock_handle):
+        """A rejected rack-type update must appear in the report."""
+        from core.graphql_client import DotDict
+
+        nb = self._netbox(mock_settings, mock_handle, mock_pynetbox)
+        mock_pynetbox.api.return_value.dcim.rack_types.update.side_effect = _request_error(
+            b'{"u_height":["Invalid value."]}'
+        )
+        existing = DotDict({"id": 7, "model": "1410HPB", "u_height": 40})
+        rack_type = {
+            "manufacturer": {"slug": "lenovo"},
+            "model": "1410HPB",
+            "slug": "lenovo-1410hpb",
+            "u_height": 42,
+            "src": "/repo/rack-types/Lenovo/1410HPB.yaml",
+        }
+        nb.create_rack_types([rack_type], only_new=False, all_rack_types={"lenovo": {"1410HPB": existing}})
+
+        report = "\n".join(nb.outcomes.render_failure_report())
+        assert "[rack_type] lenovo/1410HPB" in report
+        assert "Invalid value." in report
+
+
+class TestSummaryWordingMatchesTheFailedOperation:
+    """The headline failure lines count creates too, so they must not blame an update."""
+
+    def _summary_text(self, nb):
+        """Render the real end-of-run summary for *nb* and return it as one string."""
+        from datetime import datetime
+        from types import SimpleNamespace
+
+        from core.import_run import RunSummary, _log_run_summary
+
+        handle, console = recording_handle()
+        summary = RunSummary.capture(nb, SimpleNamespace(duplicate_definitions=[]), datetime.now())
+        _log_run_summary(handle, summary)
+        return "\n".join(console.lines)
+
+    def test_device_type_create_failure_is_not_called_an_update_failure(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """Ribbon's SBC 5400 fails to CREATE; the headline must not blame an update."""
+        import pynetbox as real_pynb
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+        mock_nb_api.dcim.device_types.create.side_effect = _request_error(
+            b'{"manufacturer":["Related object not found using the provided attributes: slug ribbon"]}'
+        )
+
+        dt = make_device_types(nb_api=mock_nb_api)
+        dt.existing_device_types = {}
+        dt.existing_device_types_by_slug = {}
+        nb = NetBox(mock_settings, mock_handle)
+        nb.device_types = dt
+        nb.create_device_types(
+            [
+                {
+                    "manufacturer": {"slug": "ribbon"},
+                    "model": "SBC 5400",
+                    "slug": "ribbon-communications-sbc-5400",
+                    "src": "/repo/device-types/Ribbon Communications/SBC-5400.yaml",
+                }
+            ],
+            only_new=True,
+        )
+
+        text = self._summary_text(nb)
+        assert "1 device types FAILED to create or update" in text
+        assert "FAILED to update" not in text
+
+    def test_module_type_create_failure_is_not_called_an_update_failure(
+        self, mock_settings, mock_pynetbox, mock_handle
+    ):
+        """A rejected module-type create must not be counted as an update failure."""
+        import pynetbox as real_pynb
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_pynetbox.api.return_value.version = "4.1"
+        mock_pynetbox.api.return_value.dcim.module_types.create.side_effect = _request_error(
+            b'{"model":["This field may not be blank."]}'
+        )
+        nb = NetBox(mock_settings, mock_handle)
+        nb.modules = True
+        nb._process_single_module_type(
+            {"manufacturer": {"slug": "panduit"}, "model": "FAP6WBUSC", "slug": "fap6wbusc"},
+            "/repo/module-types/Panduit/FAP6WBUSC.yaml",
+            {},
+            {},
+            only_new=False,
+        )
+
+        text = self._summary_text(nb)
+        assert "1 modules failed to create or update" in text
+        assert "modules failed to update" not in text
+
+
+class TestSkippedComponentReasonReachesTheReport:
+    """A component silently dropped during link resolution must reach the outcome reason."""
+
+    def _dt(self, mock_pynetbox, make_device_types, parent_id=1):
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+        dt = make_device_types(nb_api=mock_nb_api)
+        return dt
+
+    def test_unresolvable_power_port_reaches_the_report(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """The Powerman case: an outlet dropped for a bad power_port must name the reason."""
+        import pynetbox as real_pynb
+        from core.change_detector import ChangeReport, ChangeType, ComponentChange, DeviceTypeChange
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+
+        dt = make_device_types(nb_api=mock_nb_api)
+        inlet = MagicMock()
+        inlet.id = 11
+        inlet.name = "Input"
+        dt.components.record("power_port_templates", "device", 5870, {"Input": inlet})
+        dt.components.record("power_outlet_templates", "device", 5870, {})
+
+        existing_dt = MagicMock()
+        existing_dt.id = 5870
+        existing_dt.model = "Online-3000"
+        existing_dt.manufacturer.name = "Powerman"
+        dt.existing_device_types = {("powerman", "Online-3000"): existing_dt}
+        dt.existing_device_types_by_slug = {}
+
+        nb = NetBox(mock_settings, mock_handle)
+        nb.device_types = dt
+
+        change = DeviceTypeChange(
+            manufacturer_slug="powerman",
+            model="Online-3000",
+            slug="powerman-online-3000",
+            component_changes=[ComponentChange("power-outlets", "Hardwire", ChangeType.COMPONENT_ADDED)],
+        )
+        device_type = {
+            "manufacturer": {"slug": "powerman"},
+            "model": "Online-3000",
+            "slug": "powerman-online-3000",
+            "power-outlets": [{"name": "Hardwire", "type": "iec-60320-c13", "power_port": "hardwired"}],
+            "src": "/repo/device-types/Powerman/Online-3000.yaml",
+        }
+        nb.create_device_types([device_type], update=True, change_report=ChangeReport(modified_device_types=[change]))
+
+        report = "\n".join(nb.outcomes.render_failure_report())
+        assert "Powerman/Online-3000" in report
+        assert "Could not find Power Port" in report
+        assert "hardwired" in report
+
+    def test_unresolvable_rear_port_is_buffered(self, mock_pynetbox, graphql_client, make_device_types):
+        """A front port dropped for a bad rear_port reference must be buffered."""
+        dt = self._dt(mock_pynetbox, make_device_types)
+        dt.components.record("rear_port_templates", "device", 1, {})
+        dt.components.record("front_port_templates", "device", 1, {})
+
+        with dt.collect_component_errors() as errors:
+            dt.create_components("front-ports", [{"name": "FP1", "type": "8p8c", "rear_port": "RP-missing"}], 1)
+
+        assert any("Could not find Rear Port" in e and "RP-missing" in e for e in errors)
+
+    def test_unresolvable_bridge_is_buffered(self, mock_pynetbox, graphql_client, make_device_types):
+        """An interface bridge that cannot be resolved must be buffered."""
+        dt = self._dt(mock_pynetbox, make_device_types)
+        dt.components.record("interface_templates", "device", 1, {})
+
+        with dt.collect_component_errors() as errors:
+            dt.create_components("interfaces", [{"name": "xe-0", "type": "10gbase-x-sfpp", "bridge": "xe-missing"}], 1)
+
+        assert any("Error bridging" in e and "xe-missing" in e for e in errors)
+
+    def test_unresolvable_mapping_rear_port_is_buffered(self, mock_pynetbox, graphql_client, make_device_types):
+        """A front-port mapping patch that cannot resolve its rear port must be buffered."""
+        dt = self._dt(mock_pynetbox, make_device_types)
+        dt.components.record("rear_port_templates", "device", 1, {})
+
+        with dt.collect_component_errors() as errors:
+            payload = dt._build_mappings_patch("FP1", frozenset({("RP-missing", 1, 1)}), 1, "device")
+
+        assert payload is None
+        assert any("Cannot update mapping" in e and "RP-missing" in e for e in errors)
+
+
+class TestComponentFailureReasonReachesTheReport:
+    """A failed component change must carry NetBox's message into the report."""
+
+    def test_component_update_transport_failure_reports_the_transport_error(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """A retry-exhausted update must name the transport error, not the generic label."""
+        import pynetbox as real_pynb
+        import requests
+        from core.change_detector import (
+            ChangeReport,
+            ChangeType,
+            ComponentChange,
+            DeviceTypeChange,
+            PropertyChange,
+        )
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+
+        dt = make_device_types(nb_api=mock_nb_api)
+        existing_iface = MagicMock()
+        existing_iface.id = 77
+        existing_iface.name = "LAN"
+        dt.components.record("interface_templates", "device", 6119, {"LAN": existing_iface})
+        mock_nb_api.dcim.interface_templates.update.side_effect = requests.exceptions.ConnectionError("network down")
+
+        existing_dt = MagicMock()
+        existing_dt.id = 6119
+        existing_dt.model = "EAP670"
+        existing_dt.manufacturer.name = "TP-Link"
+        dt.existing_device_types = {("tp-link", "EAP670"): existing_dt}
+        dt.existing_device_types_by_slug = {}
+
+        nb = NetBox(mock_settings, mock_handle)
+        nb.device_types = dt
+
+        change = DeviceTypeChange(
+            manufacturer_slug="tp-link",
+            model="EAP670",
+            slug="tp-link-eap670",
+            component_changes=[
+                ComponentChange(
+                    "interfaces",
+                    "LAN",
+                    ChangeType.COMPONENT_CHANGED,
+                    property_changes=[PropertyChange("description", "", "uplink")],
+                )
+            ],
+        )
+        device_type = {
+            "manufacturer": {"slug": "tp-link"},
+            "model": "EAP670",
+            "slug": "tp-link-eap670",
+            "interfaces": [{"name": "LAN", "type": "2.5gbase-t", "description": "uplink"}],
+            "src": "/repo/device-types/TP-Link/EAP670.yaml",
+        }
+        with patch("core.netbox_api.time.sleep"):
+            nb.create_device_types(
+                [device_type], update=True, change_report=ChangeReport(modified_device_types=[change])
+            )
+
+        report = "\n".join(nb.outcomes.render_failure_report())
+        assert "TP-Link/EAP670" in report
+        assert "Connection error updating" in report
+        assert "network down" in report
+
+    def test_component_removal_transport_failure_reports_the_transport_error(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """A retry-exhausted removal must name the transport error too."""
+        import pynetbox as real_pynb
+        import requests
+        from core.change_detector import ChangeType, ComponentChange
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+
+        dt = make_device_types(nb_api=mock_nb_api)
+        stale = MagicMock()
+        stale.id = 88
+        stale.name = "OLD"
+        dt.components.record("interface_templates", "device", 6119, {"OLD": stale})
+        mock_nb_api.dcim.interface_templates.delete.side_effect = requests.exceptions.ConnectionError("network down")
+
+        with patch("core.netbox_api.time.sleep"), dt.collect_component_errors() as errors:
+            dt.remove_components(
+                6119,
+                [ComponentChange("interfaces", "OLD", ChangeType.COMPONENT_REMOVED)],
+                parent_type="device",
+            )
+
+        assert len(errors) == 1
+        assert "Connection error removing" in errors[0]
+        assert "network down" in errors[0]
+
+    def test_failed_component_create_reports_the_netbox_message(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """The report must name the constraint, not the generic failure label."""
+        import pynetbox as real_pynb
+        from core.change_detector import ChangeReport, ChangeType, ComponentChange, DeviceTypeChange
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+
+        dt = make_device_types(nb_api=mock_nb_api)
+        dt.components.record("interface_templates", "device", 6119, {})
+        mock_nb_api.dcim.interface_templates.create.side_effect = _request_error(
+            b'[{"rf_role":["Wireless role may be set only on wireless interfaces."]}]'
+        )
+
+        existing_dt = MagicMock()
+        existing_dt.id = 6119
+        existing_dt.model = "EAP670"
+        existing_dt.manufacturer.name = "TP-Link"
+        dt.existing_device_types = {("tp-link", "EAP670"): existing_dt}
+        dt.existing_device_types_by_slug = {}
+
+        nb = NetBox(mock_settings, mock_handle)
+        nb.device_types = dt
+
+        change = DeviceTypeChange(
+            manufacturer_slug="tp-link",
+            model="EAP670",
+            slug="tp-link-eap670",
+            component_changes=[ComponentChange("interfaces", "LAN", ChangeType.COMPONENT_ADDED)],
+        )
+        device_type = {
+            "manufacturer": {"slug": "tp-link"},
+            "model": "EAP670",
+            "slug": "tp-link-eap670",
+            "interfaces": [{"name": "LAN", "type": "2.5gbase-t", "rf_role": "ap"}],
+            "src": "/repo/device-types/TP-Link/EAP670.yaml",
+        }
+        nb.create_device_types([device_type], update=True, change_report=ChangeReport(modified_device_types=[change]))
+
+        report = "\n".join(nb.outcomes.render_failure_report())
+        assert "TP-Link/EAP670" in report
+        assert "Wireless role may be set only on wireless interfaces." in report
+
+
+class TestComponentErrorScoping:
+    """Component failure detail must be scoped to, and consumed by, every entity path."""
+
+    def _nb(self, mock_settings, mock_handle, mock_pynetbox):
+        import pynetbox as real_pynb
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_pynetbox.api.return_value.version = "4.1"
+        return NetBox(mock_settings, mock_handle)
+
+    def test_new_device_type_with_failing_component_is_partial(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """A device type created with a failing component must not be reported as clean."""
+        import pynetbox as real_pynb
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+        dt = make_device_types(nb_api=mock_nb_api)
+        dt.components.record("interface_templates", "device", 900, {})
+        mock_nb_api.dcim.interface_templates.create.side_effect = _request_error(
+            b'[{"rf_role":["Wireless role may be set only on wireless interfaces."]}]'
+        )
+        created = MagicMock()
+        created.id = 900
+        created.model = "EAP670"
+        created.manufacturer.name = "TP-Link"
+        mock_nb_api.dcim.device_types.create.return_value = created
+
+        nb = NetBox(mock_settings, mock_handle)
+        nb.device_types = dt
+        dt.existing_device_types = {}
+        dt.existing_device_types_by_slug = {}
+
+        nb.create_device_types(
+            [
+                {
+                    "manufacturer": {"slug": "tp-link"},
+                    "model": "EAP670",
+                    "slug": "tp-link-eap670",
+                    "interfaces": [{"name": "LAN", "type": "2.5gbase-t", "rf_role": "ap"}],
+                    "src": "/repo/device-types/TP-Link/EAP670.yaml",
+                }
+            ]
+        )
+
+        partials = nb.outcomes.partials()
+        assert len(partials) == 1
+        assert partials[0].kind == EntityKind.DEVICE_TYPE
+        assert "Wireless role may be set only on wireless interfaces." in (partials[0].reason or "")
+
+    def test_component_errors_do_not_leak_between_entities(self, mock_pynetbox, graphql_client, make_device_types):
+        """Errors buffered for one entity must not surface in the next entity's reason."""
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+        dt = make_device_types(nb_api=mock_nb_api)
+
+        dt._log_component_error("stale error from an earlier entity")
+        with dt.collect_component_errors() as errors:
+            pass
+
+        assert errors == []
+        with dt.collect_component_errors() as errors2:
+            dt._log_component_error("this entity's error")
+        assert errors2 == ["this entity's error"]
+
+    def test_collect_component_errors_clears_on_exit(self, mock_pynetbox, graphql_client, make_device_types):
+        """The buffer is empty after a scope closes, so the next scope starts clean."""
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+        dt = make_device_types(nb_api=mock_nb_api)
+
+        with dt.collect_component_errors() as first:
+            dt._log_component_error("boom")
+        assert first == ["boom"]
+
+        with dt.collect_component_errors() as second:
+            pass
+        assert second == []

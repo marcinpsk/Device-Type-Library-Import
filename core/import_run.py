@@ -11,6 +11,7 @@ from core.change_detector import ChangeDetector, ChangeType, IMAGE_PROPERTIES
 from core.component_cache import NullTaskDisplay, RichTaskDisplay
 from core.config import RunConfig
 from core.errors import VendorSelectionError
+from core.outcomes import EntityKind, Outcome
 
 
 _PROGRESS_DESC_WIDTH = 28
@@ -50,21 +51,32 @@ class RunSummary:
     counter: Counter
     modules: bool
     rack_types: bool
+    outcome_counts: dict
     failure_lines: tuple
     duplicate_definitions: tuple
     elapsed: timedelta
 
     @classmethod
     def capture(cls, netbox, repo, started_at):
-        """Capture mutable run state as a summary value."""
+        """Capture mutable run state as a summary value.
+
+        ``outcome_counts`` and ``failure_lines`` are both derived from the outcome
+        registry at the same instant, so the headline counts cannot disagree with
+        the itemised report below them.
+        """
         return cls(
             counter=Counter(netbox.counter),
             modules=netbox.modules,
             rack_types=netbox.rack_types,
+            outcome_counts=netbox.outcomes.summary_by_kind(),
             failure_lines=tuple(netbox.outcomes.render_failure_report()),
             duplicate_definitions=tuple(repo.duplicate_definitions),
             elapsed=datetime.now() - started_at,
         )
+
+    def outcome_count(self, kind, outcome):
+        """Return how many entities of *kind* ended with *outcome*."""
+        return self.outcome_counts.get(kind, {}).get(outcome, 0)
 
 
 def get_progress_wrapper(progress, iterable, desc=None, total=None, on_step=None, task_registry=None):
@@ -269,7 +281,9 @@ def _image_progress_scope(progress, device_types, total=0):
             progress.remove_task(image_task)
 
 
-def _process_device_types(config, netbox, handle, progress, device_types, vendor_slug=None, task_registry=None):
+def _process_device_types(
+    config, netbox, handle, progress, device_types, vendor_slug=None, vendor_name="", task_registry=None
+):
     """Process device types for one vendor."""
     if config.only_new:
         new_device_types = filter_new_device_types(
@@ -311,7 +325,7 @@ def _process_device_types(config, netbox, handle, progress, device_types, vendor
         device_types,
         progress=get_progress_wrapper(progress, device_types, desc="Detecting Changes", task_registry=task_registry),
     )
-    detector.log_change_report(change_report)
+    detector.log_change_report(change_report, vendor=vendor_name)
 
     if config.update:
         device_types_to_process = select_device_types_for_update_mode(
@@ -356,7 +370,7 @@ def _process_device_types(config, netbox, handle, progress, device_types, vendor
             handle.verbose_log("No new device types or missing images to process.")
 
 
-def _process_module_types(config, netbox, handle, progress, module_types, task_registry=None):
+def _process_module_types(config, netbox, handle, progress, module_types, vendor_name="", task_registry=None):
     """Process module types for one vendor."""
     if not module_types:
         return
@@ -390,7 +404,7 @@ def _process_module_types(config, netbox, handle, progress, module_types, task_r
     has_module_changes = new_module_count > 0 or module_changed_count > 0 or pending_removal_modules > 0
     if has_module_changes:
         handle.log("============================================================")
-        handle.log("MODULE TYPE CHANGE DETECTION")
+        handle.log(f"MODULE TYPE CHANGE DETECTION: {vendor_name}" if vendor_name else "MODULE TYPE CHANGE DETECTION")
         handle.log("============================================================")
         if config.only_new:
             handle.log(f"New module types: {new_module_count}")
@@ -436,7 +450,7 @@ def _process_module_types(config, netbox, handle, progress, module_types, task_r
         handle.verbose_log("No module type changes to process.")
 
 
-def _process_rack_types(config, netbox, handle, progress, rack_types, task_registry=None):
+def _process_rack_types(config, netbox, handle, progress, rack_types, vendor_name="", task_registry=None):
     """Process rack types for one vendor."""
     if not rack_types:
         return
@@ -458,6 +472,8 @@ def _process_rack_types(config, netbox, handle, progress, rack_types, task_regis
     if new_count == 0:
         handle.verbose_log(f"No new rack types ({existing_count} unchanged).")
     else:
+        handle.log("============================================================")
+        handle.log(f"RACK TYPE CHANGE DETECTION: {vendor_name}" if vendor_name else "RACK TYPE CHANGE DETECTION")
         handle.log("============================================================")
         handle.log(f"New rack types:       {new_count}")
         handle.log(f"Existing rack types:  {existing_count}")
@@ -494,9 +510,12 @@ def _log_run_summary(handle, summary):
     component_updates = counter.get("device_types_component_updates", 0)
     if component_updates:
         handle.log(f"{component_updates} device types had component-only updates")
-    failed = counter.get("device_types_failed", 0)
+    failed = summary.outcome_count(EntityKind.DEVICE_TYPE, Outcome.FAILED)
     if failed:
-        handle.log(f"{failed} device types FAILED to update (see error log above)")
+        handle.log(f"{failed} device types FAILED to create or update (see error log above)")
+    device_partial = summary.outcome_count(EntityKind.DEVICE_TYPE, Outcome.PARTIAL)
+    if device_partial:
+        handle.log(f"{device_partial} device types partially updated")
     handle.log(f"{counter['components_updated']} components updated")
     handle.log(f"{counter['components_added']} components added")
     handle.log(f"{counter['components_removed']} components removed")
@@ -505,13 +524,18 @@ def _log_run_summary(handle, summary):
     if summary.modules:
         handle.log(f"{counter['module_added']} modules created")
         handle.log(f"{counter['module_updated']} modules updated")
-        if counter["module_update_failed"]:
-            handle.log(f"{counter['module_update_failed']} modules failed to update")
-        if counter["module_partial_update"]:
-            handle.log(f"{counter['module_partial_update']} modules partially updated")
+        module_failed = summary.outcome_count(EntityKind.MODULE_TYPE, Outcome.FAILED)
+        if module_failed:
+            handle.log(f"{module_failed} modules failed to create or update")
+        module_partial = summary.outcome_count(EntityKind.MODULE_TYPE, Outcome.PARTIAL)
+        if module_partial:
+            handle.log(f"{module_partial} modules partially updated")
     if summary.rack_types:
         handle.log(f"{counter['rack_type_added']} rack types created")
         handle.log(f"{counter['rack_type_updated']} rack types updated")
+        rack_failed = summary.outcome_count(EntityKind.RACK_TYPE, Outcome.FAILED)
+        if rack_failed:
+            handle.log(f"{rack_failed} rack types failed")
 
     for line in summary.failure_lines:
         handle.log(line)
@@ -709,6 +733,7 @@ class ImportRun:
             self.progress,
             plan.device_types,
             vendor_slug=plan.vendor["slug"],
+            vendor_name=plan.vendor["name"],
             task_registry=self.task_registry,
         )
         cache.pump()
@@ -720,6 +745,7 @@ class ImportRun:
                 self.reporter,
                 self.progress,
                 plan.module_types,
+                vendor_name=plan.vendor["name"],
                 task_registry=self.task_registry,
             )
             cache.pump()
@@ -730,6 +756,7 @@ class ImportRun:
             self.reporter,
             self.progress,
             plan.rack_types,
+            vendor_name=plan.vendor["name"],
             task_registry=self.task_registry,
         )
         cache.pump()

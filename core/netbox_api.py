@@ -1,6 +1,7 @@
 """NetBox REST and GraphQL API client for importing device and module type libraries."""
 
 from collections import Counter
+from contextlib import contextmanager
 from functools import lru_cache
 import hashlib
 import json
@@ -33,6 +34,7 @@ from core.schema_reader import load_properties_for_type
 from core.update_failure_resolver import (
     FailureKind,
     classify_device_type_update_failure,
+    extract_error_payload,
 )
 
 
@@ -417,6 +419,16 @@ def _count_actionable_component_changes(changes, remove_components):
     )
 
 
+def _summarise_component_errors(errors, limit=3):
+    """Join component failure messages into one reason line, or "" when there are none."""
+    if not errors:
+        return ""
+    shown = "; ".join(errors[:limit])
+    if len(errors) > limit:
+        shown += f" (+{len(errors) - limit} more)"
+    return shown
+
+
 class NetBox:
     """Interface to the NetBox API for importing device and module types."""
 
@@ -441,7 +453,6 @@ class NetBox:
             properties_updated=0,
             components_updated=0,
             components_removed=0,
-            device_types_failed=0,
         )
         self.outcomes = OutcomeRegistry()
         self.url = config.netbox_url
@@ -786,6 +797,7 @@ class NetBox:
         component_delta,
         actionable_count,
         failure_resolution=None,
+        component_errors=None,
     ):
         """Emit the right post-update log for an existing device type.
 
@@ -814,6 +826,9 @@ class NetBox:
             failure_resolution: Optional :class:`FailureResolution` whose
                 ``description``, ``blocking_objects`` and ``hint`` will be
                 attached to the registry record when the update failed.
+            component_errors: Component failure messages collected during this
+                device type's component work, used as the outcome reason so the
+                summary carries NetBox's own message.
         """
         identity = f"{dt.manufacturer.name}/{dt.model}"
         component_attempted = actionable_count > 0
@@ -845,6 +860,9 @@ class NetBox:
                     else:
                         reason_parts.append(f"applied {component_delta} component change(s)")
                 reason = "; ".join(reason_parts) + "." if reason_parts else "Partial update."
+                detail = _summarise_component_errors(component_errors)
+                if detail:
+                    reason = f"{reason} {detail}"
                 self.handle.verbose_log(
                     f"Device Type Partially Updated: {dt.manufacturer.name} - {dt.model} - {dt.id}. {reason}"
                 )
@@ -857,7 +875,6 @@ class NetBox:
                     hint=(failure_resolution.hint if failure_resolution else None),
                 )
         elif property_attempted or component_attempted:
-            self.counter.update({"device_types_failed": 1})
             self.handle.log(
                 f"Device Type Update Failed: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
                 f"Attempted {1 if property_attempted else 0} property PATCH and "
@@ -871,7 +888,8 @@ class NetBox:
                 reason=(
                     failure_resolution.description
                     if failure_resolution
-                    else (
+                    else _summarise_component_errors(component_errors)
+                    or (
                         "Property PATCH and component updates failed."
                         if property_attempted and component_attempted
                         else "Property PATCH failed."
@@ -1023,6 +1041,7 @@ class NetBox:
                         )
 
             # Apply component changes
+            component_errors = []
             if dt_change.component_changes:
                 actionable_count = _count_actionable_component_changes(dt_change.component_changes, remove_components)
                 before_components = (
@@ -1030,14 +1049,15 @@ class NetBox:
                     self.counter["components_added"],
                     self.counter["components_removed"],
                 )
-                self.device_types.update_components(
-                    device_type,
-                    dt.id,
-                    dt_change.component_changes,
-                    parent_type="device",
-                )
-                if remove_components:
-                    self.device_types.remove_components(dt.id, dt_change.component_changes, parent_type="device")
+                with self.device_types.collect_component_errors() as component_errors:
+                    self.device_types.update_components(
+                        device_type,
+                        dt.id,
+                        dt_change.component_changes,
+                        parent_type="device",
+                    )
+                    if remove_components:
+                        self.device_types.remove_components(dt.id, dt_change.component_changes, parent_type="device")
                 after_components = (
                     self.counter["components_updated"],
                     self.counter["components_added"],
@@ -1054,6 +1074,7 @@ class NetBox:
                 component_delta=component_delta,
                 actionable_count=actionable_count,
                 failure_resolution=failure_resolution,
+                component_errors=component_errors,
             )
         else:
             self.handle.verbose_log(
@@ -1084,6 +1105,12 @@ class NetBox:
                 f" {device_type.get('manufacturer', {}).get('slug', '')} {device_type.get('model', '')}"
                 f" (Context: {src_file})"
             )
+            self._record_failure(
+                EntityKind.DEVICE_TYPE,
+                self._yaml_identity(device_type),
+                str(e.error),
+                src_file,
+            )
             return None, True
         except _RETRYABLE_EXCEPTIONS as e:
             self.handle.log(
@@ -1091,7 +1118,33 @@ class NetBox:
                 f" {device_type.get('manufacturer', {}).get('slug', '')} {device_type.get('model', '')}"
                 f" after {_MAX_RETRIES} retries: {e} (Context: {src_file})"
             )
+            self._record_failure(
+                EntityKind.DEVICE_TYPE,
+                self._yaml_identity(device_type),
+                f"Connection error after {_MAX_RETRIES} retries: {e}",
+                src_file,
+            )
             return None, True
+
+    def _record_failure(self, kind, identity, reason, src_file):
+        """Record a failed entity so it reaches the end-of-run report.
+
+        Every create/update failure path must call this. The registry is the only
+        tally of failures: the run summary derives its counts from these rows, so a
+        path that merely logs is absent from both the count and the itemised report.
+        """
+        self.outcomes.record(
+            kind,
+            identity,
+            Outcome.FAILED,
+            reason=reason,
+            hint=f"Source: {src_file}" if src_file else None,
+        )
+
+    @staticmethod
+    def _yaml_identity(parsed):
+        """Build a report identity from a parsed YAML dict, which carries only the slug."""
+        return f"{parsed.get('manufacturer', {}).get('slug', '')}/{parsed.get('model', '')}"
 
     def _create_device_type_components(self, device_type, dt_id, src_file, saved_images):
         """Create all component templates and upload images for a newly created device type.
@@ -1102,13 +1155,22 @@ class NetBox:
             src_file (str): Filesystem path to the YAML source file (for front-port context).
             saved_images (dict): Mapping of image kind to local file path for upload.
         """
-        for component in COMPONENT_TYPES:
-            yaml_key = component.yaml_key
-            if yaml_key not in device_type:
-                continue
-            if yaml_key == "module-bays" and not self.modules:
-                continue
-            self.device_types.create_components(yaml_key, device_type[yaml_key], dt_id, context=src_file)
+        with self.device_types.collect_component_errors() as component_errors:
+            for component in COMPONENT_TYPES:
+                yaml_key = component.yaml_key
+                if yaml_key not in device_type:
+                    continue
+                if yaml_key == "module-bays" and not self.modules:
+                    continue
+                self.device_types.create_components(yaml_key, device_type[yaml_key], dt_id, context=src_file)
+        if component_errors:
+            # The type exists but not all of its components do.
+            self.outcomes.record(
+                EntityKind.DEVICE_TYPE,
+                self._yaml_identity(device_type),
+                Outcome.PARTIAL,
+                reason=_summarise_component_errors(component_errors),
+            )
         if saved_images:
             self.device_types.upload_images(self.url, self.token, saved_images, dt_id)
             _store_image_hashes(self._image_hash_cache, saved_images, log_fn=self.handle.log)
@@ -1277,10 +1339,19 @@ class NetBox:
                         )
                     except pynetbox.RequestError as e:
                         self.handle.log(f"Error updating Rack Type {model}: {e.error} (Context: {src_file})")
+                        self._record_failure(
+                            EntityKind.RACK_TYPE, f"{manufacturer_slug}/{model}", str(e.error), src_file
+                        )
                     except _RETRYABLE_EXCEPTIONS as e:
                         self.handle.log(
                             f"Connection error updating Rack Type {model} after {_MAX_RETRIES} retries:"
                             f" {e} (Context: {src_file})"
+                        )
+                        self._record_failure(
+                            EntityKind.RACK_TYPE,
+                            f"{manufacturer_slug}/{model}",
+                            f"Connection error after {_MAX_RETRIES} retries: {e}",
+                            src_file,
                         )
                 else:
                     self.handle.verbose_log(f"Rack Type Unchanged: {manufacturer_slug} - {model} - {existing.id}")
@@ -1292,10 +1363,19 @@ class NetBox:
                     self.handle.verbose_log(f"Rack Type Created: {manufacturer_slug} - {model} - {rt.id}")
                 except pynetbox.RequestError as excep:
                     self.handle.log(f"Error creating Rack Type: {excep.error} (Context: {src_file})")
+                    self._record_failure(
+                        EntityKind.RACK_TYPE, f"{manufacturer_slug}/{model}", str(excep.error), src_file
+                    )
                 except _RETRYABLE_EXCEPTIONS as e:
                     self.handle.log(
                         f"Connection error creating Rack Type {model} after {_MAX_RETRIES} retries:"
                         f" {e} (Context: {src_file})"
+                    )
+                    self._record_failure(
+                        EntityKind.RACK_TYPE,
+                        f"{manufacturer_slug}/{model}",
+                        f"Connection error after {_MAX_RETRIES} retries: {e}",
+                        src_file,
                     )
 
     @staticmethod
@@ -1537,12 +1617,21 @@ class NetBox:
             module_type_id (int): ID of the newly created module type in NetBox.
             src_file (str): Source file path for error context.
         """
-        for component in MODULE_TYPE_COMPONENTS:
-            yaml_key = component.yaml_key
-            if yaml_key in curr_mt:
-                self.device_types.create_components(
-                    yaml_key, curr_mt[yaml_key], module_type_id, parent_type="module", context=src_file
-                )
+        with self.device_types.collect_component_errors() as component_errors:
+            for component in MODULE_TYPE_COMPONENTS:
+                yaml_key = component.yaml_key
+                if yaml_key in curr_mt:
+                    self.device_types.create_components(
+                        yaml_key, curr_mt[yaml_key], module_type_id, parent_type="module", context=src_file
+                    )
+        if component_errors:
+            # The module type exists but not all of its components do.
+            self.outcomes.record(
+                EntityKind.MODULE_TYPE,
+                self._yaml_identity(curr_mt),
+                Outcome.PARTIAL,
+                reason=_summarise_component_errors(component_errors),
+            )
 
     def _apply_module_type_component_updates(
         self, curr_mt, module_type_res, properties_updated, remove_components, patch_ok=True
@@ -1567,9 +1656,12 @@ class NetBox:
             before_updated = self.counter["components_updated"]
             before_added = self.counter["components_added"]
             before_removed = self.counter["components_removed"]
-            self.device_types.update_components(curr_mt, module_type_res.id, component_changes, parent_type="module")
-            if remove_components:
-                self.device_types.remove_components(module_type_res.id, component_changes, parent_type="module")
+            with self.device_types.collect_component_errors() as component_errors:
+                self.device_types.update_components(
+                    curr_mt, module_type_res.id, component_changes, parent_type="module"
+                )
+                if remove_components:
+                    self.device_types.remove_components(module_type_res.id, component_changes, parent_type="module")
             component_delta = (
                 self.counter["components_updated"]
                 - before_updated
@@ -1582,21 +1674,26 @@ class NetBox:
                 if properties_updated and patch_ok:
                     self.counter["module_updated"] += 1
                 elif not patch_ok:
-                    self.counter["module_update_failed"] += 1
                     self.outcomes.record(
                         EntityKind.MODULE_TYPE,
                         identity,
                         Outcome.FAILED,
-                        reason="Scalar PATCH failed; no component changes were actionable.",
+                        reason=_summarise_component_errors(component_errors)
+                        or "Scalar PATCH failed; no component changes were actionable.",
                     )
             elif component_delta == 0:
                 if properties_updated and patch_ok:
                     # Properties patched successfully; components were attempted but
                     # none changed — treat as a partial success, not a full failure.
-                    self.counter["module_partial_update"] += 1
+                    self.outcomes.record(
+                        EntityKind.MODULE_TYPE,
+                        identity,
+                        Outcome.PARTIAL,
+                        reason=_summarise_component_errors(component_errors)
+                        or "Properties updated; component reconciliation applied 0 changes.",
+                    )
                 else:
-                    self.counter["module_update_failed"] += 1
-                    reason = (
+                    reason = _summarise_component_errors(component_errors) or (
                         "Scalar PATCH failed; component reconciliation ran but applied 0 changes."
                         if not patch_ok
                         else "Component reconciliation ran but applied 0 changes."
@@ -1610,11 +1707,19 @@ class NetBox:
             elif component_delta == actionable_count and patch_ok:
                 self.counter["module_updated"] += 1
             else:
-                self.counter["module_partial_update"] += 1
+                reason_parts = [] if patch_ok else ["Property PATCH failed"]
+                reason_parts.append(f"applied {component_delta} of {actionable_count} component change(s)")
+                reason = "; ".join(reason_parts) + "."
+                detail = _summarise_component_errors(component_errors)
+                self.outcomes.record(
+                    EntityKind.MODULE_TYPE,
+                    identity,
+                    Outcome.PARTIAL,
+                    reason=f"{reason} {detail}" if detail else reason,
+                )
         elif properties_updated and patch_ok:
             self.counter["module_updated"] += 1
         elif not patch_ok:
-            self.counter["module_update_failed"] += 1
             self.outcomes.record(
                 EntityKind.MODULE_TYPE,
                 identity,
@@ -1682,10 +1787,22 @@ class NetBox:
                 )
             except pynetbox.RequestError as excep:
                 self.handle.log(f"Error creating Module Type: {excep.error} (Context: {src_file})")
+                self._record_failure(
+                    EntityKind.MODULE_TYPE,
+                    self._yaml_identity(curr_mt),
+                    str(excep.error),
+                    src_file,
+                )
                 return False
             except _RETRYABLE_EXCEPTIONS as e:
                 self.handle.log(
                     f"Connection error creating Module Type after {_MAX_RETRIES} retries: {e} (Context: {src_file})"
+                )
+                self._record_failure(
+                    EntityKind.MODULE_TYPE,
+                    self._yaml_identity(curr_mt),
+                    f"Connection error after {_MAX_RETRIES} retries: {e}",
+                    src_file,
                 )
                 return False
 
@@ -2111,6 +2228,8 @@ class DeviceTypes:
             wrap_record=_FrontPortRecordWithMappings,
         )
         self._image_progress = None
+        # Component failures for the entity currently inside collect_component_errors().
+        self._component_errors: list[str] = []
         self.existing_device_types = {}
         self.existing_device_types_by_slug = {}
 
@@ -2148,6 +2267,27 @@ class DeviceTypes:
             manufacturer_slug=manufacturer_slug,
             device_type_ids={record.id for record in self.existing_device_types.values()},
         )
+
+    @contextmanager
+    def collect_component_errors(self):
+        """Scope component failure messages to one entity's component work.
+
+        Yields a list that holds the messages logged inside the block. The buffer is
+        cleared on entry and on exit, so one entity's failures can never surface in
+        another's outcome reason, and a caller cannot forget to clear it.
+        """
+        self._component_errors = []
+        collected: list[str] = []
+        try:
+            yield collected
+        finally:
+            collected.extend(self._component_errors)
+            self._component_errors = []
+
+    def _log_component_error(self, message):
+        """Log a component failure and keep it for the caller's outcome record."""
+        self.handle.log(message)
+        self._component_errors.append(message)
 
     def _create_generic(
         self,
@@ -2197,20 +2337,26 @@ class DeviceTypes:
                 self.components.invalidate(cache_name, parent_type, parent_id)
             except pynetbox.RequestError as excep:
                 context_str = f" (Context: {context})" if context else ""
-                if isinstance(excep.error, list):
-                    for i, error in enumerate(excep.error):
-                        if error:
-                            item_name = to_create[i].get("name", "Unknown") if i < len(to_create) else f"index {i}"
-                            self.handle.log(f"Failed to create {component_name} '{item_name}': {error}{context_str}")
-                else:
+                # NetBox answers a rejected bulk create with one error object per submitted
+                # item, positionally aligned, so name the items it actually rejected.
+                payload = extract_error_payload(excep.error)
+                per_item = payload if isinstance(payload, list) and len(payload) == len(to_create) else []
+                reported = 0
+                for item, error in zip(to_create, per_item):
+                    if error:
+                        reported += 1
+                        self._log_component_error(
+                            f"Failed to create {component_name} '{item.get('name', 'Unknown')}': {error}{context_str}"
+                        )
+                if not reported:
                     failed_items = [x["name"] for x in to_create]
-                    self.handle.log(
+                    self._log_component_error(
                         f"Error '{excep.error}' creating {component_name}. Items: {failed_items}{context_str}"
                     )
             except _RETRYABLE_EXCEPTIONS as excep:
                 context_str = f" (Context: {context})" if context else ""
                 failed_items = [x["name"] for x in to_create]
-                self.handle.log(
+                self._log_component_error(
                     f"Connection error creating {component_name} after {_MAX_RETRIES} retries: {excep}."
                     f" Items: {failed_items}{context_str}"
                 )
@@ -2241,7 +2387,9 @@ class DeviceTypes:
             rp_name, fp_pos, rp_pos = tup
             rear_port = existing_rp.get(rp_name)
             if rear_port is None:
-                self.handle.log(f'Cannot update mapping for "{comp_name}": rear port "{rp_name}" not found in cache.')
+                self._log_component_error(
+                    f'Cannot update mapping for "{comp_name}": rear port "{rp_name}" not found in cache.'
+                )
                 return None
             rear_ports_payload.append(
                 {
@@ -2286,7 +2434,7 @@ class DeviceTypes:
                 # because rear port names are unavailable via the GraphQL API.
                 # Fall back to the YAML _mappings entry which does include the name.
                 if not yaml_mappings:
-                    self.handle.log(
+                    self._log_component_error(
                         f"Warning: cannot update mappings for '{comp_name}' on NetBox < 4.5:"
                         " rear port names unavailable, skipping mapping update"
                     )
@@ -2307,7 +2455,9 @@ class DeviceTypes:
                 update_data["rear_port"] = rp.id
                 update_data["rear_port_position"] = rp_pos
             else:
-                self.handle.log(f"Warning: cannot update mappings for '{comp_name}': rear port '{rp_name}' not found")
+                self._log_component_error(
+                    f"Warning: cannot update mappings for '{comp_name}': rear port '{rp_name}' not found"
+                )
 
     def _apply_updates_for_type(self, comp_type, changes, yaml_data, device_type_id, parent_type):
         """Apply property updates for all changed components of a single type.
@@ -2362,9 +2512,9 @@ class DeviceTypes:
                 success_count += 1
                 self.handle.verbose_log(f"Updated {comp_type} (ID: {update_data['id']})")
             except pynetbox.RequestError as e:
-                self.handle.log(f"Error updating {comp_type} (ID: {update_data['id']}): {e.error}")
+                self._log_component_error(f"Error updating {comp_type} (ID: {update_data['id']}): {e.error}")
             except _RETRYABLE_EXCEPTIONS as e:
-                self.handle.log(
+                self._log_component_error(
                     f"Connection error updating {comp_type} (ID: {update_data['id']}) after {_MAX_RETRIES} retries: {e}"
                 )
 
@@ -2468,9 +2618,9 @@ class DeviceTypes:
                     _retry_on_connection_error(endpoint.delete, [comp_id])
                     success_count += 1
                 except pynetbox.RequestError as e:
-                    self.handle.log(f"Error removing {comp_type} (ID: {comp_id}): {e.error}")
+                    self._log_component_error(f"Error removing {comp_type} (ID: {comp_id}): {e.error}")
                 except _RETRYABLE_EXCEPTIONS as e:
-                    self.handle.log(
+                    self._log_component_error(
                         f"Connection error removing {comp_type} (ID: {comp_id}) after {_MAX_RETRIES} retries: {e}"
                     )
 
@@ -2512,7 +2662,7 @@ class DeviceTypes:
                 except KeyError:
                     available = list(existing_pp.keys()) if existing_pp else []
                     ctx = f" (Context: {context})" if context else ""
-                    self.handle.log(
+                    self._log_component_error(
                         f'Could not find Power Port "{outlet["power_port"]}" for '
                         f'{label} "{outlet.get("name", "Unknown")}". '
                         f"Available: {available}{ctx}"
@@ -2595,7 +2745,7 @@ class DeviceTypes:
                     if rear_port is None:
                         available = list(existing_rp.keys()) if existing_rp else []
                         ctx = f" (Context: {context})" if context else ""
-                        self.handle.log(
+                        self._log_component_error(
                             f'Could not find Rear Port "{rp_name}" for {label} "{port["name"]}". '
                             f"Available: {available}{ctx}"
                         )
@@ -2671,7 +2821,9 @@ class DeviceTypes:
             if name in all_interfaces and bridge_name in all_interfaces:
                 to_update.append({"id": all_interfaces[name].id, "bridge": all_interfaces[bridge_name].id})
             else:
-                self.handle.log(f"Error bridging {name} to {bridge_name}: Interface not found (Context: {context})")
+                self._log_component_error(
+                    f"Error bridging {name} to {bridge_name}: Interface not found (Context: {context})"
+                )
 
         if not to_update:
             return
@@ -2679,9 +2831,9 @@ class DeviceTypes:
             _retry_on_connection_error(self.netbox.dcim.interface_templates.update, to_update)
             self.handle.verbose_log(f"Bridged {len(to_update)} interfaces.")
         except pynetbox.RequestError as e:
-            self.handle.log(f"Error bridging interfaces: {e} (Context: {context})")
+            self._log_component_error(f"Error bridging interfaces: {e} (Context: {context})")
         except _RETRYABLE_EXCEPTIONS as e:
-            self.handle.log(
+            self._log_component_error(
                 f"Connection error bridging interfaces after {_MAX_RETRIES} retries: {e} (Context: {context})"
             )
 

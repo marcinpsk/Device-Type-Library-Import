@@ -27,3 +27,25 @@ def paginate_dispatch(data_dict):
         return r
 
     return handler
+
+
+class RecordingConsole:
+    """Capture what the real LogHandler emits."""
+
+    def __init__(self):
+        """Start with no recorded lines."""
+        self.lines = []
+
+    def print(self, message, markup=False):
+        """Record one emitted line."""
+        self.lines.append(message)
+
+
+def recording_handle():
+    """Return a real LogHandler writing into a RecordingConsole."""
+    from core.log_handler import LogHandler
+
+    handle = LogHandler(False)
+    console = RecordingConsole()
+    handle.set_console(console)
+    return handle, console

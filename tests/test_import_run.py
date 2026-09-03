@@ -6,9 +6,21 @@ from contextlib import contextmanager
 import pytest
 
 from core.errors import VendorSelectionError
-from core.import_run import ImportRun, RunSummary, VendorPlan, _process_device_types
+from types import SimpleNamespace
+
+from core.import_run import (
+    ImportRun,
+    RunSummary,
+    VendorPlan,
+    _log_run_summary,
+    _process_device_types,
+    _process_module_types,
+    _process_rack_types,
+)
 from core.log_handler import LogHandler
+from core.outcomes import EntityKind, Outcome
 from core.repo import DTLRepo
+from helpers import recording_handle as _recording_handle
 
 
 class _ComponentCache:
@@ -30,12 +42,17 @@ class _DeviceTypes:
 
 
 class _Outcomes:
-    """Provide an empty final failure report."""
+    """Provide an empty final failure report and an empty outcome aggregate."""
 
     @staticmethod
     def render_failure_report():
         """Return no failure lines."""
         return []
+
+    @staticmethod
+    def summary_by_kind():
+        """Return no recorded outcomes."""
+        return {}
 
 
 class _NetBoxBoundary:
@@ -308,3 +325,217 @@ class TestPartialLibraryLayouts:
         }
         assert parsed[present] == 1, parsed
         assert sum(parsed.values()) == 1, parsed
+
+
+class _ModuleNetBox:
+    """Report one new module type so the banner is emitted."""
+
+    modules = True
+    device_types = _DeviceTypes()
+
+    @staticmethod
+    def get_existing_module_types():
+        """Return no existing module types."""
+        return {}
+
+    @staticmethod
+    def filter_actionable_module_types(module_types, _existing, only_new=False):
+        """Treat every supplied module type as actionable."""
+        return list(module_types), {}, []
+
+    @staticmethod
+    def filter_new_module_types(module_types, _existing):
+        """Treat every supplied module type as new."""
+        return list(module_types)
+
+    @staticmethod
+    def count_module_type_images(*_args, **_kwargs):
+        """Report no images to upload."""
+        return 0
+
+    @staticmethod
+    def create_module_types(*_args, **_kwargs):
+        """Accept the import call without doing work."""
+
+    @staticmethod
+    def log_module_type_changes(_changes):
+        """Accept the change log without doing work."""
+
+
+class _RackNetBox:
+    """Report one new rack type so the banner is emitted."""
+
+    rack_types = True
+    device_types = _DeviceTypes()
+
+    @staticmethod
+    def get_existing_rack_types():
+        """Return no existing rack types."""
+        return {}
+
+    @staticmethod
+    def create_rack_types(*_args, **_kwargs):
+        """Accept the import call without doing work."""
+
+
+def test_module_type_banner_names_the_vendor(make_config):
+    """A multi-vendor run must say which vendor a module-type report belongs to."""
+    handle, console = _recording_handle()
+
+    _process_module_types(
+        make_config(only_new=True),
+        _ModuleNetBox(),
+        handle,
+        None,
+        [{"manufacturer": {"slug": "vendor-one"}, "model": "Module One", "slug": "module-one"}],
+        vendor_name="Vendor One",
+    )
+
+    banner = [line for line in console.lines if "MODULE TYPE CHANGE DETECTION" in line]
+    assert len(banner) == 1
+    assert "MODULE TYPE CHANGE DETECTION: Vendor One" in banner[0]
+
+
+def test_rack_type_banner_names_the_vendor(make_config):
+    """A multi-vendor run must say which vendor a rack-type report belongs to."""
+    handle, console = _recording_handle()
+
+    _process_rack_types(
+        make_config(),
+        _RackNetBox(),
+        handle,
+        None,
+        [{"manufacturer": {"slug": "vendor-one"}, "model": "Rack One", "slug": "rack-one"}],
+        vendor_name="Vendor One",
+    )
+
+    banner = [line for line in console.lines if "RACK TYPE CHANGE DETECTION" in line]
+    assert len(banner) == 1
+    assert "RACK TYPE CHANGE DETECTION: Vendor One" in banner[0]
+
+
+def test_banners_omit_the_separator_when_no_vendor_is_given(make_config):
+    """Without a vendor the banner keeps its plain title, with no trailing colon."""
+    handle, console = _recording_handle()
+
+    _process_rack_types(
+        make_config(),
+        _RackNetBox(),
+        handle,
+        None,
+        [{"manufacturer": {"slug": "vendor-one"}, "model": "Rack One", "slug": "rack-one"}],
+    )
+
+    banner = [line for line in console.lines if "RACK TYPE CHANGE DETECTION" in line]
+    assert len(banner) == 1
+    assert banner[0].rstrip().endswith("RACK TYPE CHANGE DETECTION")
+
+
+class _OutcomeNetBox:
+    """Run-state stand-in carrying a real OutcomeRegistry."""
+
+    def __init__(self, *, modules=True, rack_types=True, counter=None):
+        from core.outcomes import OutcomeRegistry
+
+        self.modules = modules
+        self.rack_types = rack_types
+        self.outcomes = OutcomeRegistry()
+        base = dict(
+            added=0,
+            properties_updated=0,
+            components_updated=0,
+            components_added=0,
+            components_removed=0,
+            images=0,
+            manufacturer=0,
+            module_added=0,
+            module_updated=0,
+            rack_type_added=0,
+            rack_type_updated=0,
+        )
+        base.update(counter or {})
+        self.counter = Counter(base)
+
+
+def _summary_lines(netbox):
+    """Render a run summary through the real LogHandler and return its lines."""
+    from datetime import datetime
+
+    handle, console = _recording_handle()
+    handle.verbose = True
+    repo = SimpleNamespace(duplicate_definitions=[])
+    summary = RunSummary.capture(netbox, repo, datetime.now())
+    _log_run_summary(handle, summary)
+    return console.lines
+
+
+def test_failed_module_type_is_counted_in_the_summary():
+    """A module type that failed must be counted, not only listed in the report."""
+    nb = _OutcomeNetBox()
+    nb.outcomes.record(EntityKind.MODULE_TYPE, "chicony/CPB09-031A", Outcome.FAILED, reason="boom")
+
+    lines = _summary_lines(nb)
+
+    assert any("1 modules failed" in line for line in lines), lines
+
+
+def test_failed_rack_type_is_counted_in_the_summary():
+    """A rack type that failed must appear in the headline counts."""
+    nb = _OutcomeNetBox()
+    nb.outcomes.record(EntityKind.RACK_TYPE, "lenovo/1410HPB", Outcome.FAILED, reason="boom")
+
+    lines = _summary_lines(nb)
+
+    assert any("1 rack types failed" in line for line in lines), lines
+
+
+def test_partial_module_type_is_counted_in_the_summary():
+    """A partially updated module must be counted from the registry."""
+    nb = _OutcomeNetBox()
+    nb.outcomes.record(EntityKind.MODULE_TYPE, "cisco/LC", Outcome.PARTIAL, reason="half applied")
+
+    lines = _summary_lines(nb)
+
+    assert any("1 modules partially updated" in line for line in lines), lines
+
+
+def test_headline_counts_match_the_itemised_rows():
+    """The invariant the two parallel tallies never enforced."""
+    nb = _OutcomeNetBox()
+    nb.outcomes.record(EntityKind.DEVICE_TYPE, "ribbon/SBC 5400", Outcome.FAILED, reason="a")
+    nb.outcomes.record(EntityKind.DEVICE_TYPE, "acme/SW2", Outcome.FAILED, reason="b")
+    nb.outcomes.record(EntityKind.MODULE_TYPE, "chicony/CPB09-031A", Outcome.FAILED, reason="c")
+    nb.outcomes.record(EntityKind.RACK_TYPE, "lenovo/1410HPB", Outcome.FAILED, reason="d")
+
+    lines = _summary_lines(nb)
+    text = "\n".join(lines)
+
+    assert "2 device types FAILED" in text
+    assert "1 modules failed" in text
+    assert "1 rack types failed" in text
+    # The itemised report must agree with those headline numbers.
+    assert "Failed entities: 4" in text
+
+
+def test_partial_device_type_is_counted_in_the_summary():
+    """A partially updated device type must appear in the headline counts."""
+    nb = _OutcomeNetBox()
+    nb.outcomes.record(EntityKind.DEVICE_TYPE, "acme/SW1", Outcome.PARTIAL, reason="half applied")
+
+    lines = _summary_lines(nb)
+
+    assert any("1 device types partially updated" in line for line in lines), lines
+
+
+def test_headline_partials_match_the_itemised_rows():
+    """Every kind that can record PARTIAL must also be counted in the headline."""
+    nb = _OutcomeNetBox()
+    nb.outcomes.record(EntityKind.DEVICE_TYPE, "acme/SW1", Outcome.PARTIAL, reason="a")
+    nb.outcomes.record(EntityKind.DEVICE_TYPE, "acme/SW2", Outcome.PARTIAL, reason="b")
+    nb.outcomes.record(EntityKind.MODULE_TYPE, "cisco/LC", Outcome.PARTIAL, reason="c")
+
+    text = "\n".join(_summary_lines(nb))
+
+    assert "2 device types partially updated" in text
+    assert "1 modules partially updated" in text
+    assert "Partial updates: 3" in text
