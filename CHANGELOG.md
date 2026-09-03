@@ -2,6 +2,36 @@
 
 <!-- version list -->
 
+## v1.9.0 (2026-09-03)
+
+### Bug Fixes
+
+- **netbox**: Name the item netbox rejected in a bulk create (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+- **netbox**: Name the item netbox rejected in a bulk create (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+- **report**: Count device-type creation failures in the run report (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+- **report**: Record rack-type and module-type failures in the run report (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+- **report**: Carry the component error into the device-type reason (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+- **report**: Route component transport failures into the outcome reason (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+- **report**: Route skipped-component reasons into the outcome reason (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+- **report**: Scope component errors per entity and count partial device types (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+- **report**: Stop calling create failures update failures (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+
+
+### Features
+
+- **report**: Name the vendor in each change-detection banner (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+
+
+### Refactoring
+
+- **report**: Derive run-summary failure counts from the outcome registry (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+
+
+
+### Contributors
+
+@marcinpsk
+
 ## v1.8.4 (2026-09-01)
 
 ### Bug Fixes
