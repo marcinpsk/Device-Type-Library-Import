@@ -7230,9 +7230,9 @@ class TestSkippedComponentReasonReachesTheReport:
         dt.components.record("rear_port_templates", "device", 1, {})
         dt.components.record("front_port_templates", "device", 1, {})
 
-        dt.create_components("front-ports", [{"name": "FP1", "type": "8p8c", "rear_port": "RP-missing"}], 1)
+        with dt.collect_component_errors() as errors:
+            dt.create_components("front-ports", [{"name": "FP1", "type": "8p8c", "rear_port": "RP-missing"}], 1)
 
-        errors = dt.take_errors()
         assert any("Could not find Rear Port" in e and "RP-missing" in e for e in errors)
 
     def test_unresolvable_bridge_is_buffered(self, mock_pynetbox, graphql_client, make_device_types):
@@ -7240,9 +7240,9 @@ class TestSkippedComponentReasonReachesTheReport:
         dt = self._dt(mock_pynetbox, make_device_types)
         dt.components.record("interface_templates", "device", 1, {})
 
-        dt.create_components("interfaces", [{"name": "xe-0", "type": "10gbase-x-sfpp", "bridge": "xe-missing"}], 1)
+        with dt.collect_component_errors() as errors:
+            dt.create_components("interfaces", [{"name": "xe-0", "type": "10gbase-x-sfpp", "bridge": "xe-missing"}], 1)
 
-        errors = dt.take_errors()
         assert any("Error bridging" in e and "xe-missing" in e for e in errors)
 
     def test_unresolvable_mapping_rear_port_is_buffered(self, mock_pynetbox, graphql_client, make_device_types):
@@ -7250,10 +7250,10 @@ class TestSkippedComponentReasonReachesTheReport:
         dt = self._dt(mock_pynetbox, make_device_types)
         dt.components.record("rear_port_templates", "device", 1, {})
 
-        payload = dt._build_mappings_patch("FP1", frozenset({("RP-missing", 1, 1)}), 1, "device")
+        with dt.collect_component_errors() as errors:
+            payload = dt._build_mappings_patch("FP1", frozenset({("RP-missing", 1, 1)}), 1, "device")
 
         assert payload is None
-        errors = dt.take_errors()
         assert any("Cannot update mapping" in e and "RP-missing" in e for e in errors)
 
 
@@ -7344,14 +7344,13 @@ class TestComponentFailureReasonReachesTheReport:
         dt.components.record("interface_templates", "device", 6119, {"OLD": stale})
         mock_nb_api.dcim.interface_templates.delete.side_effect = requests.exceptions.ConnectionError("network down")
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.netbox_api.time.sleep"), dt.collect_component_errors() as errors:
             dt.remove_components(
                 6119,
                 [ComponentChange("interfaces", "OLD", ChangeType.COMPONENT_REMOVED)],
                 parent_type="device",
             )
 
-        errors = dt.take_errors()
         assert len(errors) == 1
         assert "Connection error removing" in errors[0]
         assert "network down" in errors[0]
@@ -7401,3 +7400,85 @@ class TestComponentFailureReasonReachesTheReport:
         report = "\n".join(nb.outcomes.render_failure_report())
         assert "TP-Link/EAP670" in report
         assert "Wireless role may be set only on wireless interfaces." in report
+
+
+class TestComponentErrorScoping:
+    """Component failure detail must be scoped to, and consumed by, every entity path."""
+
+    def _nb(self, mock_settings, mock_handle, mock_pynetbox):
+        import pynetbox as real_pynb
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_pynetbox.api.return_value.version = "4.1"
+        return NetBox(mock_settings, mock_handle)
+
+    def test_new_device_type_with_failing_component_is_partial(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """A device type created with a failing component must not be reported as clean."""
+        import pynetbox as real_pynb
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+        dt = make_device_types(nb_api=mock_nb_api)
+        dt.components.record("interface_templates", "device", 900, {})
+        mock_nb_api.dcim.interface_templates.create.side_effect = _request_error(
+            b'[{"rf_role":["Wireless role may be set only on wireless interfaces."]}]'
+        )
+        created = MagicMock()
+        created.id = 900
+        created.model = "EAP670"
+        created.manufacturer.name = "TP-Link"
+        mock_nb_api.dcim.device_types.create.return_value = created
+
+        nb = NetBox(mock_settings, mock_handle)
+        nb.device_types = dt
+        dt.existing_device_types = {}
+        dt.existing_device_types_by_slug = {}
+
+        nb.create_device_types(
+            [
+                {
+                    "manufacturer": {"slug": "tp-link"},
+                    "model": "EAP670",
+                    "slug": "tp-link-eap670",
+                    "interfaces": [{"name": "LAN", "type": "2.5gbase-t", "rf_role": "ap"}],
+                    "src": "/repo/device-types/TP-Link/EAP670.yaml",
+                }
+            ]
+        )
+
+        partials = nb.outcomes.partials()
+        assert len(partials) == 1
+        assert partials[0].kind == EntityKind.DEVICE_TYPE
+        assert "Wireless role may be set only on wireless interfaces." in (partials[0].reason or "")
+
+    def test_component_errors_do_not_leak_between_entities(self, mock_pynetbox, graphql_client, make_device_types):
+        """Errors buffered for one entity must not surface in the next entity's reason."""
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+        dt = make_device_types(nb_api=mock_nb_api)
+
+        dt._log_component_error("stale error from an earlier entity")
+        with dt.collect_component_errors() as errors:
+            pass
+
+        assert errors == []
+        with dt.collect_component_errors() as errors2:
+            dt._log_component_error("this entity's error")
+        assert errors2 == ["this entity's error"]
+
+    def test_collect_component_errors_clears_on_exit(self, mock_pynetbox, graphql_client, make_device_types):
+        """The buffer is empty after a scope closes, so the next scope starts clean."""
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+        dt = make_device_types(nb_api=mock_nb_api)
+
+        with dt.collect_component_errors() as first:
+            dt._log_component_error("boom")
+        assert first == ["boom"]
+
+        with dt.collect_component_errors() as second:
+            pass
+        assert second == []

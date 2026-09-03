@@ -513,6 +513,9 @@ def _log_run_summary(handle, summary):
     failed = summary.outcome_count(EntityKind.DEVICE_TYPE, Outcome.FAILED)
     if failed:
         handle.log(f"{failed} device types FAILED to update (see error log above)")
+    device_partial = summary.outcome_count(EntityKind.DEVICE_TYPE, Outcome.PARTIAL)
+    if device_partial:
+        handle.log(f"{device_partial} device types partially updated")
     handle.log(f"{counter['components_updated']} components updated")
     handle.log(f"{counter['components_added']} components added")
     handle.log(f"{counter['components_removed']} components removed")

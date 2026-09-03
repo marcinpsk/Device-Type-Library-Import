@@ -18,6 +18,7 @@ from core.import_run import (
     _process_rack_types,
 )
 from core.log_handler import LogHandler
+from core.outcomes import EntityKind, Outcome
 from core.repo import DTLRepo
 
 
@@ -488,8 +489,6 @@ def _summary_lines(netbox):
 
 def test_failed_module_type_is_counted_in_the_summary():
     """A module type that failed must be counted, not only listed in the report."""
-    from core.outcomes import EntityKind, Outcome
-
     nb = _OutcomeNetBox()
     nb.outcomes.record(EntityKind.MODULE_TYPE, "chicony/CPB09-031A", Outcome.FAILED, reason="boom")
 
@@ -500,8 +499,6 @@ def test_failed_module_type_is_counted_in_the_summary():
 
 def test_failed_rack_type_is_counted_in_the_summary():
     """A rack type that failed must appear in the headline counts."""
-    from core.outcomes import EntityKind, Outcome
-
     nb = _OutcomeNetBox()
     nb.outcomes.record(EntityKind.RACK_TYPE, "lenovo/1410HPB", Outcome.FAILED, reason="boom")
 
@@ -512,8 +509,6 @@ def test_failed_rack_type_is_counted_in_the_summary():
 
 def test_partial_module_type_is_counted_in_the_summary():
     """A partially updated module must be counted from the registry."""
-    from core.outcomes import EntityKind, Outcome
-
     nb = _OutcomeNetBox()
     nb.outcomes.record(EntityKind.MODULE_TYPE, "cisco/LC", Outcome.PARTIAL, reason="half applied")
 
@@ -524,8 +519,6 @@ def test_partial_module_type_is_counted_in_the_summary():
 
 def test_headline_counts_match_the_itemised_rows():
     """The invariant the two parallel tallies never enforced."""
-    from core.outcomes import EntityKind, Outcome
-
     nb = _OutcomeNetBox()
     nb.outcomes.record(EntityKind.DEVICE_TYPE, "ribbon/SBC 5400", Outcome.FAILED, reason="a")
     nb.outcomes.record(EntityKind.DEVICE_TYPE, "acme/SW2", Outcome.FAILED, reason="b")
@@ -540,3 +533,27 @@ def test_headline_counts_match_the_itemised_rows():
     assert "1 rack types failed" in text
     # The itemised report must agree with those headline numbers.
     assert "Failed entities: 4" in text
+
+
+def test_partial_device_type_is_counted_in_the_summary():
+    """A partially updated device type must appear in the headline counts."""
+    nb = _OutcomeNetBox()
+    nb.outcomes.record(EntityKind.DEVICE_TYPE, "acme/SW1", Outcome.PARTIAL, reason="half applied")
+
+    lines = _summary_lines(nb)
+
+    assert any("1 device types partially updated" in line for line in lines), lines
+
+
+def test_headline_partials_match_the_itemised_rows():
+    """Every kind that can record PARTIAL must also be counted in the headline."""
+    nb = _OutcomeNetBox()
+    nb.outcomes.record(EntityKind.DEVICE_TYPE, "acme/SW1", Outcome.PARTIAL, reason="a")
+    nb.outcomes.record(EntityKind.DEVICE_TYPE, "acme/SW2", Outcome.PARTIAL, reason="b")
+    nb.outcomes.record(EntityKind.MODULE_TYPE, "cisco/LC", Outcome.PARTIAL, reason="c")
+
+    text = "\n".join(_summary_lines(nb))
+
+    assert "2 device types partially updated" in text
+    assert "1 modules partially updated" in text
+    assert "Partial updates: 3" in text

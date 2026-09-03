@@ -1,6 +1,7 @@
 """NetBox REST and GraphQL API client for importing device and module type libraries."""
 
 from collections import Counter
+from contextlib import contextmanager
 from functools import lru_cache
 import hashlib
 import json
@@ -1048,22 +1049,21 @@ class NetBox:
                     self.counter["components_added"],
                     self.counter["components_removed"],
                 )
-                self.device_types.take_errors()
-                self.device_types.update_components(
-                    device_type,
-                    dt.id,
-                    dt_change.component_changes,
-                    parent_type="device",
-                )
-                if remove_components:
-                    self.device_types.remove_components(dt.id, dt_change.component_changes, parent_type="device")
+                with self.device_types.collect_component_errors() as component_errors:
+                    self.device_types.update_components(
+                        device_type,
+                        dt.id,
+                        dt_change.component_changes,
+                        parent_type="device",
+                    )
+                    if remove_components:
+                        self.device_types.remove_components(dt.id, dt_change.component_changes, parent_type="device")
                 after_components = (
                     self.counter["components_updated"],
                     self.counter["components_added"],
                     self.counter["components_removed"],
                 )
                 component_delta = sum(after_components) - sum(before_components)
-                component_errors = self.device_types.take_errors()
 
             # Distinguish full update, partial, and complete failure.
             self._log_device_type_change_outcome(
@@ -1155,13 +1155,22 @@ class NetBox:
             src_file (str): Filesystem path to the YAML source file (for front-port context).
             saved_images (dict): Mapping of image kind to local file path for upload.
         """
-        for component in COMPONENT_TYPES:
-            yaml_key = component.yaml_key
-            if yaml_key not in device_type:
-                continue
-            if yaml_key == "module-bays" and not self.modules:
-                continue
-            self.device_types.create_components(yaml_key, device_type[yaml_key], dt_id, context=src_file)
+        with self.device_types.collect_component_errors() as component_errors:
+            for component in COMPONENT_TYPES:
+                yaml_key = component.yaml_key
+                if yaml_key not in device_type:
+                    continue
+                if yaml_key == "module-bays" and not self.modules:
+                    continue
+                self.device_types.create_components(yaml_key, device_type[yaml_key], dt_id, context=src_file)
+        if component_errors:
+            # The type exists but not all of its components do.
+            self.outcomes.record(
+                EntityKind.DEVICE_TYPE,
+                self._yaml_identity(device_type),
+                Outcome.PARTIAL,
+                reason=_summarise_component_errors(component_errors),
+            )
         if saved_images:
             self.device_types.upload_images(self.url, self.token, saved_images, dt_id)
             _store_image_hashes(self._image_hash_cache, saved_images, log_fn=self.handle.log)
@@ -1608,12 +1617,21 @@ class NetBox:
             module_type_id (int): ID of the newly created module type in NetBox.
             src_file (str): Source file path for error context.
         """
-        for component in MODULE_TYPE_COMPONENTS:
-            yaml_key = component.yaml_key
-            if yaml_key in curr_mt:
-                self.device_types.create_components(
-                    yaml_key, curr_mt[yaml_key], module_type_id, parent_type="module", context=src_file
-                )
+        with self.device_types.collect_component_errors() as component_errors:
+            for component in MODULE_TYPE_COMPONENTS:
+                yaml_key = component.yaml_key
+                if yaml_key in curr_mt:
+                    self.device_types.create_components(
+                        yaml_key, curr_mt[yaml_key], module_type_id, parent_type="module", context=src_file
+                    )
+        if component_errors:
+            # The module type exists but not all of its components do.
+            self.outcomes.record(
+                EntityKind.MODULE_TYPE,
+                self._yaml_identity(curr_mt),
+                Outcome.PARTIAL,
+                reason=_summarise_component_errors(component_errors),
+            )
 
     def _apply_module_type_component_updates(
         self, curr_mt, module_type_res, properties_updated, remove_components, patch_ok=True
@@ -1638,9 +1656,12 @@ class NetBox:
             before_updated = self.counter["components_updated"]
             before_added = self.counter["components_added"]
             before_removed = self.counter["components_removed"]
-            self.device_types.update_components(curr_mt, module_type_res.id, component_changes, parent_type="module")
-            if remove_components:
-                self.device_types.remove_components(module_type_res.id, component_changes, parent_type="module")
+            with self.device_types.collect_component_errors() as component_errors:
+                self.device_types.update_components(
+                    curr_mt, module_type_res.id, component_changes, parent_type="module"
+                )
+                if remove_components:
+                    self.device_types.remove_components(module_type_res.id, component_changes, parent_type="module")
             component_delta = (
                 self.counter["components_updated"]
                 - before_updated
@@ -1657,7 +1678,8 @@ class NetBox:
                         EntityKind.MODULE_TYPE,
                         identity,
                         Outcome.FAILED,
-                        reason="Scalar PATCH failed; no component changes were actionable.",
+                        reason=_summarise_component_errors(component_errors)
+                        or "Scalar PATCH failed; no component changes were actionable.",
                     )
             elif component_delta == 0:
                 if properties_updated and patch_ok:
@@ -1667,10 +1689,11 @@ class NetBox:
                         EntityKind.MODULE_TYPE,
                         identity,
                         Outcome.PARTIAL,
-                        reason="Properties updated; component reconciliation applied 0 changes.",
+                        reason=_summarise_component_errors(component_errors)
+                        or "Properties updated; component reconciliation applied 0 changes.",
                     )
                 else:
-                    reason = (
+                    reason = _summarise_component_errors(component_errors) or (
                         "Scalar PATCH failed; component reconciliation ran but applied 0 changes."
                         if not patch_ok
                         else "Component reconciliation ran but applied 0 changes."
@@ -1686,11 +1709,13 @@ class NetBox:
             else:
                 reason_parts = [] if patch_ok else ["Property PATCH failed"]
                 reason_parts.append(f"applied {component_delta} of {actionable_count} component change(s)")
+                reason = "; ".join(reason_parts) + "."
+                detail = _summarise_component_errors(component_errors)
                 self.outcomes.record(
                     EntityKind.MODULE_TYPE,
                     identity,
                     Outcome.PARTIAL,
-                    reason="; ".join(reason_parts) + ".",
+                    reason=f"{reason} {detail}" if detail else reason,
                 )
         elif properties_updated and patch_ok:
             self.counter["module_updated"] += 1
@@ -2203,8 +2228,7 @@ class DeviceTypes:
             wrap_record=_FrontPortRecordWithMappings,
         )
         self._image_progress = None
-        # Component failures logged since the last take_errors(), so the caller can
-        # put NetBox's own message into the device type's outcome record.
+        # Component failures for the entity currently inside collect_component_errors().
         self._component_errors: list[str] = []
         self.existing_device_types = {}
         self.existing_device_types_by_slug = {}
@@ -2244,10 +2268,21 @@ class DeviceTypes:
             device_type_ids={record.id for record in self.existing_device_types.values()},
         )
 
-    def take_errors(self):
-        """Return the component errors recorded since the last call, and clear them."""
-        errors, self._component_errors = self._component_errors, []
-        return errors
+    @contextmanager
+    def collect_component_errors(self):
+        """Scope component failure messages to one entity's component work.
+
+        Yields a list that holds the messages logged inside the block. The buffer is
+        cleared on entry and on exit, so one entity's failures can never surface in
+        another's outcome reason, and a caller cannot forget to clear it.
+        """
+        self._component_errors = []
+        collected: list[str] = []
+        try:
+            yield collected
+        finally:
+            collected.extend(self._component_errors)
+            self._component_errors = []
 
     def _log_component_error(self, message):
         """Log a component failure and keep it for the caller's outcome record."""
