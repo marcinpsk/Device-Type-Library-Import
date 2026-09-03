@@ -2471,7 +2471,7 @@ class DeviceTypes:
             except pynetbox.RequestError as e:
                 self._log_component_error(f"Error updating {comp_type} (ID: {update_data['id']}): {e.error}")
             except _RETRYABLE_EXCEPTIONS as e:
-                self.handle.log(
+                self._log_component_error(
                     f"Connection error updating {comp_type} (ID: {update_data['id']}) after {_MAX_RETRIES} retries: {e}"
                 )
 
@@ -2577,7 +2577,7 @@ class DeviceTypes:
                 except pynetbox.RequestError as e:
                     self._log_component_error(f"Error removing {comp_type} (ID: {comp_id}): {e.error}")
                 except _RETRYABLE_EXCEPTIONS as e:
-                    self.handle.log(
+                    self._log_component_error(
                         f"Connection error removing {comp_type} (ID: {comp_id}) after {_MAX_RETRIES} retries: {e}"
                     )
 

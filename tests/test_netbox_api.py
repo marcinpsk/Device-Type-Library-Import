@@ -7173,6 +7173,102 @@ class TestFailuresReachTheRunReport:
 class TestComponentFailureReasonReachesTheReport:
     """A failed component change must carry NetBox's message into the report."""
 
+    def test_component_update_transport_failure_reports_the_transport_error(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """A retry-exhausted update must name the transport error, not the generic label."""
+        import pynetbox as real_pynb
+        import requests
+        from core.change_detector import (
+            ChangeReport,
+            ChangeType,
+            ComponentChange,
+            DeviceTypeChange,
+            PropertyChange,
+        )
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+
+        dt = make_device_types(nb_api=mock_nb_api)
+        existing_iface = MagicMock()
+        existing_iface.id = 77
+        existing_iface.name = "LAN"
+        dt.components.record("interface_templates", "device", 6119, {"LAN": existing_iface})
+        mock_nb_api.dcim.interface_templates.update.side_effect = requests.exceptions.ConnectionError("network down")
+
+        existing_dt = MagicMock()
+        existing_dt.id = 6119
+        existing_dt.model = "EAP670"
+        existing_dt.manufacturer.name = "TP-Link"
+        dt.existing_device_types = {("tp-link", "EAP670"): existing_dt}
+        dt.existing_device_types_by_slug = {}
+
+        nb = NetBox(mock_settings, mock_handle)
+        nb.device_types = dt
+
+        change = DeviceTypeChange(
+            manufacturer_slug="tp-link",
+            model="EAP670",
+            slug="tp-link-eap670",
+            component_changes=[
+                ComponentChange(
+                    "interfaces",
+                    "LAN",
+                    ChangeType.COMPONENT_CHANGED,
+                    property_changes=[PropertyChange("description", "", "uplink")],
+                )
+            ],
+        )
+        device_type = {
+            "manufacturer": {"slug": "tp-link"},
+            "model": "EAP670",
+            "slug": "tp-link-eap670",
+            "interfaces": [{"name": "LAN", "type": "2.5gbase-t", "description": "uplink"}],
+            "src": "/repo/device-types/TP-Link/EAP670.yaml",
+        }
+        with patch("core.netbox_api.time.sleep"):
+            nb.create_device_types(
+                [device_type], update=True, change_report=ChangeReport(modified_device_types=[change])
+            )
+
+        report = "\n".join(nb.outcomes.render_failure_report())
+        assert "TP-Link/EAP670" in report
+        assert "Connection error updating" in report
+        assert "network down" in report
+
+    def test_component_removal_transport_failure_reports_the_transport_error(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """A retry-exhausted removal must name the transport error too."""
+        import pynetbox as real_pynb
+        import requests
+        from core.change_detector import ChangeType, ComponentChange
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+
+        dt = make_device_types(nb_api=mock_nb_api)
+        stale = MagicMock()
+        stale.id = 88
+        stale.name = "OLD"
+        dt.components.record("interface_templates", "device", 6119, {"OLD": stale})
+        mock_nb_api.dcim.interface_templates.delete.side_effect = requests.exceptions.ConnectionError("network down")
+
+        with patch("core.netbox_api.time.sleep"):
+            dt.remove_components(
+                6119,
+                [ComponentChange("interfaces", "OLD", ChangeType.COMPONENT_REMOVED)],
+                parent_type="device",
+            )
+
+        errors = dt.take_errors()
+        assert len(errors) == 1
+        assert "Connection error removing" in errors[0]
+        assert "network down" in errors[0]
+
     def test_failed_component_create_reports_the_netbox_message(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
     ):
