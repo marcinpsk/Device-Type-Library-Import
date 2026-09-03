@@ -1085,7 +1085,13 @@ class NetBox:
                 f" {device_type.get('manufacturer', {}).get('slug', '')} {device_type.get('model', '')}"
                 f" (Context: {src_file})"
             )
-            self._record_create_failure(device_type, str(e.error), src_file)
+            self._record_failure(
+                EntityKind.DEVICE_TYPE,
+                self._yaml_identity(device_type),
+                str(e.error),
+                src_file,
+                counter_key="device_types_failed",
+            )
             return None, True
         except _RETRYABLE_EXCEPTIONS as e:
             self.handle.log(
@@ -1093,24 +1099,35 @@ class NetBox:
                 f" {device_type.get('manufacturer', {}).get('slug', '')} {device_type.get('model', '')}"
                 f" after {_MAX_RETRIES} retries: {e} (Context: {src_file})"
             )
-            self._record_create_failure(device_type, f"Connection error after {_MAX_RETRIES} retries: {e}", src_file)
+            self._record_failure(
+                EntityKind.DEVICE_TYPE,
+                self._yaml_identity(device_type),
+                f"Connection error after {_MAX_RETRIES} retries: {e}",
+                src_file,
+                counter_key="device_types_failed",
+            )
             return None, True
 
-    def _record_create_failure(self, device_type, reason, src_file):
-        """Record a failed device-type creation so it reaches the end-of-run report.
+    def _record_failure(self, kind, identity, reason, src_file, *, counter_key=None):
+        """Record a failed entity so it reaches the end-of-run report.
 
-        A parsed YAML dict carries only the manufacturer slug, so the identity uses
-        the slug where the update path can use the NetBox manufacturer name.
+        Every create/update failure path must call this; logging alone leaves the
+        failure out of the summary and out of the failed count.
         """
-        identity = f"{device_type.get('manufacturer', {}).get('slug', '')}/{device_type.get('model', '')}"
-        self.counter.update({"device_types_failed": 1})
+        if counter_key:
+            self.counter.update({counter_key: 1})
         self.outcomes.record(
-            EntityKind.DEVICE_TYPE,
+            kind,
             identity,
             Outcome.FAILED,
             reason=reason,
             hint=f"Source: {src_file}" if src_file else None,
         )
+
+    @staticmethod
+    def _yaml_identity(parsed):
+        """Build a report identity from a parsed YAML dict, which carries only the slug."""
+        return f"{parsed.get('manufacturer', {}).get('slug', '')}/{parsed.get('model', '')}"
 
     def _create_device_type_components(self, device_type, dt_id, src_file, saved_images):
         """Create all component templates and upload images for a newly created device type.
@@ -1296,10 +1313,19 @@ class NetBox:
                         )
                     except pynetbox.RequestError as e:
                         self.handle.log(f"Error updating Rack Type {model}: {e.error} (Context: {src_file})")
+                        self._record_failure(
+                            EntityKind.RACK_TYPE, f"{manufacturer_slug}/{model}", str(e.error), src_file
+                        )
                     except _RETRYABLE_EXCEPTIONS as e:
                         self.handle.log(
                             f"Connection error updating Rack Type {model} after {_MAX_RETRIES} retries:"
                             f" {e} (Context: {src_file})"
+                        )
+                        self._record_failure(
+                            EntityKind.RACK_TYPE,
+                            f"{manufacturer_slug}/{model}",
+                            f"Connection error after {_MAX_RETRIES} retries: {e}",
+                            src_file,
                         )
                 else:
                     self.handle.verbose_log(f"Rack Type Unchanged: {manufacturer_slug} - {model} - {existing.id}")
@@ -1311,10 +1337,19 @@ class NetBox:
                     self.handle.verbose_log(f"Rack Type Created: {manufacturer_slug} - {model} - {rt.id}")
                 except pynetbox.RequestError as excep:
                     self.handle.log(f"Error creating Rack Type: {excep.error} (Context: {src_file})")
+                    self._record_failure(
+                        EntityKind.RACK_TYPE, f"{manufacturer_slug}/{model}", str(excep.error), src_file
+                    )
                 except _RETRYABLE_EXCEPTIONS as e:
                     self.handle.log(
                         f"Connection error creating Rack Type {model} after {_MAX_RETRIES} retries:"
                         f" {e} (Context: {src_file})"
+                    )
+                    self._record_failure(
+                        EntityKind.RACK_TYPE,
+                        f"{manufacturer_slug}/{model}",
+                        f"Connection error after {_MAX_RETRIES} retries: {e}",
+                        src_file,
                     )
 
     @staticmethod
@@ -1701,10 +1736,22 @@ class NetBox:
                 )
             except pynetbox.RequestError as excep:
                 self.handle.log(f"Error creating Module Type: {excep.error} (Context: {src_file})")
+                self._record_failure(
+                    EntityKind.MODULE_TYPE,
+                    self._yaml_identity(curr_mt),
+                    str(excep.error),
+                    src_file,
+                )
                 return False
             except _RETRYABLE_EXCEPTIONS as e:
                 self.handle.log(
                     f"Connection error creating Module Type after {_MAX_RETRIES} retries: {e} (Context: {src_file})"
+                )
+                self._record_failure(
+                    EntityKind.MODULE_TYPE,
+                    self._yaml_identity(curr_mt),
+                    f"Connection error after {_MAX_RETRIES} retries: {e}",
+                    src_file,
                 )
                 return False
 

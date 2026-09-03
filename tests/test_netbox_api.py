@@ -7100,3 +7100,71 @@ class TestProcessSingleModuleTypeRemoveComponents:
         failures = nb.outcomes.failures()
         assert len(failures) == 1
         assert "CM-Fail-Patch" in failures[0].identity
+
+
+class TestFailuresReachTheRunReport:
+    """Every failure path must reach the end-of-run FAILED / PARTIAL report."""
+
+    def _netbox(self, mock_settings, mock_handle, mock_pynetbox):
+        import pynetbox as real_pynb
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_pynetbox.api.return_value.version = "4.1"
+        return NetBox(mock_settings, mock_handle)
+
+    def test_rack_type_create_failure_is_reported(self, mock_settings, mock_pynetbox, mock_handle):
+        """A rejected rack-type create must appear in the report, not just inline."""
+        nb = self._netbox(mock_settings, mock_handle, mock_pynetbox)
+        mock_pynetbox.api.return_value.dcim.rack_types.create.side_effect = _request_error(
+            b'{"description":["Ensure this field has no more than 200 characters."]}'
+        )
+        rack_type = {
+            "manufacturer": {"slug": "lenovo"},
+            "model": "1410HPB",
+            "slug": "lenovo-1410hpb",
+            "src": "/repo/rack-types/Lenovo/1410HPB.yaml",
+        }
+        nb.create_rack_types([rack_type], all_rack_types={})
+
+        report = "\n".join(nb.outcomes.render_failure_report())
+        assert "[rack_type] lenovo/1410HPB" in report
+        assert "no more than 200 characters" in report
+
+    def test_module_type_create_failure_is_reported(self, mock_settings, mock_pynetbox, mock_handle):
+        """A rejected module-type create must appear in the report."""
+        nb = self._netbox(mock_settings, mock_handle, mock_pynetbox)
+        mock_pynetbox.api.return_value.dcim.module_types.create.side_effect = _request_error(
+            b'{"model":["This field may not be blank."]}'
+        )
+        curr_mt = {"manufacturer": {"slug": "panduit"}, "model": "FAP6WBUSC", "slug": "fap6wbusc"}
+
+        result = nb._process_single_module_type(
+            curr_mt, "/repo/module-types/Panduit/FAP6WBUSC.yaml", {}, {}, only_new=False
+        )
+        assert result is False
+
+        report = "\n".join(nb.outcomes.render_failure_report())
+        assert "[module_type] panduit/FAP6WBUSC" in report
+        assert "may not be blank" in report
+
+    def test_rack_type_update_failure_is_reported(self, mock_settings, mock_pynetbox, mock_handle):
+        """A rejected rack-type update must appear in the report."""
+        from core.graphql_client import DotDict
+
+        nb = self._netbox(mock_settings, mock_handle, mock_pynetbox)
+        mock_pynetbox.api.return_value.dcim.rack_types.update.side_effect = _request_error(
+            b'{"u_height":["Invalid value."]}'
+        )
+        existing = DotDict({"id": 7, "model": "1410HPB", "u_height": 40})
+        rack_type = {
+            "manufacturer": {"slug": "lenovo"},
+            "model": "1410HPB",
+            "slug": "lenovo-1410hpb",
+            "u_height": 42,
+            "src": "/repo/rack-types/Lenovo/1410HPB.yaml",
+        }
+        nb.create_rack_types([rack_type], only_new=False, all_rack_types={"lenovo": {"1410HPB": existing}})
+
+        report = "\n".join(nb.outcomes.render_failure_report())
+        assert "[rack_type] lenovo/1410HPB" in report
+        assert "Invalid value." in report
