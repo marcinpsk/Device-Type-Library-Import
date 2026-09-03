@@ -2324,6 +2324,43 @@ class TestCreateDeviceTypesUpdatePath:
         assert nb.counter.get("properties_updated", 0) == 0
         assert nb.counter["device_types_component_updates"] == 1
 
+    def test_create_failure_reaches_the_end_of_run_failure_report(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """A device type that fails to be CREATED must appear in the failure report.
+
+        Only the update path recorded outcomes, so a rejected create was logged
+        inline and then vanished from the end-of-run summary.
+        """
+        import pynetbox as real_pynb
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+        mock_nb_api.dcim.device_types.create.side_effect = _request_error(
+            b"{\"manufacturer\":[\"Related object not found using the provided attributes: {'slug': 'ribbon'}\"]}"
+        )
+
+        dt = make_device_types(nb_api=mock_nb_api)
+        dt.existing_device_types = {}
+        dt.existing_device_types_by_slug = {}
+        nb = NetBox(mock_settings, mock_handle)
+        nb.device_types = dt
+
+        device_type = {
+            "manufacturer": {"slug": "ribbon"},
+            "model": "SBC 5400",
+            "slug": "ribbon-communications-sbc-5400",
+            "src": "/repo/device-types/Ribbon Communications/SBC-5400.yaml",
+        }
+        nb.create_device_types([device_type], only_new=True)
+
+        report = "\n".join(nb.outcomes.render_failure_report())
+        assert "FAILED / PARTIAL UPDATE REPORT" in report
+        assert "ribbon/SBC 5400" in report
+        assert "Related object not found" in report
+        assert nb.counter["device_types_failed"] == 1
+
     def test_update_verbose_log_when_change_applied(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
     ):

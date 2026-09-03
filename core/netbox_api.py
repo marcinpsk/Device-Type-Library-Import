@@ -1085,6 +1085,7 @@ class NetBox:
                 f" {device_type.get('manufacturer', {}).get('slug', '')} {device_type.get('model', '')}"
                 f" (Context: {src_file})"
             )
+            self._record_create_failure(device_type, str(e.error), src_file)
             return None, True
         except _RETRYABLE_EXCEPTIONS as e:
             self.handle.log(
@@ -1092,7 +1093,24 @@ class NetBox:
                 f" {device_type.get('manufacturer', {}).get('slug', '')} {device_type.get('model', '')}"
                 f" after {_MAX_RETRIES} retries: {e} (Context: {src_file})"
             )
+            self._record_create_failure(device_type, f"Connection error after {_MAX_RETRIES} retries: {e}", src_file)
             return None, True
+
+    def _record_create_failure(self, device_type, reason, src_file):
+        """Record a failed device-type creation so it reaches the end-of-run report.
+
+        A parsed YAML dict carries only the manufacturer slug, so the identity uses
+        the slug where the update path can use the NetBox manufacturer name.
+        """
+        identity = f"{device_type.get('manufacturer', {}).get('slug', '')}/{device_type.get('model', '')}"
+        self.counter.update({"device_types_failed": 1})
+        self.outcomes.record(
+            EntityKind.DEVICE_TYPE,
+            identity,
+            Outcome.FAILED,
+            reason=reason,
+            hint=f"Source: {src_file}" if src_file else None,
+        )
 
     def _create_device_type_components(self, device_type, dt_id, src_file, saved_images):
         """Create all component templates and upload images for a newly created device type.
