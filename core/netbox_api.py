@@ -418,6 +418,16 @@ def _count_actionable_component_changes(changes, remove_components):
     )
 
 
+def _summarise_component_errors(errors, limit=3):
+    """Join component failure messages into one reason line, or "" when there are none."""
+    if not errors:
+        return ""
+    shown = "; ".join(errors[:limit])
+    if len(errors) > limit:
+        shown += f" (+{len(errors) - limit} more)"
+    return shown
+
+
 class NetBox:
     """Interface to the NetBox API for importing device and module types."""
 
@@ -787,6 +797,7 @@ class NetBox:
         component_delta,
         actionable_count,
         failure_resolution=None,
+        component_errors=None,
     ):
         """Emit the right post-update log for an existing device type.
 
@@ -815,6 +826,9 @@ class NetBox:
             failure_resolution: Optional :class:`FailureResolution` whose
                 ``description``, ``blocking_objects`` and ``hint`` will be
                 attached to the registry record when the update failed.
+            component_errors: Component failure messages collected during this
+                device type's component work, used as the outcome reason so the
+                summary carries NetBox's own message.
         """
         identity = f"{dt.manufacturer.name}/{dt.model}"
         component_attempted = actionable_count > 0
@@ -846,6 +860,9 @@ class NetBox:
                     else:
                         reason_parts.append(f"applied {component_delta} component change(s)")
                 reason = "; ".join(reason_parts) + "." if reason_parts else "Partial update."
+                detail = _summarise_component_errors(component_errors)
+                if detail:
+                    reason = f"{reason} {detail}"
                 self.handle.verbose_log(
                     f"Device Type Partially Updated: {dt.manufacturer.name} - {dt.model} - {dt.id}. {reason}"
                 )
@@ -872,7 +889,8 @@ class NetBox:
                 reason=(
                     failure_resolution.description
                     if failure_resolution
-                    else (
+                    else _summarise_component_errors(component_errors)
+                    or (
                         "Property PATCH and component updates failed."
                         if property_attempted and component_attempted
                         else "Property PATCH failed."
@@ -1024,6 +1042,7 @@ class NetBox:
                         )
 
             # Apply component changes
+            component_errors = []
             if dt_change.component_changes:
                 actionable_count = _count_actionable_component_changes(dt_change.component_changes, remove_components)
                 before_components = (
@@ -1031,6 +1050,7 @@ class NetBox:
                     self.counter["components_added"],
                     self.counter["components_removed"],
                 )
+                self.device_types.take_errors()
                 self.device_types.update_components(
                     device_type,
                     dt.id,
@@ -1045,6 +1065,7 @@ class NetBox:
                     self.counter["components_removed"],
                 )
                 component_delta = sum(after_components) - sum(before_components)
+                component_errors = self.device_types.take_errors()
 
             # Distinguish full update, partial, and complete failure.
             self._log_device_type_change_outcome(
@@ -1055,6 +1076,7 @@ class NetBox:
                 component_delta=component_delta,
                 actionable_count=actionable_count,
                 failure_resolution=failure_resolution,
+                component_errors=component_errors,
             )
         else:
             self.handle.verbose_log(
@@ -2177,6 +2199,9 @@ class DeviceTypes:
             wrap_record=_FrontPortRecordWithMappings,
         )
         self._image_progress = None
+        # Component failures logged since the last take_errors(), so the caller can
+        # put NetBox's own message into the device type's outcome record.
+        self._component_errors: list[str] = []
         self.existing_device_types = {}
         self.existing_device_types_by_slug = {}
 
@@ -2214,6 +2239,16 @@ class DeviceTypes:
             manufacturer_slug=manufacturer_slug,
             device_type_ids={record.id for record in self.existing_device_types.values()},
         )
+
+    def take_errors(self):
+        """Return the component errors recorded since the last call, and clear them."""
+        errors, self._component_errors = self._component_errors, []
+        return errors
+
+    def _log_component_error(self, message):
+        """Log a component failure and keep it for the caller's outcome record."""
+        self.handle.log(message)
+        self._component_errors.append(message)
 
     def _create_generic(
         self,
@@ -2271,18 +2306,18 @@ class DeviceTypes:
                 for item, error in zip(to_create, per_item):
                     if error:
                         reported += 1
-                        self.handle.log(
+                        self._log_component_error(
                             f"Failed to create {component_name} '{item.get('name', 'Unknown')}': {error}{context_str}"
                         )
                 if not reported:
                     failed_items = [x["name"] for x in to_create]
-                    self.handle.log(
+                    self._log_component_error(
                         f"Error '{excep.error}' creating {component_name}. Items: {failed_items}{context_str}"
                     )
             except _RETRYABLE_EXCEPTIONS as excep:
                 context_str = f" (Context: {context})" if context else ""
                 failed_items = [x["name"] for x in to_create]
-                self.handle.log(
+                self._log_component_error(
                     f"Connection error creating {component_name} after {_MAX_RETRIES} retries: {excep}."
                     f" Items: {failed_items}{context_str}"
                 )
@@ -2434,7 +2469,7 @@ class DeviceTypes:
                 success_count += 1
                 self.handle.verbose_log(f"Updated {comp_type} (ID: {update_data['id']})")
             except pynetbox.RequestError as e:
-                self.handle.log(f"Error updating {comp_type} (ID: {update_data['id']}): {e.error}")
+                self._log_component_error(f"Error updating {comp_type} (ID: {update_data['id']}): {e.error}")
             except _RETRYABLE_EXCEPTIONS as e:
                 self.handle.log(
                     f"Connection error updating {comp_type} (ID: {update_data['id']}) after {_MAX_RETRIES} retries: {e}"
@@ -2540,7 +2575,7 @@ class DeviceTypes:
                     _retry_on_connection_error(endpoint.delete, [comp_id])
                     success_count += 1
                 except pynetbox.RequestError as e:
-                    self.handle.log(f"Error removing {comp_type} (ID: {comp_id}): {e.error}")
+                    self._log_component_error(f"Error removing {comp_type} (ID: {comp_id}): {e.error}")
                 except _RETRYABLE_EXCEPTIONS as e:
                     self.handle.log(
                         f"Connection error removing {comp_type} (ID: {comp_id}) after {_MAX_RETRIES} retries: {e}"

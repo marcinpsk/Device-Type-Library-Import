@@ -7168,3 +7168,53 @@ class TestFailuresReachTheRunReport:
         report = "\n".join(nb.outcomes.render_failure_report())
         assert "[rack_type] lenovo/1410HPB" in report
         assert "Invalid value." in report
+
+
+class TestComponentFailureReasonReachesTheReport:
+    """A failed component change must carry NetBox's message into the report."""
+
+    def test_failed_component_create_reports_the_netbox_message(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """The report must name the constraint, not the generic failure label."""
+        import pynetbox as real_pynb
+        from core.change_detector import ChangeReport, ChangeType, ComponentChange, DeviceTypeChange
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+
+        dt = make_device_types(nb_api=mock_nb_api)
+        dt.components.record("interface_templates", "device", 6119, {})
+        mock_nb_api.dcim.interface_templates.create.side_effect = _request_error(
+            b'[{"rf_role":["Wireless role may be set only on wireless interfaces."]}]'
+        )
+
+        existing_dt = MagicMock()
+        existing_dt.id = 6119
+        existing_dt.model = "EAP670"
+        existing_dt.manufacturer.name = "TP-Link"
+        dt.existing_device_types = {("tp-link", "EAP670"): existing_dt}
+        dt.existing_device_types_by_slug = {}
+
+        nb = NetBox(mock_settings, mock_handle)
+        nb.device_types = dt
+
+        change = DeviceTypeChange(
+            manufacturer_slug="tp-link",
+            model="EAP670",
+            slug="tp-link-eap670",
+            component_changes=[ComponentChange("interfaces", "LAN", ChangeType.COMPONENT_ADDED)],
+        )
+        device_type = {
+            "manufacturer": {"slug": "tp-link"},
+            "model": "EAP670",
+            "slug": "tp-link-eap670",
+            "interfaces": [{"name": "LAN", "type": "2.5gbase-t", "rf_role": "ap"}],
+            "src": "/repo/device-types/TP-Link/EAP670.yaml",
+        }
+        nb.create_device_types([device_type], update=True, change_report=ChangeReport(modified_device_types=[change]))
+
+        report = "\n".join(nb.outcomes.render_failure_report())
+        assert "TP-Link/EAP670" in report
+        assert "Wireless role may be set only on wireless interfaces." in report
