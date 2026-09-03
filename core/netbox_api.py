@@ -2348,7 +2348,9 @@ class DeviceTypes:
             rp_name, fp_pos, rp_pos = tup
             rear_port = existing_rp.get(rp_name)
             if rear_port is None:
-                self.handle.log(f'Cannot update mapping for "{comp_name}": rear port "{rp_name}" not found in cache.')
+                self._log_component_error(
+                    f'Cannot update mapping for "{comp_name}": rear port "{rp_name}" not found in cache.'
+                )
                 return None
             rear_ports_payload.append(
                 {
@@ -2393,7 +2395,7 @@ class DeviceTypes:
                 # because rear port names are unavailable via the GraphQL API.
                 # Fall back to the YAML _mappings entry which does include the name.
                 if not yaml_mappings:
-                    self.handle.log(
+                    self._log_component_error(
                         f"Warning: cannot update mappings for '{comp_name}' on NetBox < 4.5:"
                         " rear port names unavailable, skipping mapping update"
                     )
@@ -2414,7 +2416,9 @@ class DeviceTypes:
                 update_data["rear_port"] = rp.id
                 update_data["rear_port_position"] = rp_pos
             else:
-                self.handle.log(f"Warning: cannot update mappings for '{comp_name}': rear port '{rp_name}' not found")
+                self._log_component_error(
+                    f"Warning: cannot update mappings for '{comp_name}': rear port '{rp_name}' not found"
+                )
 
     def _apply_updates_for_type(self, comp_type, changes, yaml_data, device_type_id, parent_type):
         """Apply property updates for all changed components of a single type.
@@ -2619,7 +2623,7 @@ class DeviceTypes:
                 except KeyError:
                     available = list(existing_pp.keys()) if existing_pp else []
                     ctx = f" (Context: {context})" if context else ""
-                    self.handle.log(
+                    self._log_component_error(
                         f'Could not find Power Port "{outlet["power_port"]}" for '
                         f'{label} "{outlet.get("name", "Unknown")}". '
                         f"Available: {available}{ctx}"
@@ -2702,7 +2706,7 @@ class DeviceTypes:
                     if rear_port is None:
                         available = list(existing_rp.keys()) if existing_rp else []
                         ctx = f" (Context: {context})" if context else ""
-                        self.handle.log(
+                        self._log_component_error(
                             f'Could not find Rear Port "{rp_name}" for {label} "{port["name"]}". '
                             f"Available: {available}{ctx}"
                         )
@@ -2778,7 +2782,9 @@ class DeviceTypes:
             if name in all_interfaces and bridge_name in all_interfaces:
                 to_update.append({"id": all_interfaces[name].id, "bridge": all_interfaces[bridge_name].id})
             else:
-                self.handle.log(f"Error bridging {name} to {bridge_name}: Interface not found (Context: {context})")
+                self._log_component_error(
+                    f"Error bridging {name} to {bridge_name}: Interface not found (Context: {context})"
+                )
 
         if not to_update:
             return
@@ -2786,9 +2792,9 @@ class DeviceTypes:
             _retry_on_connection_error(self.netbox.dcim.interface_templates.update, to_update)
             self.handle.verbose_log(f"Bridged {len(to_update)} interfaces.")
         except pynetbox.RequestError as e:
-            self.handle.log(f"Error bridging interfaces: {e} (Context: {context})")
+            self._log_component_error(f"Error bridging interfaces: {e} (Context: {context})")
         except _RETRYABLE_EXCEPTIONS as e:
-            self.handle.log(
+            self._log_component_error(
                 f"Connection error bridging interfaces after {_MAX_RETRIES} retries: {e} (Context: {context})"
             )
 

@@ -7170,6 +7170,96 @@ class TestFailuresReachTheRunReport:
         assert "Invalid value." in report
 
 
+class TestSkippedComponentReasonReachesTheReport:
+    """A component silently dropped during link resolution must reach the outcome reason."""
+
+    def _dt(self, mock_pynetbox, make_device_types, parent_id=1):
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+        dt = make_device_types(nb_api=mock_nb_api)
+        return dt
+
+    def test_unresolvable_power_port_reaches_the_report(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """The Powerman case: an outlet dropped for a bad power_port must name the reason."""
+        import pynetbox as real_pynb
+        from core.change_detector import ChangeReport, ChangeType, ComponentChange, DeviceTypeChange
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+
+        dt = make_device_types(nb_api=mock_nb_api)
+        inlet = MagicMock()
+        inlet.id = 11
+        inlet.name = "Input"
+        dt.components.record("power_port_templates", "device", 5870, {"Input": inlet})
+        dt.components.record("power_outlet_templates", "device", 5870, {})
+
+        existing_dt = MagicMock()
+        existing_dt.id = 5870
+        existing_dt.model = "Online-3000"
+        existing_dt.manufacturer.name = "Powerman"
+        dt.existing_device_types = {("powerman", "Online-3000"): existing_dt}
+        dt.existing_device_types_by_slug = {}
+
+        nb = NetBox(mock_settings, mock_handle)
+        nb.device_types = dt
+
+        change = DeviceTypeChange(
+            manufacturer_slug="powerman",
+            model="Online-3000",
+            slug="powerman-online-3000",
+            component_changes=[ComponentChange("power-outlets", "Hardwire", ChangeType.COMPONENT_ADDED)],
+        )
+        device_type = {
+            "manufacturer": {"slug": "powerman"},
+            "model": "Online-3000",
+            "slug": "powerman-online-3000",
+            "power-outlets": [{"name": "Hardwire", "type": "iec-60320-c13", "power_port": "hardwired"}],
+            "src": "/repo/device-types/Powerman/Online-3000.yaml",
+        }
+        nb.create_device_types([device_type], update=True, change_report=ChangeReport(modified_device_types=[change]))
+
+        report = "\n".join(nb.outcomes.render_failure_report())
+        assert "Powerman/Online-3000" in report
+        assert "Could not find Power Port" in report
+        assert "hardwired" in report
+
+    def test_unresolvable_rear_port_is_buffered(self, mock_pynetbox, graphql_client, make_device_types):
+        """A front port dropped for a bad rear_port reference must be buffered."""
+        dt = self._dt(mock_pynetbox, make_device_types)
+        dt.components.record("rear_port_templates", "device", 1, {})
+        dt.components.record("front_port_templates", "device", 1, {})
+
+        dt.create_components("front-ports", [{"name": "FP1", "type": "8p8c", "rear_port": "RP-missing"}], 1)
+
+        errors = dt.take_errors()
+        assert any("Could not find Rear Port" in e and "RP-missing" in e for e in errors)
+
+    def test_unresolvable_bridge_is_buffered(self, mock_pynetbox, graphql_client, make_device_types):
+        """An interface bridge that cannot be resolved must be buffered."""
+        dt = self._dt(mock_pynetbox, make_device_types)
+        dt.components.record("interface_templates", "device", 1, {})
+
+        dt.create_components("interfaces", [{"name": "xe-0", "type": "10gbase-x-sfpp", "bridge": "xe-missing"}], 1)
+
+        errors = dt.take_errors()
+        assert any("Error bridging" in e and "xe-missing" in e for e in errors)
+
+    def test_unresolvable_mapping_rear_port_is_buffered(self, mock_pynetbox, graphql_client, make_device_types):
+        """A front-port mapping patch that cannot resolve its rear port must be buffered."""
+        dt = self._dt(mock_pynetbox, make_device_types)
+        dt.components.record("rear_port_templates", "device", 1, {})
+
+        payload = dt._build_mappings_patch("FP1", frozenset({("RP-missing", 1, 1)}), 1, "device")
+
+        assert payload is None
+        errors = dt.take_errors()
+        assert any("Cannot update mapping" in e and "RP-missing" in e for e in errors)
+
+
 class TestComponentFailureReasonReachesTheReport:
     """A failed component change must carry NetBox's message into the report."""
 
