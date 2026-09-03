@@ -452,7 +452,6 @@ class NetBox:
             properties_updated=0,
             components_updated=0,
             components_removed=0,
-            device_types_failed=0,
         )
         self.outcomes = OutcomeRegistry()
         self.url = config.netbox_url
@@ -875,7 +874,6 @@ class NetBox:
                     hint=(failure_resolution.hint if failure_resolution else None),
                 )
         elif property_attempted or component_attempted:
-            self.counter.update({"device_types_failed": 1})
             self.handle.log(
                 f"Device Type Update Failed: {dt.manufacturer.name} - {dt.model} - {dt.id}. "
                 f"Attempted {1 if property_attempted else 0} property PATCH and "
@@ -1112,7 +1110,6 @@ class NetBox:
                 self._yaml_identity(device_type),
                 str(e.error),
                 src_file,
-                counter_key="device_types_failed",
             )
             return None, True
         except _RETRYABLE_EXCEPTIONS as e:
@@ -1126,18 +1123,16 @@ class NetBox:
                 self._yaml_identity(device_type),
                 f"Connection error after {_MAX_RETRIES} retries: {e}",
                 src_file,
-                counter_key="device_types_failed",
             )
             return None, True
 
-    def _record_failure(self, kind, identity, reason, src_file, *, counter_key=None):
+    def _record_failure(self, kind, identity, reason, src_file):
         """Record a failed entity so it reaches the end-of-run report.
 
-        Every create/update failure path must call this; logging alone leaves the
-        failure out of the summary and out of the failed count.
+        Every create/update failure path must call this. The registry is the only
+        tally of failures: the run summary derives its counts from these rows, so a
+        path that merely logs is absent from both the count and the itemised report.
         """
-        if counter_key:
-            self.counter.update({counter_key: 1})
         self.outcomes.record(
             kind,
             identity,
@@ -1658,7 +1653,6 @@ class NetBox:
                 if properties_updated and patch_ok:
                     self.counter["module_updated"] += 1
                 elif not patch_ok:
-                    self.counter["module_update_failed"] += 1
                     self.outcomes.record(
                         EntityKind.MODULE_TYPE,
                         identity,
@@ -1669,9 +1663,13 @@ class NetBox:
                 if properties_updated and patch_ok:
                     # Properties patched successfully; components were attempted but
                     # none changed — treat as a partial success, not a full failure.
-                    self.counter["module_partial_update"] += 1
+                    self.outcomes.record(
+                        EntityKind.MODULE_TYPE,
+                        identity,
+                        Outcome.PARTIAL,
+                        reason="Properties updated; component reconciliation applied 0 changes.",
+                    )
                 else:
-                    self.counter["module_update_failed"] += 1
                     reason = (
                         "Scalar PATCH failed; component reconciliation ran but applied 0 changes."
                         if not patch_ok
@@ -1686,11 +1684,17 @@ class NetBox:
             elif component_delta == actionable_count and patch_ok:
                 self.counter["module_updated"] += 1
             else:
-                self.counter["module_partial_update"] += 1
+                reason_parts = [] if patch_ok else ["Property PATCH failed"]
+                reason_parts.append(f"applied {component_delta} of {actionable_count} component change(s)")
+                self.outcomes.record(
+                    EntityKind.MODULE_TYPE,
+                    identity,
+                    Outcome.PARTIAL,
+                    reason="; ".join(reason_parts) + ".",
+                )
         elif properties_updated and patch_ok:
             self.counter["module_updated"] += 1
         elif not patch_ok:
-            self.counter["module_update_failed"] += 1
             self.outcomes.record(
                 EntityKind.MODULE_TYPE,
                 identity,

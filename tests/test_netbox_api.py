@@ -7,6 +7,7 @@ import pytest
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from unittest.mock import MagicMock, patch
 from core.component_registry import BY_YAML_KEY, COMPONENT_TYPES
+from core.outcomes import EntityKind, Outcome
 from core.netbox_api import (
     NetBox,
     NetBoxError,
@@ -1876,7 +1877,7 @@ class TestCreateDeviceTypesUpdatePath:
         """RequestError during property update is caught and logged.
 
         Regression: when the property PATCH fails AND there are no component
-        changes, ``device_types_failed`` must be incremented and the misleading
+        changes, a DEVICE_TYPE failure must be recorded and the misleading
         "Device Type Updated" log MUST NOT be emitted.
         """
         import pynetbox as real_pynb2
@@ -1919,7 +1920,7 @@ class TestCreateDeviceTypesUpdatePath:
         # Error path was logged.
         mock_handle.log.assert_called()
         # Failure surfaced via dedicated counter so summary can show it.
-        assert nb.counter["device_types_failed"] == 1
+        assert len([r for r in nb.outcomes.failures() if r.kind == EntityKind.DEVICE_TYPE]) == 1
         # Counters that imply a successful PATCH must NOT be bumped.
         assert nb.counter["properties_updated"] == 0
         # "Device Type Updated" is misleading when nothing was applied — must
@@ -1932,7 +1933,6 @@ class TestCreateDeviceTypesUpdatePath:
         # The failure log must surface the model so operators can find it.
         assert any("Device Type Update Failed" in msg and "TestSwitch" in msg for msg in all_calls)
         # Outcome.FAILED must also be recorded in the registry so the end-of-run report reflects it.
-        from core.outcomes import EntityKind, Outcome
 
         failures = nb.outcomes.failures()
         assert len(failures) == 1
@@ -2022,14 +2022,13 @@ class TestCreateDeviceTypesUpdatePath:
         # PATCH must have been attempted exactly once (no retry).
         mock_nb_api.dcim.device_types.update.assert_called_once()
         # Failure counter bumped, success counter not.
-        assert nb.counter["device_types_failed"] == 1
+        assert len([r for r in nb.outcomes.failures() if r.kind == EntityKind.DEVICE_TYPE]) == 1
         assert nb.counter["properties_updated"] == 0
         # Hint mentions the flag and the blocking template.
         all_logs = [c.args[0] for c in mock_handle.log.call_args_list]
         assert any("--force-resolve-conflicts" in m for m in all_logs), all_logs
         assert any("module-bay-1" in m for m in all_logs), all_logs
         # Failure recorded into the OutcomeRegistry with structured context.
-        from core.outcomes import EntityKind, Outcome
 
         failures = nb.outcomes.failures()
         assert len(failures) == 1
@@ -2054,7 +2053,7 @@ class TestCreateDeviceTypesUpdatePath:
         blocking_template.delete.assert_called_once()
         assert mock_nb_api.dcim.device_types.update.call_count == 2
         assert nb.counter["properties_updated"] == 1
-        assert nb.counter["device_types_failed"] == 0
+        assert [r for r in nb.outcomes.failures() if r.kind == EntityKind.DEVICE_TYPE] == []
         # Successful retry path must NOT record a failure into the registry.
         assert nb.outcomes.failures() == []
 
@@ -2075,7 +2074,7 @@ class TestCreateDeviceTypesUpdatePath:
         blocking_template.delete.assert_called_once()
         assert mock_nb_api.dcim.device_types.update.call_count == 2
         assert nb.counter["properties_updated"] == 0
-        assert nb.counter["device_types_failed"] == 1
+        assert len([r for r in nb.outcomes.failures() if r.kind == EntityKind.DEVICE_TYPE]) == 1
         # The failed retry must surface in the structured failure report exactly once.
         failures = nb.outcomes.failures()
         assert len(failures) == 1
@@ -2100,7 +2099,7 @@ class TestCreateDeviceTypesUpdatePath:
         # Safety gate honoured: no delete, no retry.
         blocking_template.delete.assert_not_called()
         mock_nb_api.dcim.device_types.update.assert_called_once()
-        assert nb.counter["device_types_failed"] == 1
+        assert len([r for r in nb.outcomes.failures() if r.kind == EntityKind.DEVICE_TYPE]) == 1
         all_logs = [c.args[0] for c in mock_handle.log.call_args_list]
         assert any("router-1" in m for m in all_logs), all_logs
 
@@ -2153,10 +2152,10 @@ class TestCreateDeviceTypesUpdatePath:
         assert nb.counter["device_types_component_updates"] == 1
         assert nb.counter.get("properties_updated", 0) == 0
 
-    def test_component_changes_all_fail_increments_device_types_failed(
+    def test_component_changes_all_fail_records_a_device_type_failure(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
     ):
-        """When component API calls are issued but all fail, device_types_failed must be incremented.
+        """When component API calls are issued but all fail, a DEVICE_TYPE failure must be recorded.
 
         Regression: the old code set component_attempted by comparing counters
         before/after the API calls, so a total component failure was silently
@@ -2168,7 +2167,6 @@ class TestCreateDeviceTypesUpdatePath:
             ComponentChange,
             DeviceTypeChange,
         )
-        from core.outcomes import EntityKind, Outcome
 
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
@@ -2203,7 +2201,7 @@ class TestCreateDeviceTypesUpdatePath:
         nb.create_device_types([device_type], update=True, change_report=report)
 
         dt.update_components.assert_called_once()
-        assert nb.counter["device_types_failed"] == 1
+        assert len([r for r in nb.outcomes.failures() if r.kind == EntityKind.DEVICE_TYPE]) == 1
         assert nb.counter.get("device_types_component_updates", 0) == 0
         failures = nb.outcomes.failures()
         assert len(failures) == 1
@@ -2226,7 +2224,6 @@ class TestCreateDeviceTypesUpdatePath:
             ComponentChange,
             DeviceTypeChange,
         )
-        from core.outcomes import EntityKind, Outcome
 
         mock_nb_api = mock_pynetbox.api.return_value
         dt = make_device_types(nb_api=mock_nb_api)
@@ -2268,7 +2265,7 @@ class TestCreateDeviceTypesUpdatePath:
         nb.create_device_types([device_type], update=True, change_report=report)
 
         dt.update_components.assert_called_once()
-        assert nb.counter["device_types_failed"] == 0
+        assert [r for r in nb.outcomes.failures() if r.kind == EntityKind.DEVICE_TYPE] == []
         assert nb.counter.get("device_types_component_updates", 0) == 1
         partials = nb.outcomes.partials()
         assert len(partials) == 1
@@ -2359,7 +2356,7 @@ class TestCreateDeviceTypesUpdatePath:
         assert "FAILED / PARTIAL UPDATE REPORT" in report
         assert "ribbon/SBC 5400" in report
         assert "Related object not found" in report
-        assert nb.counter["device_types_failed"] == 1
+        assert len([r for r in nb.outcomes.failures() if r.kind == EntityKind.DEVICE_TYPE]) == 1
 
     def test_update_verbose_log_when_change_applied(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
@@ -6329,7 +6326,7 @@ class TestAdditionalModuleTypeCoverage:
         )
 
         nb.device_types.ensure_components_ready.assert_called_once_with(manufacturer_slug="cisco")
-        assert nb.counter["module_update_failed"] == 1
+        assert len([r for r in nb.outcomes.failures() if r.kind == EntityKind.MODULE_TYPE]) == 1
         assert nb.outcomes.failures()[0].reason == "Scalar PATCH failed; no component changes detected."
 
     def test_apply_module_type_component_updates_marks_partial_on_partial_component_success(
@@ -6358,7 +6355,7 @@ class TestAdditionalModuleTypeCoverage:
             {"manufacturer": {"slug": "cisco"}}, module_type_res, False, False, patch_ok=True
         )
 
-        assert nb.counter["module_partial_update"] == 1
+        assert len([r for r in nb.outcomes.partials() if r.kind == EntityKind.MODULE_TYPE]) == 1
 
     def test_apply_module_type_component_updates_marks_partial_when_properties_only_succeed(
         self, mock_settings, mock_pynetbox, mock_handle
@@ -6379,7 +6376,7 @@ class TestAdditionalModuleTypeCoverage:
             {"manufacturer": {"slug": "cisco"}}, module_type_res, True, False, patch_ok=True
         )
 
-        assert nb.counter["module_partial_update"] == 1
+        assert len([r for r in nb.outcomes.partials() if r.kind == EntityKind.MODULE_TYPE]) == 1
 
     def test_apply_module_type_component_updates_records_failed_when_no_changes_apply(
         self, mock_settings, mock_pynetbox, mock_handle
@@ -6399,7 +6396,7 @@ class TestAdditionalModuleTypeCoverage:
             {"manufacturer": {"slug": "cisco"}}, module_type_res, False, False, patch_ok=False
         )
 
-        assert nb.counter["module_update_failed"] == 1
+        assert len([r for r in nb.outcomes.failures() if r.kind == EntityKind.MODULE_TYPE]) == 1
         assert nb.outcomes.failures()[0].reason == "Scalar PATCH failed; no component changes were actionable."
 
 
@@ -7096,7 +7093,7 @@ class TestProcessSingleModuleTypeRemoveComponents:
         assert result is True
         nb.device_types.remove_components.assert_called_once()
         assert nb.counter["module_updated"] == 0
-        assert nb.counter["module_update_failed"] == 1
+        assert len([r for r in nb.outcomes.failures() if r.kind == EntityKind.MODULE_TYPE]) == 1
         failures = nb.outcomes.failures()
         assert len(failures) == 1
         assert "CM-Fail-Patch" in failures[0].identity

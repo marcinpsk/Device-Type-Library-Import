@@ -11,6 +11,7 @@ from core.change_detector import ChangeDetector, ChangeType, IMAGE_PROPERTIES
 from core.component_cache import NullTaskDisplay, RichTaskDisplay
 from core.config import RunConfig
 from core.errors import VendorSelectionError
+from core.outcomes import EntityKind, Outcome
 
 
 _PROGRESS_DESC_WIDTH = 28
@@ -50,21 +51,32 @@ class RunSummary:
     counter: Counter
     modules: bool
     rack_types: bool
+    outcome_counts: dict
     failure_lines: tuple
     duplicate_definitions: tuple
     elapsed: timedelta
 
     @classmethod
     def capture(cls, netbox, repo, started_at):
-        """Capture mutable run state as a summary value."""
+        """Capture mutable run state as a summary value.
+
+        ``outcome_counts`` and ``failure_lines`` are both derived from the outcome
+        registry at the same instant, so the headline counts cannot disagree with
+        the itemised report below them.
+        """
         return cls(
             counter=Counter(netbox.counter),
             modules=netbox.modules,
             rack_types=netbox.rack_types,
+            outcome_counts=netbox.outcomes.summary_by_kind(),
             failure_lines=tuple(netbox.outcomes.render_failure_report()),
             duplicate_definitions=tuple(repo.duplicate_definitions),
             elapsed=datetime.now() - started_at,
         )
+
+    def outcome_count(self, kind, outcome):
+        """Return how many entities of *kind* ended with *outcome*."""
+        return self.outcome_counts.get(kind, {}).get(outcome, 0)
 
 
 def get_progress_wrapper(progress, iterable, desc=None, total=None, on_step=None, task_registry=None):
@@ -498,7 +510,7 @@ def _log_run_summary(handle, summary):
     component_updates = counter.get("device_types_component_updates", 0)
     if component_updates:
         handle.log(f"{component_updates} device types had component-only updates")
-    failed = counter.get("device_types_failed", 0)
+    failed = summary.outcome_count(EntityKind.DEVICE_TYPE, Outcome.FAILED)
     if failed:
         handle.log(f"{failed} device types FAILED to update (see error log above)")
     handle.log(f"{counter['components_updated']} components updated")
@@ -509,13 +521,18 @@ def _log_run_summary(handle, summary):
     if summary.modules:
         handle.log(f"{counter['module_added']} modules created")
         handle.log(f"{counter['module_updated']} modules updated")
-        if counter["module_update_failed"]:
-            handle.log(f"{counter['module_update_failed']} modules failed to update")
-        if counter["module_partial_update"]:
-            handle.log(f"{counter['module_partial_update']} modules partially updated")
+        module_failed = summary.outcome_count(EntityKind.MODULE_TYPE, Outcome.FAILED)
+        if module_failed:
+            handle.log(f"{module_failed} modules failed to update")
+        module_partial = summary.outcome_count(EntityKind.MODULE_TYPE, Outcome.PARTIAL)
+        if module_partial:
+            handle.log(f"{module_partial} modules partially updated")
     if summary.rack_types:
         handle.log(f"{counter['rack_type_added']} rack types created")
         handle.log(f"{counter['rack_type_updated']} rack types updated")
+        rack_failed = summary.outcome_count(EntityKind.RACK_TYPE, Outcome.FAILED)
+        if rack_failed:
+            handle.log(f"{rack_failed} rack types failed")
 
     for line in summary.failure_lines:
         handle.log(line)
