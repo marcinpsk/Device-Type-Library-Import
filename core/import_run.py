@@ -512,7 +512,7 @@ def _log_run_summary(handle, summary):
         handle.log(f"{component_updates} device types had component-only updates")
     failed = summary.outcome_count(EntityKind.DEVICE_TYPE, Outcome.FAILED)
     if failed:
-        handle.log(f"{failed} device types FAILED to update (see error log above)")
+        handle.log(f"{failed} device types FAILED to create or update (see error log above)")
     device_partial = summary.outcome_count(EntityKind.DEVICE_TYPE, Outcome.PARTIAL)
     if device_partial:
         handle.log(f"{device_partial} device types partially updated")
@@ -526,7 +526,7 @@ def _log_run_summary(handle, summary):
         handle.log(f"{counter['module_updated']} modules updated")
         module_failed = summary.outcome_count(EntityKind.MODULE_TYPE, Outcome.FAILED)
         if module_failed:
-            handle.log(f"{module_failed} modules failed to update")
+            handle.log(f"{module_failed} modules failed to create or update")
         module_partial = summary.outcome_count(EntityKind.MODULE_TYPE, Outcome.PARTIAL)
         if module_partial:
             handle.log(f"{module_partial} modules partially updated")

@@ -16,7 +16,7 @@ from core.netbox_api import (
     _delete_image_attachment,
     _FrontPortRecordWithMappings,
 )
-from helpers import paginate_dispatch
+from helpers import paginate_dispatch, recording_handle
 
 
 # All component list keys used by the GraphQL client for empty-response fallback.
@@ -7165,6 +7165,81 @@ class TestFailuresReachTheRunReport:
         report = "\n".join(nb.outcomes.render_failure_report())
         assert "[rack_type] lenovo/1410HPB" in report
         assert "Invalid value." in report
+
+
+class TestSummaryWordingMatchesTheFailedOperation:
+    """The headline failure lines count creates too, so they must not blame an update."""
+
+    def _summary_text(self, nb):
+        """Render the real end-of-run summary for *nb* and return it as one string."""
+        from datetime import datetime
+        from types import SimpleNamespace
+
+        from core.import_run import RunSummary, _log_run_summary
+
+        handle, console = recording_handle()
+        summary = RunSummary.capture(nb, SimpleNamespace(duplicate_definitions=[]), datetime.now())
+        _log_run_summary(handle, summary)
+        return "\n".join(console.lines)
+
+    def test_device_type_create_failure_is_not_called_an_update_failure(
+        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+    ):
+        """Ribbon's SBC 5400 fails to CREATE; the headline must not blame an update."""
+        import pynetbox as real_pynb
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_nb_api = mock_pynetbox.api.return_value
+        mock_nb_api.version = "4.1"
+        mock_nb_api.dcim.device_types.create.side_effect = _request_error(
+            b'{"manufacturer":["Related object not found using the provided attributes: slug ribbon"]}'
+        )
+
+        dt = make_device_types(nb_api=mock_nb_api)
+        dt.existing_device_types = {}
+        dt.existing_device_types_by_slug = {}
+        nb = NetBox(mock_settings, mock_handle)
+        nb.device_types = dt
+        nb.create_device_types(
+            [
+                {
+                    "manufacturer": {"slug": "ribbon"},
+                    "model": "SBC 5400",
+                    "slug": "ribbon-communications-sbc-5400",
+                    "src": "/repo/device-types/Ribbon Communications/SBC-5400.yaml",
+                }
+            ],
+            only_new=True,
+        )
+
+        text = self._summary_text(nb)
+        assert "1 device types FAILED to create or update" in text
+        assert "FAILED to update" not in text
+
+    def test_module_type_create_failure_is_not_called_an_update_failure(
+        self, mock_settings, mock_pynetbox, mock_handle
+    ):
+        """A rejected module-type create must not be counted as an update failure."""
+        import pynetbox as real_pynb
+
+        mock_pynetbox.RequestError = real_pynb.RequestError
+        mock_pynetbox.api.return_value.version = "4.1"
+        mock_pynetbox.api.return_value.dcim.module_types.create.side_effect = _request_error(
+            b'{"model":["This field may not be blank."]}'
+        )
+        nb = NetBox(mock_settings, mock_handle)
+        nb.modules = True
+        nb._process_single_module_type(
+            {"manufacturer": {"slug": "panduit"}, "model": "FAP6WBUSC", "slug": "fap6wbusc"},
+            "/repo/module-types/Panduit/FAP6WBUSC.yaml",
+            {},
+            {},
+            only_new=False,
+        )
+
+        text = self._summary_text(nb)
+        assert "1 modules failed to create or update" in text
+        assert "modules failed to update" not in text
 
 
 class TestSkippedComponentReasonReachesTheReport:

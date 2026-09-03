@@ -20,6 +20,7 @@ from core.import_run import (
 from core.log_handler import LogHandler
 from core.outcomes import EntityKind, Outcome
 from core.repo import DTLRepo
+from helpers import recording_handle as _recording_handle
 
 
 class _ComponentCache:
@@ -324,25 +325,6 @@ class TestPartialLibraryLayouts:
         }
         assert parsed[present] == 1, parsed
         assert sum(parsed.values()) == 1, parsed
-
-
-class _RecordingConsole:
-    """Capture what the real LogHandler emits."""
-
-    def __init__(self):
-        self.lines = []
-
-    def print(self, message, markup=False):
-        """Record one emitted line."""
-        self.lines.append(message)
-
-
-def _recording_handle():
-    """Return a real LogHandler writing into a recording console."""
-    handle = LogHandler(False)
-    console = _RecordingConsole()
-    handle.set_console(console)
-    return handle, console
 
 
 class _ModuleNetBox:
