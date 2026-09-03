@@ -545,12 +545,17 @@ class ChangeDetector:
             for comp in removed:
                 self.handle.verbose_log(f"        - {comp.component_type}: {comp.component_name}")
 
-    def log_change_report(self, report: ChangeReport):
+    def log_change_report(self, report: ChangeReport, vendor: str = ""):
         """Log the change report in a clear, readable format.
 
         Suppresses the full banner when there are no new or modified types —
         emits a single verbose-level summary instead to avoid flooding the
         terminal with empty reports during a multi-vendor run.
+
+        Args:
+            report: The change report to render.
+            vendor: Vendor name appended to the banner title, so consecutive
+                reports in a multi-vendor run stay distinguishable.
         """
         has_changes = report.new_device_types or report.modified_device_types
         if not has_changes:
@@ -559,7 +564,7 @@ class ChangeDetector:
             return
 
         self.handle.log("=" * 60)
-        self.handle.log("CHANGE DETECTION REPORT")
+        self.handle.log(f"CHANGE DETECTION REPORT: {vendor}" if vendor else "CHANGE DETECTION REPORT")
         self.handle.log("=" * 60)
 
         self.handle.log(f"New device types: {len(report.new_device_types)}")

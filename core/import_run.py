@@ -269,7 +269,9 @@ def _image_progress_scope(progress, device_types, total=0):
             progress.remove_task(image_task)
 
 
-def _process_device_types(config, netbox, handle, progress, device_types, vendor_slug=None, task_registry=None):
+def _process_device_types(
+    config, netbox, handle, progress, device_types, vendor_slug=None, vendor_name="", task_registry=None
+):
     """Process device types for one vendor."""
     if config.only_new:
         new_device_types = filter_new_device_types(
@@ -311,7 +313,7 @@ def _process_device_types(config, netbox, handle, progress, device_types, vendor
         device_types,
         progress=get_progress_wrapper(progress, device_types, desc="Detecting Changes", task_registry=task_registry),
     )
-    detector.log_change_report(change_report)
+    detector.log_change_report(change_report, vendor=vendor_name)
 
     if config.update:
         device_types_to_process = select_device_types_for_update_mode(
@@ -356,7 +358,7 @@ def _process_device_types(config, netbox, handle, progress, device_types, vendor
             handle.verbose_log("No new device types or missing images to process.")
 
 
-def _process_module_types(config, netbox, handle, progress, module_types, task_registry=None):
+def _process_module_types(config, netbox, handle, progress, module_types, vendor_name="", task_registry=None):
     """Process module types for one vendor."""
     if not module_types:
         return
@@ -390,7 +392,7 @@ def _process_module_types(config, netbox, handle, progress, module_types, task_r
     has_module_changes = new_module_count > 0 or module_changed_count > 0 or pending_removal_modules > 0
     if has_module_changes:
         handle.log("============================================================")
-        handle.log("MODULE TYPE CHANGE DETECTION")
+        handle.log(f"MODULE TYPE CHANGE DETECTION: {vendor_name}" if vendor_name else "MODULE TYPE CHANGE DETECTION")
         handle.log("============================================================")
         if config.only_new:
             handle.log(f"New module types: {new_module_count}")
@@ -436,7 +438,7 @@ def _process_module_types(config, netbox, handle, progress, module_types, task_r
         handle.verbose_log("No module type changes to process.")
 
 
-def _process_rack_types(config, netbox, handle, progress, rack_types, task_registry=None):
+def _process_rack_types(config, netbox, handle, progress, rack_types, vendor_name="", task_registry=None):
     """Process rack types for one vendor."""
     if not rack_types:
         return
@@ -458,6 +460,8 @@ def _process_rack_types(config, netbox, handle, progress, rack_types, task_regis
     if new_count == 0:
         handle.verbose_log(f"No new rack types ({existing_count} unchanged).")
     else:
+        handle.log("============================================================")
+        handle.log(f"RACK TYPE CHANGE DETECTION: {vendor_name}" if vendor_name else "RACK TYPE CHANGE DETECTION")
         handle.log("============================================================")
         handle.log(f"New rack types:       {new_count}")
         handle.log(f"Existing rack types:  {existing_count}")
@@ -709,6 +713,7 @@ class ImportRun:
             self.progress,
             plan.device_types,
             vendor_slug=plan.vendor["slug"],
+            vendor_name=plan.vendor["name"],
             task_registry=self.task_registry,
         )
         cache.pump()
@@ -720,6 +725,7 @@ class ImportRun:
                 self.reporter,
                 self.progress,
                 plan.module_types,
+                vendor_name=plan.vendor["name"],
                 task_registry=self.task_registry,
             )
             cache.pump()
@@ -730,6 +736,7 @@ class ImportRun:
             self.reporter,
             self.progress,
             plan.rack_types,
+            vendor_name=plan.vendor["name"],
             task_registry=self.task_registry,
         )
         cache.pump()

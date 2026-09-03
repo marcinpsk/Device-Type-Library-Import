@@ -6,7 +6,14 @@ from contextlib import contextmanager
 import pytest
 
 from core.errors import VendorSelectionError
-from core.import_run import ImportRun, RunSummary, VendorPlan, _process_device_types
+from core.import_run import (
+    ImportRun,
+    RunSummary,
+    VendorPlan,
+    _process_device_types,
+    _process_module_types,
+    _process_rack_types,
+)
 from core.log_handler import LogHandler
 from core.repo import DTLRepo
 
@@ -308,3 +315,126 @@ class TestPartialLibraryLayouts:
         }
         assert parsed[present] == 1, parsed
         assert sum(parsed.values()) == 1, parsed
+
+
+class _RecordingConsole:
+    """Capture what the real LogHandler emits."""
+
+    def __init__(self):
+        self.lines = []
+
+    def print(self, message, markup=False):
+        """Record one emitted line."""
+        self.lines.append(message)
+
+
+def _recording_handle():
+    """Return a real LogHandler writing into a recording console."""
+    handle = LogHandler(False)
+    console = _RecordingConsole()
+    handle.set_console(console)
+    return handle, console
+
+
+class _ModuleNetBox:
+    """Report one new module type so the banner is emitted."""
+
+    modules = True
+    device_types = _DeviceTypes()
+
+    @staticmethod
+    def get_existing_module_types():
+        """Return no existing module types."""
+        return {}
+
+    @staticmethod
+    def filter_actionable_module_types(module_types, _existing, only_new=False):
+        """Treat every supplied module type as actionable."""
+        return list(module_types), {}, []
+
+    @staticmethod
+    def filter_new_module_types(module_types, _existing):
+        """Treat every supplied module type as new."""
+        return list(module_types)
+
+    @staticmethod
+    def count_module_type_images(*_args, **_kwargs):
+        """Report no images to upload."""
+        return 0
+
+    @staticmethod
+    def create_module_types(*_args, **_kwargs):
+        """Accept the import call without doing work."""
+
+    @staticmethod
+    def log_module_type_changes(_changes):
+        """Accept the change log without doing work."""
+
+
+class _RackNetBox:
+    """Report one new rack type so the banner is emitted."""
+
+    rack_types = True
+    device_types = _DeviceTypes()
+
+    @staticmethod
+    def get_existing_rack_types():
+        """Return no existing rack types."""
+        return {}
+
+    @staticmethod
+    def create_rack_types(*_args, **_kwargs):
+        """Accept the import call without doing work."""
+
+
+def test_module_type_banner_names_the_vendor(make_config):
+    """A multi-vendor run must say which vendor a module-type report belongs to."""
+    handle, console = _recording_handle()
+
+    _process_module_types(
+        make_config(only_new=True),
+        _ModuleNetBox(),
+        handle,
+        None,
+        [{"manufacturer": {"slug": "vendor-one"}, "model": "Module One", "slug": "module-one"}],
+        vendor_name="Vendor One",
+    )
+
+    banner = [line for line in console.lines if "MODULE TYPE CHANGE DETECTION" in line]
+    assert len(banner) == 1
+    assert "MODULE TYPE CHANGE DETECTION: Vendor One" in banner[0]
+
+
+def test_rack_type_banner_names_the_vendor(make_config):
+    """A multi-vendor run must say which vendor a rack-type report belongs to."""
+    handle, console = _recording_handle()
+
+    _process_rack_types(
+        make_config(),
+        _RackNetBox(),
+        handle,
+        None,
+        [{"manufacturer": {"slug": "vendor-one"}, "model": "Rack One", "slug": "rack-one"}],
+        vendor_name="Vendor One",
+    )
+
+    banner = [line for line in console.lines if "RACK TYPE CHANGE DETECTION" in line]
+    assert len(banner) == 1
+    assert "RACK TYPE CHANGE DETECTION: Vendor One" in banner[0]
+
+
+def test_banners_omit_the_separator_when_no_vendor_is_given(make_config):
+    """Without a vendor the banner keeps its plain title, with no trailing colon."""
+    handle, console = _recording_handle()
+
+    _process_rack_types(
+        make_config(),
+        _RackNetBox(),
+        handle,
+        None,
+        [{"manufacturer": {"slug": "vendor-one"}, "model": "Rack One", "slug": "rack-one"}],
+    )
+
+    banner = [line for line in console.lines if "RACK TYPE CHANGE DETECTION" in line]
+    assert len(banner) == 1
+    assert banner[0].rstrip().endswith("RACK TYPE CHANGE DETECTION")
