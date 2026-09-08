@@ -241,6 +241,9 @@ class Exporter:
         )
         self.handle.log(f"Export-diff: fetching NetBox device/module/rack types{scope}")
 
+        # Decided before the first query: the selection depends on the answer.
+        self.graphql.detect_module_bay_type_support()
+
         # ── Fetch all types from NetBox ──────────────────────────────────────
         by_model, by_slug = self.graphql.get_device_types(manufacturer_slugs=self.vendor_slugs)
         all_mt = self.graphql.get_module_types(manufacturer_slugs=self.vendor_slugs)
@@ -624,13 +627,7 @@ class Exporter:
 
         def _fetch_one(endpoint_name):
             if not getattr(_thread_local, "graphql", None):
-                client = NetBoxGraphQLClient(
-                    self.graphql.url,
-                    self.graphql.token,
-                    self.graphql.ignore_ssl,
-                    self.graphql.handle,
-                    self.graphql.DEFAULT_PAGE_SIZE,
-                )
+                client = self.graphql.clone()
                 _thread_local.graphql = client
                 with _clients_lock:
                     _clients.append(client)

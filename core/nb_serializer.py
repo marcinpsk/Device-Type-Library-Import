@@ -7,7 +7,7 @@ comparison against existing repo YAML files.
 import warnings
 from typing import Any, Sequence
 
-from core.component_registry import BY_ENDPOINT, COMPONENT_TYPES
+from core.component_registry import BY_ENDPOINT, COMPONENT_TYPES, MODULE_TYPE_RELATIONS
 
 # Row order sets the component key order of the serialized YAML.
 COMPONENT_ENDPOINT_NAMES = [component.endpoint for component in COMPONENT_TYPES]
@@ -125,6 +125,26 @@ def _serialize_component(record: Any, fields: Sequence[str]) -> dict:
     return result
 
 
+def _serialize_relations(record: Any, relations: Sequence[str]) -> dict:
+    """Return the catalog name of each related object, which is how YAML names them.
+
+    The names come off the record the query returned, not from the import-side catalog:
+    an export run resolves nothing, so it has no id-to-name mapping of its own.
+
+    An empty relation writes no key.  Emitting an empty list instead would add the key to
+    every bay in the library and make _repo_supersedes report every existing definition as
+    differing, and it tells a fresh import nothing that omitting it does not.
+    """
+    result = {}
+    for relation in relations:
+        names = sorted(
+            name for name in (getattr(item, "name", None) for item in getattr(record, relation, None) or []) if name
+        )
+        if names:
+            result[relation] = names
+    return result
+
+
 def _serialize_front_port(record: Any) -> dict:
     """Serialize a front port template, including rear_port mapping."""
     result = _serialize_component(record, BY_ENDPOINT["front_port_templates"].fields)
@@ -161,12 +181,15 @@ def _serialize_front_port(record: Any) -> dict:
 
 def _serialize_component_list(endpoint_name: str, records: list) -> list:
     """Serialize a list of component template records for a given endpoint."""
+    component = BY_ENDPOINT[endpoint_name]
     out = []
     for record in sorted(records, key=lambda r: str(getattr(r, "name", "") or "")):
         if endpoint_name == "front_port_templates":
-            out.append(_serialize_front_port(record))
+            serialized = _serialize_front_port(record)
         else:
-            out.append(_serialize_component(record, BY_ENDPOINT[endpoint_name].fields))
+            serialized = _serialize_component(record, component.fields)
+        serialized.update(_serialize_relations(record, component.relations))
+        out.append(serialized)
     return out
 
 
@@ -236,6 +259,7 @@ def serialize_module_type(nb_record: Any, components_by_mt_id: dict) -> dict:
         if _should_include(field, val):
             result[field] = val
 
+    result.update(_serialize_relations(nb_record, MODULE_TYPE_RELATIONS))
     _add_components(result, nb_record.id, components_by_mt_id)
     return result
 

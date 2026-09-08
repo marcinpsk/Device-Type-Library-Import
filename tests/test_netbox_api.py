@@ -112,7 +112,7 @@ def _mark_cache_ready(device_types):
 
 def test_netbox_init(mock_settings, mock_pynetbox, mock_handle):
     # Mock api call
-    mock_pynetbox.api.return_value.version = "3.5"
+    mock_pynetbox.api.return_value.version = "4.3"
 
     nb = NetBox(mock_settings, mock_handle)
     assert nb.url == "http://mock-netbox"
@@ -128,7 +128,7 @@ def test_netbox_init_applies_import_policy_flags(make_config, mock_pynetbox, moc
         remove_unmanaged_types=True,
         verify_images=True,
     )
-    mock_pynetbox.api.return_value.version = "3.5"
+    mock_pynetbox.api.return_value.version = "4.3"
 
     netbox = NetBox(config, mock_handle)
 
@@ -138,24 +138,16 @@ def test_netbox_init_applies_import_policy_flags(make_config, mock_pynetbox, moc
 
 
 def test_netbox_version_check(mock_settings, mock_pynetbox, mock_handle):
-    # Test 5.0
-    mock_pynetbox.api.return_value.version = "5.0"
-    nb = NetBox(mock_settings, mock_handle)
-    assert nb.new_filters
-
-    # Test 4.0
-    mock_pynetbox.api.return_value.version = "4.0"
-    nb = NetBox(mock_settings, mock_handle)
-    assert not nb.new_filters
-
-    # Test 4.1
-    mock_pynetbox.api.return_value.version = "4.1"
-    nb = NetBox(mock_settings, mock_handle)
-    assert nb.new_filters
+    """Every supported release uses the new filter names; 4.7 adds module bay types."""
+    for version, module_bay_types in (("4.3", False), ("4.5", False), ("4.7", True), ("5.0", True)):
+        mock_pynetbox.api.return_value.version = version
+        nb = NetBox(mock_settings, mock_handle)
+        assert nb.new_filters, version
+        assert nb.module_bay_types is module_bay_types, version
 
 
 def test_create_manufacturers(mock_settings, mock_pynetbox, mock_handle):
-    mock_pynetbox.api.return_value.version = "3.5"
+    mock_pynetbox.api.return_value.version = "4.3"
     mock_pynetbox.api.return_value.dcim.manufacturers.all.return_value = []
 
     nb = NetBox(mock_settings, mock_handle)
@@ -168,7 +160,7 @@ def test_create_manufacturers(mock_settings, mock_pynetbox, mock_handle):
 
 
 def test_create_manufacturers_no_new_is_verbose_only(mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle):
-    mock_pynetbox.api.return_value.version = "3.5"
+    mock_pynetbox.api.return_value.version = "4.3"
 
     mock_graphql_requests.side_effect = paginate_dispatch(
         {
@@ -233,7 +225,7 @@ def test_create_generic_counts_the_created_list_at_the_caller(mock_pynetbox, mak
 def test_redundant_image_upload(mock_settings, mock_pynetbox, mock_handle):
     # Setup
     # Ensure modules check doesn't fail
-    mock_pynetbox.api.return_value.version = "3.5"
+    mock_pynetbox.api.return_value.version = "4.3"
 
     nb = NetBox(mock_settings, mock_handle)
     nb.device_types = MagicMock()
@@ -611,7 +603,7 @@ class TestNetBoxConnectApi:
 
     def test_ssl_ignore_sets_verify_false(self, mock_pynetbox, mock_handle, make_config):
         mock_settings = make_config(ignore_ssl_errors=True)
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         assert nb.netbox.http_session.verify is False
 
@@ -622,7 +614,7 @@ class TestCreateManufacturersError:
     def test_request_error_logged(self, mock_settings, mock_pynetbox, mock_handle):
         import pynetbox as real_pynb
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         # Make pynetbox.RequestError in the module under test be the real exception class
         mock_pynetbox.RequestError = real_pynb.RequestError
         nb = NetBox(mock_settings, mock_handle)
@@ -930,7 +922,7 @@ class TestCreateDeviceTypesNewDT:
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
     ):
         mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "3.5"
+        mock_nb_api.version = "4.3"
 
         dt = make_device_types(nb_api=mock_nb_api)
 
@@ -1118,14 +1110,14 @@ class TestCreateModuleTypes:
     """Tests for TestCreateModuleTypes."""
 
     def test_empty_module_types_returns_immediately(self, mock_settings, mock_pynetbox, mock_handle):
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         # Should not raise and should not call create
         nb.create_module_types([])
         nb.netbox.dcim.module_types.create.assert_not_called()
 
     def test_creates_new_module_type(self, mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle):
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         mock_graphql_requests.side_effect = paginate_dispatch(
             {
                 "manufacturer_list": [],
@@ -1250,7 +1242,7 @@ class TestCreateModuleTypesBody:
     """Tests for TestCreateModuleTypesBody."""
 
     def test_cached_module_type_skips_creation(self, mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle):
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         mock_graphql_requests.side_effect = paginate_dispatch(
             {
                 "manufacturer_list": [],
@@ -1285,7 +1277,7 @@ class TestCreateModuleTypesBody:
         import pynetbox as real_pynb
 
         mock_pynetbox.RequestError = real_pynb.RequestError
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         mock_graphql_requests.side_effect = paginate_dispatch(
             {
                 "manufacturer_list": [],
@@ -1310,7 +1302,7 @@ class TestCreateModuleTypesBody:
     def test_creates_module_type_with_components(
         self, mock_settings, mock_pynetbox, mock_graphql_requests, graphql_client, mock_handle
     ):
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         mock_graphql_requests.side_effect = paginate_dispatch(
             {
                 "manufacturer_list": [],
@@ -1606,7 +1598,7 @@ class TestCreateManufacturersSuccessLog:
 
     def test_verbose_log_per_created_manufacturer(self, mock_settings, mock_pynetbox, mock_handle):
         """verbose_log should be called for each created manufacturer."""
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
 
         created_m = MagicMock()
@@ -2333,7 +2325,7 @@ class TestCreateDeviceTypesUpdatePath:
 
         mock_pynetbox.RequestError = real_pynb.RequestError
         mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "4.1"
+        mock_nb_api.version = "4.3"
         mock_nb_api.dcim.device_types.create.side_effect = _request_error(
             b"{\"manufacturer\":[\"Related object not found using the provided attributes: {'slug': 'ribbon'}\"]}"
         )
@@ -2574,7 +2566,7 @@ class TestFilterActionableModuleTypesEdge:
 
     def test_empty_module_types_returns_empty(self, mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle):
         """Empty module_types list returns [], {} immediately."""
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         result, images, _ = nb.filter_actionable_module_types([], {}, only_new=False)
         assert result == []
@@ -2582,7 +2574,7 @@ class TestFilterActionableModuleTypesEdge:
 
     def test_only_new_delegates_to_filter_new(self, mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle):
         """only_new=True returns only genuinely new module types."""
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         existing_mt = MagicMock()
         all_mts = {"cisco": {"LC": existing_mt}}
@@ -2599,7 +2591,7 @@ class TestFilterActionableModuleTypesEdge:
         self, mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle
     ):
         """Module type not in all_module_types is added to actionable."""
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         mock_graphql_requests.side_effect = paginate_dispatch(
             {
                 "manufacturer_list": [],
@@ -2622,7 +2614,7 @@ class TestFilterActionableModuleTypesEdge:
         self, mock_settings, mock_pynetbox, mock_graphql_requests, tmp_path, mock_handle
     ):
         """Existing module type with an image not yet in NetBox is actionable."""
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         mock_graphql_requests.side_effect = paginate_dispatch(
             {
                 "manufacturer_list": [],
@@ -2673,7 +2665,7 @@ class TestFilterActionableModuleTypesEdge:
         """Existing module type with a changed scalar property (e.g. part_number) is actionable."""
         from core.graphql_client import DotDict
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         mock_graphql_requests.side_effect = paginate_dispatch(
             {
                 "manufacturer_list": [],
@@ -2726,7 +2718,7 @@ class TestFilterActionableModuleTypesEdge:
         """
         from core.graphql_client import DotDict
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         mock_graphql_requests.side_effect = paginate_dispatch(
             {
                 "manufacturer_list": [],
@@ -2782,7 +2774,7 @@ class TestFilterActionableModuleTypesEdge:
         """
         from core.graphql_client import DotDict
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         mock_graphql_requests.side_effect = paginate_dispatch(
             {
                 "manufacturer_list": [],
@@ -2827,7 +2819,7 @@ class TestFilterActionableModuleTypesEdge:
         """Existing module type whose properties all match NetBox is not actionable."""
         from core.graphql_client import DotDict
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         mock_graphql_requests.side_effect = paginate_dispatch(
             {
                 "manufacturer_list": [],
@@ -2868,7 +2860,7 @@ class TestCreateModuleTypesEdge:
 
     def test_existing_module_type_verbose_logged(self, mock_settings, mock_pynetbox, mock_handle):
         """When a module type already exists, verbose_log is called with 'Cached'."""
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
 
         existing_mt = MagicMock()
@@ -2894,7 +2886,7 @@ class TestCreateModuleTypesEdge:
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
     ):
         """only_new=True + existing module → skip component creation."""
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.device_types = make_device_types(nb_api=mock_pynetbox.api.return_value)
         nb.device_types.components.record("interface_templates", "module", 5, {})
@@ -2923,7 +2915,7 @@ class TestCreateModuleTypesEdge:
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
     ):
         """power-outlets, console-server-ports, front-ports branches in create_module_types."""
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.device_types = make_device_types(nb_api=mock_pynetbox.api.return_value)
         for endpoint_name in ("power_outlet_templates", "console_server_port_templates", "front_port_templates"):
@@ -2955,7 +2947,7 @@ class TestCreateModuleTypesEdge:
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
     ):
         """The DTL module-type schema allows module-bays, so creation must not skip them."""
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.device_types = make_device_types(nb_api=mock_pynetbox.api.return_value)
         nb.device_types.components.record("module_bay_templates", "module", 5, {})
@@ -2981,7 +2973,7 @@ class TestCreateModuleTypesEdge:
         """Existing module type with changed part_number calls module_types.update and increments counter."""
         from core.graphql_client import DotDict
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
 
         existing_mt = DotDict(
@@ -3017,7 +3009,7 @@ class TestCreateModuleTypesEdge:
         """Existing module type with matching part_number does not call module_types.update."""
         from core.graphql_client import DotDict
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
 
         existing_mt = DotDict(
@@ -3048,7 +3040,7 @@ class TestCreateModuleTypesEdge:
         """only_new=True skips property update even when part_number differs."""
         from core.graphql_client import DotDict
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
 
         existing_mt = DotDict(
@@ -3082,7 +3074,7 @@ class TestCreateModuleTypesEdge:
         """Existing module type with changed component property calls update_components and increments counter."""
         from core.graphql_client import DotDict
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.device_types = make_device_types(nb_api=mock_pynetbox.api.return_value)
         _mark_cache_ready(nb.device_types)
@@ -3146,7 +3138,7 @@ class TestCreateModuleTypesEdge:
         """Both property and component change → module_updated incremented only once."""
         from core.graphql_client import DotDict
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.device_types = make_device_types(nb_api=mock_pynetbox.api.return_value)
         _mark_cache_ready(nb.device_types)
@@ -3214,7 +3206,7 @@ class TestCreateModuleTypesEdge:
         """COMPONENT_REMOVED-only changes call update_components but do NOT increment module_updated."""
         from core.graphql_client import DotDict
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.device_types = make_device_types(nb_api=mock_pynetbox.api.return_value)
         _mark_cache_ready(nb.device_types)
@@ -3275,7 +3267,7 @@ class TestCreateModuleTypesEdge:
         """Properties changed + removal-only diff with remove_components=False → module_updated incremented."""
         from core.graphql_client import DotDict
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.device_types = make_device_types(nb_api=mock_pynetbox.api.return_value)
         nb.device_types.update_components = MagicMock()
@@ -3358,7 +3350,7 @@ class TestUploadModuleTypeImages:
         self, mock_settings, mock_pynetbox, mock_graphql_requests, tmp_path, mock_handle
     ):
         """If the image name is already in module_type_existing_images, upload is skipped."""
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
 
         module_dir = tmp_path / "module-types" / "vendor"
@@ -3388,7 +3380,7 @@ class TestUploadModuleTypeImages:
         self, mock_settings, mock_pynetbox, mock_graphql_requests, tmp_path, mock_handle
     ):
         """When image is not yet in existing_images, upload_image_attachment is called."""
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
 
         module_dir = tmp_path / "module-types" / "vendor"
@@ -4218,7 +4210,7 @@ class TestCreateModuleTypesCornerCases:
 
     def test_progress_iterator_used(self, mock_settings, mock_pynetbox, mock_handle):
         """When progress is provided, iteration goes through it."""
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
 
         created_mt = MagicMock()
@@ -4252,7 +4244,7 @@ class TestCreateModuleTypesCornerCases:
 
     def test_all_module_types_fetched_when_none(self, mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle):
         """all_module_types is fetched when not supplied."""
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         mock_graphql_requests.side_effect = paginate_dispatch(
             {
                 "manufacturer_list": [],
@@ -4277,7 +4269,7 @@ class TestCreateModuleTypesCornerCases:
         self, mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle
     ):
         """module_type_existing_images is fetched when not supplied."""
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         mock_graphql_requests.side_effect = paginate_dispatch(
             {
                 "manufacturer_list": [],
@@ -4421,7 +4413,7 @@ class TestGetExistingRackTypes:
 
     def test_delegates_to_graphql(self, mock_settings, mock_pynetbox, graphql_client, mock_handle):
         """get_existing_rack_types() returns whatever graphql.get_rack_types() returns."""
-        mock_pynetbox.api.return_value.version = "4.1"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.graphql = graphql_client
         expected = {"apc": {"AR1300": MagicMock()}}
@@ -4442,7 +4434,7 @@ class TestCreateRackTypes:
     """Tests for NetBox.create_rack_types()."""
 
     def _make_nb(self, mock_settings, mock_handle, mock_pynetbox):
-        mock_pynetbox.api.return_value.version = "4.1"
+        mock_pynetbox.api.return_value.version = "4.3"
         return NetBox(mock_settings, mock_handle)
 
     def test_empty_list_returns_immediately(self, mock_settings, mock_pynetbox, mock_handle):
@@ -4510,7 +4502,7 @@ class TestCreateRackTypes:
 
     def test_new_rack_type_calls_create(self, mock_settings, mock_pynetbox, mock_handle):
         """Non-existing rack type: create called, counter incremented, added to cache."""
-        mock_pynetbox.api.return_value.version = "4.1"
+        mock_pynetbox.api.return_value.version = "4.3"
         created_rt = MagicMock()
         created_rt.id = 99
         mock_pynetbox.api.return_value.dcim.rack_types.create.return_value = created_rt
@@ -4532,7 +4524,7 @@ class TestCreateRackTypes:
         """RequestError during create is logged; processing continues."""
         import pynetbox
 
-        mock_pynetbox.api.return_value.version = "4.1"
+        mock_pynetbox.api.return_value.version = "4.3"
         err = pynetbox.RequestError(MagicMock(status_code=400, url="u", content=b'{"detail":"bad"}'))
         mock_pynetbox.api.return_value.dcim.rack_types.create.side_effect = err
         mock_pynetbox.RequestError = pynetbox.RequestError
@@ -4553,7 +4545,7 @@ class TestCreateRackTypes:
         import pynetbox
         from core.graphql_client import DotDict
 
-        mock_pynetbox.api.return_value.version = "4.1"
+        mock_pynetbox.api.return_value.version = "4.3"
         err = pynetbox.RequestError(MagicMock(status_code=400, url="u", content=b'{"detail":"bad"}'))
         mock_pynetbox.api.return_value.dcim.rack_types.update.side_effect = err
         mock_pynetbox.RequestError = pynetbox.RequestError
@@ -4573,7 +4565,7 @@ class TestCreateRackTypes:
 
     def test_all_rack_types_none_triggers_fetch(self, mock_settings, mock_pynetbox, mock_handle):
         """When all_rack_types=None, get_existing_rack_types() is called to populate the cache."""
-        mock_pynetbox.api.return_value.version = "4.1"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = self._make_nb(mock_settings, mock_handle, mock_pynetbox)
         nb.get_existing_rack_types = MagicMock(return_value={})
         rack_type = {
@@ -4587,7 +4579,7 @@ class TestCreateRackTypes:
 
     def test_progress_iterator_used(self, mock_settings, mock_pynetbox, mock_handle):
         """When a progress wrapper is provided, it is used as the iterator."""
-        mock_pynetbox.api.return_value.version = "4.1"
+        mock_pynetbox.api.return_value.version = "4.3"
         created_rt = MagicMock()
         created_rt.id = 1
         mock_pynetbox.api.return_value.dcim.rack_types.create.return_value = created_rt
@@ -4615,16 +4607,15 @@ class TestVerifyCompatibility:
     @pytest.mark.parametrize(
         "version_str, expected_modules, expected_new_filters, expected_rack_types, expected_m2m",
         [
-            ("3.1", False, False, False, False),
-            ("3.2", True, False, False, False),
-            ("4.0", True, False, False, False),
-            ("4.1", True, True, True, False),
+            ("4.3", True, True, True, False),
             ("4.4", True, True, True, False),
             ("4.5", True, True, True, True),
             ("4.6", True, True, True, True),
+            ("4.7", True, True, True, True),
+            ("5.0", True, True, True, True),
             # Version strings with non-numeric suffixes
             ("4.5-beta", True, True, True, True),
-            ("4.1.0", True, True, True, False),
+            ("4.3.0", True, True, True, False),
         ],
     )
     def test_version_thresholds(
@@ -4646,16 +4637,19 @@ class TestVerifyCompatibility:
         assert nb.m2m_front_ports == expected_m2m, f"m2m_front_ports mismatch for {version_str}"
 
     def test_single_component_version_string(self, mock_settings, mock_pynetbox, mock_handle):
-        """Version string with only major component (e.g. '4') does not crash."""
-        mock_pynetbox.api.return_value.version = "4"
+        """A version string with only a major component (e.g. '5') does not crash."""
+        mock_pynetbox.api.return_value.version = "5"
         nb = NetBox(mock_settings, mock_handle)
-        assert nb.new_filters is False  # 4.0 → no new filters
+        assert nb.new_filters is True
 
-    def test_version_42_enables_new_filters_not_m2m(self, mock_settings, mock_pynetbox, mock_handle):
-        mock_pynetbox.api.return_value.version = "4.2"
+    def test_the_oldest_supported_release_has_no_m2m_or_module_bay_types(
+        self, mock_settings, mock_pynetbox, mock_handle
+    ):
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         assert nb.new_filters is True
         assert nb.m2m_front_ports is False
+        assert nb.module_bay_types is False
 
 
 # ============================================================
@@ -4855,7 +4849,7 @@ class TestLogModuleTypeChanges:
     def test_non_empty_log_emits_verbose_output(self, mock_settings, mock_pynetbox, mock_handle):
         """A non-empty changed_property_log triggers verbose logging."""
         mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "3.5"
+        mock_nb_api.version = "4.3"
 
         nb = NetBox(mock_settings, mock_handle)
         mock_handle.verbose_log.reset_mock()
@@ -4868,7 +4862,7 @@ class TestLogModuleTypeChanges:
     def test_empty_log_emits_nothing(self, mock_settings, mock_pynetbox, mock_handle):
         """An empty changed_property_log does not trigger any logging calls."""
         mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "3.5"
+        mock_nb_api.version = "4.3"
 
         nb = NetBox(mock_settings, mock_handle)
         mock_handle.verbose_log.reset_mock()
@@ -4887,7 +4881,7 @@ class TestTryUpdateModuleTypeErrors:
     """Tests for RequestError and retryable-exception handlers in _try_update_module_type."""
 
     def _make_nb(self, mock_settings, mock_handle, mock_pynetbox):
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         return NetBox(mock_settings, mock_handle)
 
     def _make_module_type_res(self):
@@ -4901,7 +4895,7 @@ class TestTryUpdateModuleTypeErrors:
         """pynetbox.RequestError during update causes (False, False) return and log."""
         import pynetbox as real_pynb
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         mock_pynetbox.RequestError = real_pynb.RequestError
 
         nb = self._make_nb(mock_settings, mock_handle, mock_pynetbox)
@@ -4926,7 +4920,7 @@ class TestTryUpdateModuleTypeErrors:
         import requests
 
         mock_pynetbox.RequestError = real_pynb.RequestError
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
 
         nb = self._make_nb(mock_settings, mock_handle, mock_pynetbox)
         mock_handle.log.reset_mock()
@@ -4969,7 +4963,7 @@ class TestProcessSingleModuleTypeCreateRetryable:
         import requests
 
         mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "3.5"
+        mock_nb_api.version = "4.3"
         mock_pynetbox.RequestError = real_pynb.RequestError
 
         nb = NetBox(mock_settings, mock_handle)
@@ -5777,7 +5771,7 @@ class TestUploadModuleTypeImagesVerify:
     """Tests for _upload_module_type_images with verify_images=True."""
 
     def _make_nb(self, mock_settings, mock_handle, mock_pynetbox):
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.device_types.upload_image_attachment = MagicMock(return_value=True)
         nb.verify_images = True
@@ -5936,7 +5930,7 @@ class TestAdditionalNetBoxCoverage:
     def test_init_raises_typed_graphql_error_from_get_manufacturers(self, mock_settings, mock_pynetbox, mock_handle):
         from core.graphql_client import GraphQLError
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
 
         with patch.object(NetBox, "get_manufacturers", side_effect=GraphQLError("bad query")):
             with pytest.raises(NetBoxError, match="GraphQL error: bad query"):
@@ -5945,7 +5939,7 @@ class TestAdditionalNetBoxCoverage:
     def test_init_raises_typed_error_when_device_types_initialization_fails(
         self, mock_settings, mock_pynetbox, mock_handle
     ):
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
 
         with (
             patch.object(NetBox, "get_manufacturers", return_value=[]),
@@ -6022,7 +6016,7 @@ class TestAdditionalNetBoxCoverage:
         import requests
 
         mock_pynetbox.RequestError = real_pynb.RequestError
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.netbox.dcim.manufacturers.create.side_effect = requests.exceptions.ConnectionError("offline")
 
@@ -6032,7 +6026,7 @@ class TestAdditionalNetBoxCoverage:
         assert any("Connection error creating manufacturers" in str(c) for c in mock_handle.log.call_args_list)
 
     def test_try_resolve_update_logs_classifier_exception(self, mock_settings, mock_pynetbox, mock_handle):
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         dt = MagicMock(id=1, model="Model-1")
 
@@ -6049,7 +6043,7 @@ class TestAdditionalNetBoxCoverage:
         from types import SimpleNamespace
         from core.update_failure_resolver import FailureKind
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         dt = MagicMock(id=1, model="Model-1")
         resolution = SimpleNamespace(
@@ -6072,7 +6066,7 @@ class TestAdditionalNetBoxCoverage:
         from types import SimpleNamespace
         from core.update_failure_resolver import FailureKind
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.force_resolve_conflicts = True
         dt = MagicMock(id=1, model="Model-1")
@@ -6105,7 +6099,7 @@ class TestAdditionalNetBoxCoverage:
         from core.update_failure_resolver import FailureKind
 
         mock_pynetbox.RequestError = real_pynb.RequestError
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.force_resolve_conflicts = True
         dt = MagicMock(id=1, model="Model-1")
@@ -6132,7 +6126,7 @@ class TestAdditionalNetBoxCoverage:
     def test_log_device_type_change_outcome_partial_success_mentions_property_failure(
         self, mock_settings, mock_pynetbox, mock_handle
     ):
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         dt = MagicMock(id=1, model="Model-1")
         dt.manufacturer.name = "Cisco"
@@ -6151,7 +6145,7 @@ class TestAdditionalNetBoxCoverage:
     def test_log_device_type_change_outcome_logs_cached_when_nothing_happened(
         self, mock_settings, mock_pynetbox, mock_handle
     ):
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         dt = MagicMock(id=1, model="Model-1")
         dt.manufacturer.name = "Cisco"
@@ -6168,7 +6162,7 @@ class TestAdditionalNetBoxCoverage:
         assert any("Device Type Cached" in str(c) for c in mock_handle.verbose_log.call_args_list)
 
     def test_filter_images_for_upload_keeps_changed_image(self, mock_settings, mock_pynetbox, tmp_path, mock_handle):
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.verify_images = True
 
@@ -6194,7 +6188,7 @@ class TestAdditionalNetBoxCoverage:
         from core.change_detector import PropertyChange
 
         mock_pynetbox.RequestError = real_pynb.RequestError
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.netbox.dcim.device_types.update.side_effect = requests.exceptions.ConnectionError("offline")
         nb._log_device_type_change_outcome = MagicMock()
@@ -6217,7 +6211,7 @@ class TestAdditionalNetBoxCoverage:
         import requests
 
         mock_pynetbox.RequestError = real_pynb.RequestError
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.netbox.dcim.device_types.create.side_effect = requests.exceptions.ConnectionError("offline")
 
@@ -6238,7 +6232,7 @@ class TestAdditionalNetBoxCoverage:
     ):
         from core.change_detector import ChangeType, ComponentChange, PropertyChange
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         changes = [
             ComponentChange("interfaces", "xe-0", ChangeType.COMPONENT_ADDED),
@@ -6261,7 +6255,7 @@ class TestAdditionalNetBoxCoverage:
     def test_fetch_module_type_existing_images_uses_detailed_query_in_verify_mode(
         self, mock_settings, mock_pynetbox, mock_handle
     ):
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.verify_images = True
         details = {7: {"linecard.front": {"att_id": 5, "url": "/media/linecard.front.jpg"}}}
@@ -6273,7 +6267,7 @@ class TestAdditionalNetBoxCoverage:
         assert nb._module_image_details == details
 
     def test_try_update_module_type_skips_missing_netbox_fields(self, mock_settings, mock_pynetbox, mock_handle):
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         module_type_res = MagicMock(spec=["id", "manufacturer", "model"])
         module_type_res.id = 1
@@ -6290,7 +6284,7 @@ class TestAdditionalNetBoxCoverage:
     def test_filter_actionable_module_types_marks_verify_images_module_actionable(
         self, mock_settings, mock_pynetbox, mock_handle
     ):
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.verify_images = True
         _mark_cache_ready(nb.device_types)
@@ -6314,7 +6308,7 @@ class TestAdditionalModuleTypeCoverage:
     def test_apply_module_type_component_updates_records_failed_no_actionable_changes(
         self, mock_settings, mock_pynetbox, mock_handle
     ):
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         module_type_res = MagicMock(id=7, model="LC")
         module_type_res.manufacturer.name = "Cisco"
@@ -6334,7 +6328,7 @@ class TestAdditionalModuleTypeCoverage:
     ):
         from core.change_detector import ChangeType, ComponentChange
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         module_type_res = MagicMock(id=7, model="LC")
         module_type_res.manufacturer.name = "Cisco"
@@ -6362,7 +6356,7 @@ class TestAdditionalModuleTypeCoverage:
     ):
         from core.change_detector import ChangeType, ComponentChange
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         module_type_res = MagicMock(id=7, model="LC")
         module_type_res.manufacturer.name = "Cisco"
@@ -6383,7 +6377,7 @@ class TestAdditionalModuleTypeCoverage:
     ):
         from core.change_detector import ChangeType, ComponentChange
 
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         module_type_res = MagicMock(id=7, model="LC")
         module_type_res.manufacturer.name = "Cisco"
@@ -6510,7 +6504,7 @@ class TestRemainingCoverageBranches:
         from core.graphql_client import DotDict
 
         mock_pynetbox.RequestError = real_pynb.RequestError
-        mock_pynetbox.api.return_value.version = "4.1"
+        mock_pynetbox.api.return_value.version = "4.3"
         mock_pynetbox.api.return_value.dcim.rack_types.update.side_effect = requests.exceptions.ConnectionError(
             "offline"
         )
@@ -6530,7 +6524,7 @@ class TestRemainingCoverageBranches:
         import requests
 
         mock_pynetbox.RequestError = real_pynb.RequestError
-        mock_pynetbox.api.return_value.version = "4.1"
+        mock_pynetbox.api.return_value.version = "4.3"
         mock_pynetbox.api.return_value.dcim.rack_types.create.side_effect = requests.exceptions.ConnectionError(
             "offline"
         )
@@ -6547,7 +6541,7 @@ class TestRemainingCoverageBranches:
     def test_upload_module_type_images_discards_missing_attachment_before_failed_upload(
         self, mock_settings, mock_pynetbox, tmp_path, mock_handle
     ):
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.verify_images = True
         nb.device_types.upload_image_attachment = MagicMock(return_value=False)
@@ -6575,7 +6569,7 @@ class TestRemainingCoverageBranches:
     def test_upload_module_type_images_skips_changed_image_when_delete_fails(
         self, mock_settings, mock_pynetbox, tmp_path, mock_handle
     ):
-        mock_pynetbox.api.return_value.version = "3.5"
+        mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.verify_images = True
         nb.device_types.upload_image_attachment = MagicMock(return_value=True)
@@ -6825,7 +6819,7 @@ def test_filter_actionable_module_types_skips_unchanged_existing_module(
     mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle
 ):
     mock_nb_api = mock_pynetbox.api.return_value
-    mock_nb_api.version = "3.5"
+    mock_nb_api.version = "4.3"
 
     mock_graphql_requests.side_effect = paginate_dispatch(
         {
@@ -6874,7 +6868,7 @@ def test_filter_actionable_module_types_includes_module_with_missing_component(
     mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle
 ):
     mock_nb_api = mock_pynetbox.api.return_value
-    mock_nb_api.version = "3.5"
+    mock_nb_api.version = "4.3"
 
     mock_graphql_requests.side_effect = paginate_dispatch(
         {
@@ -6922,7 +6916,7 @@ class TestFilterActionableModuleTypesMissingAttr:
     ):
         """When existing module lacks an attribute, it's skipped — no false positive change."""
         mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "3.5"
+        mock_nb_api.version = "4.3"
 
         mock_graphql_requests.side_effect = paginate_dispatch(
             {
@@ -6979,7 +6973,7 @@ class TestProcessSingleModuleTypeRemoveComponents:
     ):
         """When remove_components=True and there are component changes, remove_components is called."""
         mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "3.5"
+        mock_nb_api.version = "4.3"
 
         nb = NetBox(mock_settings, mock_handle)
 
@@ -7037,7 +7031,7 @@ class TestProcessSingleModuleTypeRemoveComponents:
         skipped entirely.
         """
         mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "3.5"
+        mock_nb_api.version = "4.3"
 
         nb = NetBox(mock_settings, mock_handle)
 
@@ -7106,7 +7100,7 @@ class TestFailuresReachTheRunReport:
         import pynetbox as real_pynb
 
         mock_pynetbox.RequestError = real_pynb.RequestError
-        mock_pynetbox.api.return_value.version = "4.1"
+        mock_pynetbox.api.return_value.version = "4.3"
         return NetBox(mock_settings, mock_handle)
 
     def test_rack_type_create_failure_is_reported(self, mock_settings, mock_pynetbox, mock_handle):
@@ -7190,7 +7184,7 @@ class TestSummaryWordingMatchesTheFailedOperation:
 
         mock_pynetbox.RequestError = real_pynb.RequestError
         mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "4.1"
+        mock_nb_api.version = "4.3"
         mock_nb_api.dcim.device_types.create.side_effect = _request_error(
             b'{"manufacturer":["Related object not found using the provided attributes: slug ribbon"]}'
         )
@@ -7223,7 +7217,7 @@ class TestSummaryWordingMatchesTheFailedOperation:
         import pynetbox as real_pynb
 
         mock_pynetbox.RequestError = real_pynb.RequestError
-        mock_pynetbox.api.return_value.version = "4.1"
+        mock_pynetbox.api.return_value.version = "4.3"
         mock_pynetbox.api.return_value.dcim.module_types.create.side_effect = _request_error(
             b'{"model":["This field may not be blank."]}'
         )
@@ -7247,7 +7241,7 @@ class TestSkippedComponentReasonReachesTheReport:
 
     def _dt(self, mock_pynetbox, make_device_types, parent_id=1):
         mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "4.1"
+        mock_nb_api.version = "4.3"
         dt = make_device_types(nb_api=mock_nb_api)
         return dt
 
@@ -7260,7 +7254,7 @@ class TestSkippedComponentReasonReachesTheReport:
 
         mock_pynetbox.RequestError = real_pynb.RequestError
         mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "4.1"
+        mock_nb_api.version = "4.3"
 
         dt = make_device_types(nb_api=mock_nb_api)
         inlet = MagicMock()
@@ -7351,7 +7345,7 @@ class TestComponentFailureReasonReachesTheReport:
 
         mock_pynetbox.RequestError = real_pynb.RequestError
         mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "4.1"
+        mock_nb_api.version = "4.3"
 
         dt = make_device_types(nb_api=mock_nb_api)
         existing_iface = MagicMock()
@@ -7410,7 +7404,7 @@ class TestComponentFailureReasonReachesTheReport:
 
         mock_pynetbox.RequestError = real_pynb.RequestError
         mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "4.1"
+        mock_nb_api.version = "4.3"
 
         dt = make_device_types(nb_api=mock_nb_api)
         stale = MagicMock()
@@ -7439,7 +7433,7 @@ class TestComponentFailureReasonReachesTheReport:
 
         mock_pynetbox.RequestError = real_pynb.RequestError
         mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "4.1"
+        mock_nb_api.version = "4.3"
 
         dt = make_device_types(nb_api=mock_nb_api)
         dt.components.record("interface_templates", "device", 6119, {})
@@ -7484,7 +7478,7 @@ class TestComponentErrorScoping:
         import pynetbox as real_pynb
 
         mock_pynetbox.RequestError = real_pynb.RequestError
-        mock_pynetbox.api.return_value.version = "4.1"
+        mock_pynetbox.api.return_value.version = "4.3"
         return NetBox(mock_settings, mock_handle)
 
     def test_new_device_type_with_failing_component_is_partial(
@@ -7495,7 +7489,7 @@ class TestComponentErrorScoping:
 
         mock_pynetbox.RequestError = real_pynb.RequestError
         mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "4.1"
+        mock_nb_api.version = "4.3"
         dt = make_device_types(nb_api=mock_nb_api)
         dt.components.record("interface_templates", "device", 900, {})
         mock_nb_api.dcim.interface_templates.create.side_effect = _request_error(
@@ -7532,7 +7526,7 @@ class TestComponentErrorScoping:
     def test_component_errors_do_not_leak_between_entities(self, mock_pynetbox, graphql_client, make_device_types):
         """Errors buffered for one entity must not surface in the next entity's reason."""
         mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "4.1"
+        mock_nb_api.version = "4.3"
         dt = make_device_types(nb_api=mock_nb_api)
 
         dt._log_component_error("stale error from an earlier entity")
@@ -7547,7 +7541,7 @@ class TestComponentErrorScoping:
     def test_collect_component_errors_clears_on_exit(self, mock_pynetbox, graphql_client, make_device_types):
         """The buffer is empty after a scope closes, so the next scope starts clean."""
         mock_nb_api = mock_pynetbox.api.return_value
-        mock_nb_api.version = "4.1"
+        mock_nb_api.version = "4.3"
         dt = make_device_types(nb_api=mock_nb_api)
 
         with dt.collect_component_errors() as first:
@@ -7557,3 +7551,16 @@ class TestComponentErrorScoping:
         with dt.collect_component_errors() as second:
             pass
         assert second == []
+
+
+def test_netbox_below_minimum_version_is_refused_with_a_clear_message(mock_settings, mock_pynetbox, mock_handle):
+    """A GraphQL schema error is a poor way to learn the server is too old."""
+    from core.netbox_api import NetBoxError
+
+    for version in ("4.1", "4.2", "3.5"):
+        mock_pynetbox.api.return_value.version = version
+        with pytest.raises(NetBoxError) as exc:
+            NetBox(mock_settings, mock_handle)
+        message = str(exc.value)
+        assert "4.3" in message, f"{version}: the message must name the minimum"
+        assert version in message, f"{version}: the message must name what was found"

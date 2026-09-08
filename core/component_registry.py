@@ -17,6 +17,12 @@ LINK_BRIDGE = "bridge"
 LINK_POWER_PORT = "power_port"
 LINK_REAR_PORTS = "rear_ports"
 
+# Fields holding names that must become NetBox ids before a POST.
+RELATION_MODULE_BAY_TYPES = "module_bay_types"
+
+# Relation fields a module type carries itself, rather than through one of its components.
+MODULE_TYPE_RELATIONS = (RELATION_MODULE_BAY_TYPES,)
+
 
 @dataclass(frozen=True)
 class ComponentType:
@@ -27,19 +33,30 @@ class ComponentType:
     label: str
     fields: tuple[str, ...]
     module_types: bool = True
+    relations: tuple[str, ...] = field(default_factory=tuple)
     graphql_extra: tuple[str, ...] = field(default_factory=tuple)
     compare_extra: tuple[str, ...] = field(default_factory=tuple)
     link: Optional[str] = None
 
     @property
     def graphql_fields(self):
-        """Fields to select in a GraphQL query, including the id every consumer needs."""
-        return ["id", *self.fields, *self.graphql_extra]
+        """Fields to select in a GraphQL query, including the id every consumer needs.
+
+        A relation is a list of related objects, so it is selected by name rather than
+        read as a scalar.
+        """
+        return ["id", *self.fields, *self.graphql_extra, *self.graphql_relation_fields]
+
+    @property
+    def graphql_relation_fields(self):
+        """GraphQL selections for this row's relations, one nested block per relation."""
+        # slug plus owning manufacturer is the identity; the name alone is ambiguous.
+        return [f"{name} {{ id name slug manufacturer {{ slug }} }}" for name in self.relations]
 
     @property
     def compare_properties(self):
         """Properties change detection compares between YAML and NetBox."""
-        return [*self.fields, *self.compare_extra]
+        return [*self.fields, *self.compare_extra, *self.relations]
 
     @property
     def list_key(self):
@@ -121,6 +138,7 @@ COMPONENT_TYPES = (
         endpoint="module_bay_templates",
         label="Module Bay",
         fields=("name", "position", "label", "description"),
+        relations=(RELATION_MODULE_BAY_TYPES,),
     ),
 )
 
