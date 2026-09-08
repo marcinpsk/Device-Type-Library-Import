@@ -285,6 +285,26 @@ class TestLogChangeReport:
         log_calls = [str(call) for call in detector.handle.log.call_args_list]
         assert any("cisco/X" in c for c in log_calls)
 
+    def test_report_banner_names_the_vendor(self):
+        """A multi-vendor run must say which vendor a device-type report belongs to."""
+        detector = self._make_detector()
+        dt_change = DeviceTypeChange(manufacturer_slug="tp-link", model="EAP650", slug="eap650")
+        dt_change.property_changes = [PropertyChange("u_height", 1, 2)]
+        report = ChangeReport(modified_device_types=[dt_change])
+        detector.log_change_report(report, vendor="TP-Link")
+        banner = [c.args[0] for c in detector.handle.log.call_args_list if "CHANGE DETECTION REPORT" in c.args[0]]
+        assert banner == ["CHANGE DETECTION REPORT: TP-Link"]
+
+    def test_report_banner_without_vendor_keeps_the_plain_title(self):
+        """Without a vendor the banner keeps its plain title, with no trailing colon."""
+        detector = self._make_detector()
+        dt_change = DeviceTypeChange(manufacturer_slug="tp-link", model="EAP650", slug="eap650")
+        dt_change.property_changes = [PropertyChange("u_height", 1, 2)]
+        report = ChangeReport(modified_device_types=[dt_change])
+        detector.log_change_report(report)
+        banner = [c.args[0] for c in detector.handle.log.call_args_list if "CHANGE DETECTION REPORT" in c.args[0]]
+        assert banner == ["CHANGE DETECTION REPORT"]
+
     def test_modified_with_property_change_logged(self):
         detector = self._make_detector()
         dt_change = DeviceTypeChange(manufacturer_slug="juniper", model="MX5", slug="mx5")

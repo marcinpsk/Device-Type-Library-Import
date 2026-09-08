@@ -376,7 +376,7 @@ class ChangeDetector:
                 # so that any change to rear port name, front_port_position, or
                 # rear_port_position is detected.
                 yaml_mappings = yaml_comp.get("_mappings") or []
-                yaml_set = frozenset(
+                yaml_set: frozenset = frozenset(
                     (
                         m.get("rear_port", ""),
                         m.get("front_port_position", 1),
@@ -392,7 +392,7 @@ class ChangeDetector:
                 has_names = any(m.get("rear_port_name") is not None for m in canonical)
                 if has_names:
                     # NetBox >= 4.5: compare with rear port names
-                    netbox_set = frozenset(
+                    netbox_set: frozenset = frozenset(
                         (
                             m.get("rear_port_name", ""),
                             m.get("front_port_position", 1),
@@ -545,12 +545,17 @@ class ChangeDetector:
             for comp in removed:
                 self.handle.verbose_log(f"        - {comp.component_type}: {comp.component_name}")
 
-    def log_change_report(self, report: ChangeReport):
+    def log_change_report(self, report: ChangeReport, vendor: str = ""):
         """Log the change report in a clear, readable format.
 
         Suppresses the full banner when there are no new or modified types —
         emits a single verbose-level summary instead to avoid flooding the
         terminal with empty reports during a multi-vendor run.
+
+        Args:
+            report: The change report to render.
+            vendor: Vendor name appended to the banner title, so consecutive
+                reports in a multi-vendor run stay distinguishable.
         """
         has_changes = report.new_device_types or report.modified_device_types
         if not has_changes:
@@ -559,7 +564,7 @@ class ChangeDetector:
             return
 
         self.handle.log("=" * 60)
-        self.handle.log("CHANGE DETECTION REPORT")
+        self.handle.log(f"CHANGE DETECTION REPORT: {vendor}" if vendor else "CHANGE DETECTION REPORT")
         self.handle.log("=" * 60)
 
         self.handle.log(f"New device types: {len(report.new_device_types)}")

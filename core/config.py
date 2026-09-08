@@ -56,8 +56,8 @@ class RunConfig:
     repo_branch: str
     repo_path: str
 
-    vendors: tuple = ()
-    slugs: tuple = ()
+    vendors: tuple[str, ...] = ()
+    slugs: tuple[str, ...] = ()
 
     export_diff: bool = False
     export_diff_dir: str = "extra/"
@@ -74,7 +74,7 @@ class RunConfig:
     show_remaining_time: bool = False
 
     # Resolution decisions worth telling the user about, logged once the handler exists.
-    notices: tuple = field(default_factory=tuple)
+    notices: tuple[str, ...] = field(default_factory=tuple)
 
 
 def _text(env, name, default=None):
@@ -246,7 +246,7 @@ def _split_slugs(values):
     return tuple(s.strip() for slug in values for s in slug.split(",") if s.strip())
 
 
-def resolve_run_config(argv=None, env=None):
+def resolve_run_config(argv=None, env=None) -> RunConfig:
     """Resolve *argv* and *env* into one RunConfig, or raise ConfigError.
 
     Reads argv before the environment, so ``--help`` answers without an environment

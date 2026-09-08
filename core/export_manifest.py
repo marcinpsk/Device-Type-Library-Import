@@ -9,7 +9,7 @@ import json
 import os
 from pathlib import Path
 
-_EMPTY = {"device-types": {}, "module-types": {}, "rack-types": {}}
+_EMPTY: dict = {"device-types": {}, "module-types": {}, "rack-types": {}}
 
 
 def load_manifest(path: Path) -> dict:

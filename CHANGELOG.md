@@ -2,6 +2,80 @@
 
 <!-- version list -->
 
+## v1.9.0 (2026-09-03)
+
+### Bug Fixes
+
+- **netbox**: Name the item netbox rejected in a bulk create (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+- **netbox**: Name the item netbox rejected in a bulk create (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+- **report**: Count device-type creation failures in the run report (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+- **report**: Record rack-type and module-type failures in the run report (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+- **report**: Carry the component error into the device-type reason (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+- **report**: Route component transport failures into the outcome reason (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+- **report**: Route skipped-component reasons into the outcome reason (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+- **report**: Scope component errors per entity and count partial device types (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+- **report**: Stop calling create failures update failures (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+
+
+### Features
+
+- **report**: Name the vendor in each change-detection banner (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+
+
+### Refactoring
+
+- **report**: Derive run-summary failure counts from the outcome registry (#130, [`4e1556a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4e1556a28289cbd1c55c09a00d9694a7e886e774))
+
+
+
+### Contributors
+
+@marcinpsk
+
+## v1.8.4 (2026-09-01)
+
+### Bug Fixes
+
+- **export**: Accept vendor tuples in the graphql manufacturer filter (#128, [`668a5c2`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/668a5c20c98d9807ad18aa574643d60d632ebe68))
+
+
+### Chores
+
+- **deps-dev**: Bump ruff in the python-deps group (#129, [`22898fc`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/22898fcb52b9c8fd4cd03617b07b5f145b875be1))
+
+
+
+### Contributors
+
+@dependabot[bot], @marcinpsk
+
+## v1.8.3 (2026-08-25)
+
+### Bug Fixes
+
+- **repo**: Add repo_url=local sentinel to bypass git entirely (#127, [`c148384`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/c148384b06cc7a5d47b120fcf85eae270021b6e5))
+- **repo**: Add repo_url=local sentinel to bypass git entirely (#127, [`c148384`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/c148384b06cc7a5d47b120fcf85eae270021b6e5))
+- **repo**: Validate the local library layout and share the check with export (#127, [`c148384`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/c148384b06cc7a5d47b120fcf85eae270021b6e5))
+- **repo**: Validate the local library layout and share the check with export (#127, [`c148384`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/c148384b06cc7a5d47b120fcf85eae270021b6e5))
+- **import**: Treat an absent type root as empty instead of crashing (#127, [`c148384`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/c148384b06cc7a5d47b120fcf85eae270021b6e5))
+
+
+### Chores
+
+- **deps**: Bump the python-deps group with 2 updates (#125, [`823663a`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/823663a152eb2086fc6a15eb6a6672e054d3dd92))
+- **deps**: Bump the github-actions group with 2 updates (#123, [`65248e7`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/65248e72eff57c80627b3b76f99b364c21c02560))
+
+
+### Continuous Integration
+
+- Run ci against older netbox (#122, [`4255da7`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4255da7cbc2e3803e80796ded6899f5e6591e3bf))
+
+
+
+### Contributors
+
+@dependabot[bot], @marcinpsk
+
 ## v1.8.2 (2026-08-21)
 
 ### Bug Fixes

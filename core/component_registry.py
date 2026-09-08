@@ -25,10 +25,10 @@ class ComponentType:
     yaml_key: str
     endpoint: str
     label: str
-    fields: tuple
+    fields: tuple[str, ...]
     module_types: bool = True
-    graphql_extra: tuple = field(default_factory=tuple)
-    compare_extra: tuple = field(default_factory=tuple)
+    graphql_extra: tuple[str, ...] = field(default_factory=tuple)
+    compare_extra: tuple[str, ...] = field(default_factory=tuple)
     link: Optional[str] = None
 
     @property

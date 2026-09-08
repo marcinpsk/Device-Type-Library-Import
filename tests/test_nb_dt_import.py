@@ -1747,7 +1747,7 @@ class TestDirectHelpers:
         args = SimpleNamespace(
             export_diff_dir="extra",
             force_export_overwrite=True,
-            vendors=["nokia"],
+            vendors=("nokia",),
             show_remaining_time=True,
         )
 
@@ -1769,7 +1769,7 @@ class TestDirectHelpers:
             "handle": handle,
             "export_dir": "extra",
             "force_overwrite": True,
-            "vendor_slugs": ["nokia"],
+            "vendor_slugs": ("nokia",),
         }
         assert handle.set_console.call_args_list == [
             ((progress.console,),),
@@ -1777,12 +1777,12 @@ class TestDirectHelpers:
         ]
         MockExporter.return_value.run.assert_called_once_with(progress=progress)
 
-    def test_run_export_diff_sends_no_vendor_filter_when_vendors_is_empty(self, nb_dt_import):
-        """An empty --vendors must reach the exporter as None, not as an empty list."""
+    def test_run_export_diff_passes_an_empty_vendor_selection_straight_through(self, nb_dt_import):
+        """The Exporter normalizes an empty selection to "all vendors"; the CLI does not pre-filter it."""
         args = SimpleNamespace(
             export_diff_dir="extra",
             force_export_overwrite=False,
-            vendors=[],
+            vendors=(),
             show_remaining_time=False,
         )
 
@@ -1792,7 +1792,7 @@ class TestDirectHelpers:
         ):
             nb_dt_import._run_export_diff(args, MagicMock())
 
-        assert MockExporter.call_args.kwargs["vendor_slugs"] is None
+        assert MockExporter.call_args.kwargs["vendor_slugs"] == ()
 
 
 class TestMainAdditionalCoverage:
@@ -2106,3 +2106,126 @@ class TestReadmeArgumentCoverage:
     def test_table_documents_no_removed_flags(self, nb_dt_import):
         stale = self._documented_flags() - self._parser_flags(nb_dt_import)
         assert not stale, f"README arguments table documents flags the parser no longer defines: {sorted(stale)}"
+
+
+# ---------------------------------------------------------------------------
+# Export-diff end-to-end: argv → resolve_run_config → main() → Exporter → GraphQL
+# ---------------------------------------------------------------------------
+
+_LIST_FIELDS = ("device_type_list", "module_type_list", "rack_type_list")
+
+
+def _run_export_diff_cli(nb_dt_import, monkeypatch, tmp_path, library_root, vendors=None):
+    """Run main() for one --export-diff invocation, stubbing nothing below the CLI."""
+    monkeypatch.setenv("REPO_PATH", str(library_root))
+    monkeypatch.delenv("VENDORS", raising=False)
+    argv = ["nb-dt-import.py", "--export-diff", "--export-diff-dir", str(tmp_path / "export")]
+    if vendors is not None:
+        argv += ["--vendors", vendors]
+    with patch.object(sys, "argv", argv):
+        nb_dt_import.main()
+
+
+def _filters_by_list_field(payloads):
+    """Map each queried type-list field to the variables of its first GraphQL request."""
+    seen = {}
+    for payload in payloads:
+        for field in _LIST_FIELDS:
+            if f"{field}(" in payload["query"]:
+                seen.setdefault(field, payload.get("variables", {}))
+    return seen
+
+
+class TestExportDiffVendorFilterEndToEnd:
+    """The vendor filter must survive argv → RunConfig → Exporter → GraphQL untouched.
+
+    Nothing below the CLI is stubbed: the real Exporter drives the real client, so a
+    config value the GraphQL layer rejects (config.vendors is a tuple) fails right here.
+    """
+
+    def test_single_vendor_reaches_the_graphql_request(
+        self, nb_dt_import, monkeypatch, tmp_path, capsys, mock_post, _real_library_root
+    ):
+        _run_export_diff_cli(nb_dt_import, monkeypatch, tmp_path, _real_library_root, "Cisco")
+
+        payloads = [call.kwargs["json"] for call in mock_post.call_args_list]
+        filters = _filters_by_list_field(payloads)
+        assert set(filters) == set(_LIST_FIELDS)
+        for field, variables in filters.items():
+            assert variables["manufacturer_slug"] == "cisco", field
+            assert isinstance(variables["manufacturer_slug"], str), field
+        assert "Nothing to export" in capsys.readouterr().out
+
+    def test_multiple_vendors_are_sent_as_a_json_list(
+        self, nb_dt_import, monkeypatch, tmp_path, capsys, mock_post, _real_library_root
+    ):
+        """A tuple would not compare equal here, and NetBox would not accept it as a list variable."""
+        _run_export_diff_cli(nb_dt_import, monkeypatch, tmp_path, _real_library_root, "Cisco,Juniper")
+
+        payloads = [call.kwargs["json"] for call in mock_post.call_args_list]
+        filters = _filters_by_list_field(payloads)
+        assert set(filters) == set(_LIST_FIELDS)
+        for field, variables in filters.items():
+            assert variables["manufacturer_slugs"] == ["cisco", "juniper"], field
+            assert isinstance(variables["manufacturer_slugs"], list), field
+        assert "Nothing to export" in capsys.readouterr().out
+
+    def test_no_vendors_queries_every_manufacturer(
+        self, nb_dt_import, monkeypatch, tmp_path, capsys, mock_post, _real_library_root
+    ):
+        """Without --vendors, config.vendors is (), which the GraphQL layer rejects if it reaches it."""
+        _run_export_diff_cli(nb_dt_import, monkeypatch, tmp_path, _real_library_root)
+
+        payloads = [call.kwargs["json"] for call in mock_post.call_args_list]
+        filters = _filters_by_list_field(payloads)
+        assert set(filters) == set(_LIST_FIELDS)
+        for field, variables in filters.items():
+            assert set(variables) == {"pagination"}, field
+        assert not any("filters:" in payload["query"] for payload in payloads)
+        assert "Nothing to export" in capsys.readouterr().out
+
+
+@pytest.mark.real_http
+class TestExportDiffVendorFilterOverRealHTTP:
+    """Same run against a local HTTP server, so the filter is asserted as it is serialized on the wire."""
+
+    @staticmethod
+    def _serve():
+        """Serve empty GraphQL pages and record every decoded request body."""
+        import json
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        bodies = []
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                length = int(self.headers["Content-Length"])
+                bodies.append(json.loads(self.rfile.read(length)))
+                payload = b'{"data": {}}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(payload)))
+                self.end_headers()
+                self.wfile.write(payload)
+
+            def log_message(self, *args):
+                """Silence the default stderr access log."""
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        return f"http://127.0.0.1:{server.server_port}", server, bodies
+
+    def test_vendor_filter_is_serialized_as_a_json_list(self, nb_dt_import, monkeypatch, tmp_path, _real_library_root):
+        url, server, bodies = self._serve()
+        monkeypatch.setenv("NETBOX_URL", url)
+        try:
+            _run_export_diff_cli(nb_dt_import, monkeypatch, tmp_path, _real_library_root, "Cisco,Juniper")
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        filters = _filters_by_list_field(bodies)
+        assert set(filters) == set(_LIST_FIELDS)
+        for field, variables in filters.items():
+            assert variables["manufacturer_slugs"] == ["cisco", "juniper"], field
