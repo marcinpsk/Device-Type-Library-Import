@@ -492,11 +492,8 @@ class NetBox:
         self.handle = handle
         self.netbox: Any = None
         self.ignore_ssl = config.ignore_ssl_errors
-        self.modules = False
-        self.new_filters = False
         self.module_bay_types = False
         self.m2m_front_ports = False  # True for NetBox >= 4.5 (M2M port mappings)
-        self.rack_types = False
         self.force_resolve_conflicts = config.force_resolve_conflicts
         self.remove_unmanaged_types = config.remove_unmanaged_types
         self.verify_images = config.verify_images
@@ -538,7 +535,6 @@ class NetBox:
                 self.handle,
                 self.counter,
                 self.ignore_ssl,
-                self.new_filters,
                 graphql=self.graphql,
                 m2m_front_ports=self.m2m_front_ports,
                 module_bay_types_supported=self.module_bay_types,
@@ -603,10 +599,10 @@ class NetBox:
             raise UnknownError("NetBox API Error", cause=e) from e
 
     def verify_compatibility(self):
-        """Check the connected NetBox version and configure feature flags accordingly.
+        """Refuse a server below the supported floor and set the feature flags above it.
 
-        Sets ``self.modules = True`` for NetBox >= 3.2 and ``self.new_filters = True``
-        for >= 4.1. Logs the detected version when the new-filter flag is enabled.
+        Only the flags that still vary across supported releases are set here: the 4.3
+        floor makes everything introduced at or below 4.1 unconditional.
         """
         # nb.version should be the version in the form '3.2'
         # Strip non-numeric suffixes (e.g. "4.1-beta") before converting to int.
@@ -643,17 +639,6 @@ class NetBox:
                 f"NetBox {nb_version} is not supported: this importer requires NetBox {minimum} or later. "
                 f"Older releases fail part way through with a GraphQL schema error rather than here."
             )
-
-        # Later than 3.2
-        # Might want to check for the module-types entry as well?
-        if version_split[0] > 3 or (version_split[0] == 3 and version_split[1] >= 2):
-            self.modules = True
-
-        # check if version >= 4.1 in order to use new filter names (https://github.com/netbox-community/netbox/issues/15410)
-        if version_split[0] > 4 or (version_split[0] == 4 and version_split[1] >= 1):
-            self.new_filters = True
-            self.rack_types = True
-            self.handle.log(f"Netbox version {self.netbox.version} found. Using new filters.")
 
         # NetBox 4.5 replaced FrontPortTemplate.rear_port (FK) + rear_port_position (int)
         # with a ManyToMany through table (PortMapping).  The creation and read APIs differ.
@@ -777,7 +762,6 @@ class NetBox:
                 netbox=self.netbox,
                 device_type_id=dt.id,
                 device_type_yaml=device_type,
-                new_filters=self.new_filters,
             )
         except Exception as exc:  # defensive: classifier must never break the run
             self.handle.verbose_log(f"Failure classifier raised {type(exc).__name__}: {exc}")
@@ -1203,8 +1187,6 @@ class NetBox:
             for component in COMPONENT_TYPES:
                 yaml_key = component.yaml_key
                 if yaml_key not in device_type:
-                    continue
-                if yaml_key == "module-bays" and not self.modules:
                     continue
                 self.device_types.create_components(
                     yaml_key,
@@ -2320,7 +2302,6 @@ class DeviceTypes:
         handle,
         counter,
         ignore_ssl,
-        new_filters,
         *,
         graphql,
         repo_path,
@@ -2338,7 +2319,6 @@ class DeviceTypes:
             handle (LogHandler): Sink for creation and error messages.
             counter (Counter): Shared operation counter updated during creation.
             ignore_ssl (bool): Whether SSL certificate verification is disabled.
-            new_filters (bool): Whether to use updated filter parameter names (NetBox >= 4.1).
             graphql (NetBoxGraphQLClient): GraphQL client for read queries.
             module_bay_types_supported (bool): True when NetBox supports ModuleBayType (>= 4.7).
             repo_path (str): Local library checkout, used to read the module-type schema.
@@ -2349,7 +2329,6 @@ class DeviceTypes:
         self.handle = handle
         self.counter = counter
         self.ignore_ssl = ignore_ssl
-        self.new_filters = new_filters
         self.graphql = graphql
         self.repo_path = repo_path
         self.m2m_front_ports = m2m_front_ports
@@ -2359,7 +2338,6 @@ class DeviceTypes:
             netbox,
             graphql,
             handle,
-            new_filters,
             max_threads,
             wrap_record=_FrontPortRecordWithMappings,
         )

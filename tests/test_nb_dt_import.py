@@ -335,13 +335,11 @@ def _make_mock_repo(device_types=None):
     return mock_repo
 
 
-def _make_mock_netbox(modules=False, rack_types=False):
+def _make_mock_netbox():
     """Return a pre-configured NetBox mock."""
     from collections import Counter
 
     mock_nb = MagicMock()
-    mock_nb.modules = modules
-    mock_nb.rack_types = rack_types
     mock_nb.device_types.existing_device_types = {}
     mock_nb.device_types.existing_device_types_by_slug = {}
     mock_nb.count_device_type_images.return_value = 0
@@ -884,7 +882,7 @@ class TestMain:
             patch("nb_dt_import.NetBox") as MockNetBox,
             patch("core.import_run.ChangeDetector") as MockDetector,
         ):
-            mock_nb = _make_mock_netbox(modules=True)
+            mock_nb = _make_mock_netbox()
             mock_nb.filter_actionable_module_types.return_value = ([module_type], {}, [])
             MockNetBox.return_value = mock_nb
             MockNetBox.filter_new_module_types.return_value = []
@@ -912,7 +910,7 @@ class TestMain:
             patch("nb_dt_import.NetBox") as MockNetBox,
             patch("core.import_run.ChangeDetector") as MockDetector,
         ):
-            mock_nb = _make_mock_netbox(modules=True)
+            mock_nb = _make_mock_netbox()
             mock_nb.filter_actionable_module_types.return_value = ([], {}, change_log)
             mock_nb.filter_new_module_types.return_value = []
             MockNetBox.return_value = mock_nb
@@ -930,7 +928,7 @@ class TestMain:
         mock_nb.log_module_type_changes.assert_called_once_with(change_log)
 
     def test_settings_netbox_features_modules_logs_module_count(self, nb_dt_import):
-        """When netbox.modules is True, module_added/updated counters are logged."""
+        """Module counters are always logged: every supported release has module types."""
         with (
             patch.object(sys, "argv", ["nb-dt-import.py", "--only-new"]),
             patch("nb_dt_import.DTLRepo") as MockRepo,
@@ -938,7 +936,7 @@ class TestMain:
             patch("nb_dt_import.LogHandler") as MockLogHandler,
         ):
             MockRepo.return_value = _make_mock_repo()
-            mock_nb = _make_mock_netbox(modules=True)
+            mock_nb = _make_mock_netbox()
             MockNetBox.return_value = mock_nb
 
             nb_dt_import.main()
@@ -986,19 +984,6 @@ class TestProcessRackTypes:
 
     def _make_args(self, only_new=False):
         return SimpleNamespace(only_new=only_new)
-
-    def test_rack_types_disabled_logs_warning_and_returns(self, nb_dt_import):
-        """netbox.rack_types=False with actual rack types: warning logged, no further processing."""
-        handle = MagicMock()
-        netbox = MagicMock()
-        netbox.rack_types = False
-
-        rack_type = {"manufacturer": {"slug": "apc"}, "model": "AR1300", "slug": "apc-ar1300"}
-        import_run_module._process_rack_types(self._make_args(), netbox, handle, None, [rack_type])
-
-        handle.log.assert_called_once()
-        assert "4.1" in handle.log.call_args[0][0]
-        netbox.get_existing_rack_types.assert_not_called()
 
     def test_empty_rack_types_returns_early(self, nb_dt_import):
         """rack_types=[]: returns immediately without any logging or API calls."""
@@ -1252,7 +1237,7 @@ class TestPerVendorLoop:
         """
         mt = {"manufacturer": {"slug": "acbel"}, "model": "M1", "slug": "acbel-m1"}
 
-        mock_nb = _make_mock_netbox(modules=True)
+        mock_nb = _make_mock_netbox()
         mock_repo = _make_mock_repo()
         mock_repo.discover_vendors.return_value = [{"name": "Acbel", "slug": "acbel"}]
 
@@ -1371,8 +1356,6 @@ class TestLogRunSummary:
 
         handle = MagicMock()
         mock_nb = MagicMock()
-        mock_nb.modules = False
-        mock_nb.rack_types = True
         from collections import Counter
 
         mock_nb.counter = Counter(
@@ -1404,8 +1387,6 @@ class TestLogRunSummary:
 
         handle = MagicMock()
         mock_nb = MagicMock()
-        mock_nb.modules = False
-        mock_nb.rack_types = False
         from collections import Counter
 
         mock_nb.counter = Counter(
@@ -1988,7 +1969,7 @@ class TestMainAdditionalCoverage:
             if files == ["cisco-module-types.yaml"]
             else []
         )
-        netbox = _make_mock_netbox(modules=True)
+        netbox = _make_mock_netbox()
         slug_resolved = {
             "device_files": {"empty": [], "cisco": ["resolved.yaml"]},
             "module_vendors": {"cisco"},

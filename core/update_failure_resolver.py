@@ -24,8 +24,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, List, Optional
 
-from core.compat import device_type_filter_kwargs
-
 
 class FailureKind(str, Enum):
     """High-level classification of a NetBox update failure."""
@@ -122,7 +120,7 @@ def _matches_subdevice_role_constraint(payload: Any) -> bool:
     return False
 
 
-def _count_dependent_devices(netbox: Any, device_type_id: int, *, new_filters: bool = False) -> tuple[int, List[str]]:
+def _count_dependent_devices(netbox: Any, device_type_id: int) -> tuple[int, List[str]]:
     """Query NetBox for devices using *device_type_id*.
 
     Returns ``(count, sample_names)`` where ``sample_names`` is up to 5 names
@@ -133,10 +131,8 @@ def _count_dependent_devices(netbox: Any, device_type_id: int, *, new_filters: b
     Args:
         netbox: pynetbox API client.
         device_type_id: ID of the device type to query.
-        new_filters: When True, use ``device_type_id`` filter name (NetBox ≥ 4.1);
-            otherwise use the legacy ``devicetype_id`` name.
     """
-    filter_kwargs = device_type_filter_kwargs(device_type_id, new_filters=new_filters)
+    filter_kwargs = {"device_type_id": device_type_id}
     try:
         devices = list(netbox.dcim.devices.filter(**filter_kwargs, limit=5))
     except Exception:
@@ -152,7 +148,7 @@ def _count_dependent_devices(netbox: Any, device_type_id: int, *, new_filters: b
     return total, sample
 
 
-def _list_device_bay_templates(netbox: Any, device_type_id: int, *, new_filters: bool = False) -> Optional[List[Any]]:
+def _list_device_bay_templates(netbox: Any, device_type_id: int) -> Optional[List[Any]]:
     """Return all ``DeviceBayTemplate`` records attached to *device_type_id*.
 
     Returns ``None`` when the NetBox query itself fails (network error, 5xx, etc.)
@@ -161,15 +157,9 @@ def _list_device_bay_templates(netbox: Any, device_type_id: int, *, new_filters:
     Args:
         netbox: pynetbox API client.
         device_type_id: ID of the device type to query.
-        new_filters: When True, use ``device_type_id`` filter name (NetBox ≥ 4.1);
-            otherwise use the legacy ``devicetype_id`` name.
     """
     try:
-        return list(
-            netbox.dcim.device_bay_templates.filter(
-                **device_type_filter_kwargs(device_type_id, new_filters=new_filters)
-            )
-        )
+        return list(netbox.dcim.device_bay_templates.filter(device_type_id=device_type_id))
     except Exception:
         return None
 
@@ -180,7 +170,6 @@ def classify_device_type_update_failure(
     netbox: Any,
     device_type_id: int,
     device_type_yaml: dict,
-    new_filters: bool = False,
 ) -> FailureResolution:
     """Classify a ``pynetbox.RequestError`` raised while updating a device type.
 
@@ -192,7 +181,6 @@ def classify_device_type_update_failure(
         device_type_yaml: Parsed YAML dict for this device-type (used to detect
             whether the YAML *also* lists device bays — in which case we cannot
             blindly delete them).
-        new_filters: When True, use updated filter parameter names (NetBox ≥ 4.1).
 
     Returns:
         A :class:`FailureResolution` describing the constraint and (when safe)
@@ -207,7 +195,7 @@ def classify_device_type_update_failure(
         )
 
     # SUBDEVICE_ROLE_FLIP path -------------------------------------------------
-    blocking_templates = _list_device_bay_templates(netbox, device_type_id, new_filters=new_filters)
+    blocking_templates = _list_device_bay_templates(netbox, device_type_id)
     if blocking_templates is None:
         return FailureResolution(
             kind=FailureKind.MANUAL_REQUIRED,
@@ -216,7 +204,7 @@ def classify_device_type_update_failure(
         )
     blocking_names = [getattr(t, "name", str(getattr(t, "id", "?"))) for t in blocking_templates]
 
-    dep_count, dep_sample = _count_dependent_devices(netbox, device_type_id, new_filters=new_filters)
+    dep_count, dep_sample = _count_dependent_devices(netbox, device_type_id)
 
     # YAML must NOT redefine device-bays — otherwise deleting them would just
     # cause our own component-creation step to fail or thrash.  This catches

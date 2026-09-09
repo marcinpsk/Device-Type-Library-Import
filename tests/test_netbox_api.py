@@ -80,7 +80,6 @@ def make_device_types(mock_settings, mock_handle, graphql_client):
             handle if handle is not None else mock_handle,
             counter if counter is not None else MagicMock(),
             False,
-            False,
             graphql=kwargs.pop("graphql", graphql_client),
             repo_path=kwargs.pop("repo_path", mock_settings.repo_path),
             **kwargs,
@@ -118,7 +117,6 @@ def test_netbox_init(mock_settings, mock_pynetbox, mock_handle):
     assert nb.url == "http://mock-netbox"
     assert nb.token == "mock-token"
     # Verify module support detection
-    assert nb.modules
 
 
 def test_netbox_init_applies_import_policy_flags(make_config, mock_pynetbox, mock_handle):
@@ -142,7 +140,6 @@ def test_netbox_version_check(mock_settings, mock_pynetbox, mock_handle):
     for version, module_bay_types in (("4.3", False), ("4.5", False), ("4.7", True), ("5.0", True)):
         mock_pynetbox.api.return_value.version = version
         nb = NetBox(mock_settings, mock_handle)
-        assert nb.new_filters, version
         assert nb.module_bay_types is module_bay_types, version
 
 
@@ -2479,7 +2476,6 @@ class TestCreateDeviceTypesRequestErrorAndComponents:
 
         nb = NetBox(mock_settings, mock_handle)
         nb.device_types = dt
-        nb.modules = True
 
         created_dt = MagicMock()
         created_dt.id = 1
@@ -4174,40 +4170,6 @@ class TestCreateDeviceTypesCornerCases:
             nb.create_device_types([device_type])
         assert any("Error locating image file" in str(c) for c in mock_handle.log.call_args_list)
 
-    def test_module_bays_not_created_when_modules_false(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
-    ):
-        """module-bays are only created when self.modules is True."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-        dt.existing_device_types = {}
-        dt.existing_device_types_by_slug = {}
-        dt.components.record("module_bay_templates", "device", 1, {})
-
-        nb = NetBox(mock_settings, mock_handle)
-        nb.device_types = dt
-        nb.modules = False  # explicitly disabled
-
-        created_dt = MagicMock()
-        created_dt.id = 1
-        created_dt.manufacturer.name = "Cisco"
-        created_dt.model = "TestSwitch"
-        mock_nb_api.dcim.device_types.create.return_value = created_dt
-
-        device_type = {
-            "manufacturer": {"slug": "cisco"},
-            "model": "TestSwitch",
-            "slug": "testswitch",
-            "module-bays": [{"name": "MB1"}],
-            "src": "/tmp/device-types/cisco/testswitch.yaml",
-        }
-        nb.create_device_types([device_type])
-        mock_nb_api.dcim.module_bay_templates.create.assert_not_called()
-
-
-class TestCreateModuleTypesCornerCases:
-    """Corner-case tests for create_module_types (cognitive complexity 16)."""
-
     def test_progress_iterator_used(self, mock_settings, mock_pynetbox, mock_handle):
         """When progress is provided, iteration goes through it."""
         mock_pynetbox.api.return_value.version = "4.3"
@@ -4605,49 +4567,45 @@ class TestVerifyCompatibility:
     """Tests for NetBox.verify_compatibility() version thresholds."""
 
     @pytest.mark.parametrize(
-        "version_str, expected_modules, expected_new_filters, expected_rack_types, expected_m2m",
+        "version_str, expected_m2m, expected_module_bay_types",
         [
-            ("4.3", True, True, True, False),
-            ("4.4", True, True, True, False),
-            ("4.5", True, True, True, True),
-            ("4.6", True, True, True, True),
-            ("4.7", True, True, True, True),
-            ("5.0", True, True, True, True),
+            ("4.3", False, False),
+            ("4.4", False, False),
+            ("4.5", True, False),
+            ("4.6", True, False),
+            ("4.7", True, True),
+            ("5.0", True, True),
             # Version strings with non-numeric suffixes
-            ("4.5-beta", True, True, True, True),
-            ("4.3.0", True, True, True, False),
+            ("4.5-beta", True, False),
+            ("4.3.0", False, False),
         ],
     )
     def test_version_thresholds(
         self,
         version_str,
-        expected_modules,
-        expected_new_filters,
-        expected_rack_types,
         expected_m2m,
+        expected_module_bay_types,
         mock_settings,
         mock_pynetbox,
         mock_handle,
     ):
+        """Only the flags that still vary above the 4.3 floor are set."""
         mock_pynetbox.api.return_value.version = version_str
         nb = NetBox(mock_settings, mock_handle)
-        assert nb.modules == expected_modules, f"modules mismatch for {version_str}"
-        assert nb.new_filters == expected_new_filters, f"new_filters mismatch for {version_str}"
-        assert nb.rack_types == expected_rack_types, f"rack_types mismatch for {version_str}"
         assert nb.m2m_front_ports == expected_m2m, f"m2m_front_ports mismatch for {version_str}"
+        assert nb.module_bay_types == expected_module_bay_types, f"module_bay_types mismatch for {version_str}"
 
     def test_single_component_version_string(self, mock_settings, mock_pynetbox, mock_handle):
         """A version string with only a major component (e.g. '5') does not crash."""
         mock_pynetbox.api.return_value.version = "5"
         nb = NetBox(mock_settings, mock_handle)
-        assert nb.new_filters is True
+        assert nb.m2m_front_ports is True
 
     def test_the_oldest_supported_release_has_no_m2m_or_module_bay_types(
         self, mock_settings, mock_pynetbox, mock_handle
     ):
         mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
-        assert nb.new_filters is True
         assert nb.m2m_front_ports is False
         assert nb.module_bay_types is False
 
@@ -6808,7 +6766,6 @@ class TestPreloadIntegrityGuard:
             handle,
             MagicMock(),
             False,
-            False,
             graphql=NetBoxGraphQLClient(url, "token", page_size=10),
             repo_path="/tmp/repo",
             max_threads=2,
@@ -7222,7 +7179,6 @@ class TestSummaryWordingMatchesTheFailedOperation:
             b'{"model":["This field may not be blank."]}'
         )
         nb = NetBox(mock_settings, mock_handle)
-        nb.modules = True
         nb._process_single_module_type(
             {"manufacturer": {"slug": "panduit"}, "model": "FAP6WBUSC", "slug": "fap6wbusc"},
             "/repo/module-types/Panduit/FAP6WBUSC.yaml",

@@ -19,7 +19,7 @@ def _cache(**records):
     Populating through the real object means these tests read the same index the
     importer builds, rather than a dict that merely looks like it.
     """
-    cache = ComponentCache(MagicMock(), MagicMock(), MagicMock(), new_filters=True, max_threads=1)
+    cache = ComponentCache(MagicMock(), MagicMock(), MagicMock(), max_threads=1)
     for endpoint_name, items in records.items():
         cache.populate(endpoint_name, items)
     return cache
