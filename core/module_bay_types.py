@@ -46,6 +46,15 @@ class ModuleBayTypeError(FatalError):
     """
 
 
+class ModuleBayCatalogError(FatalError):
+    """The catalog itself could not be read, so no name in it can be trusted.
+
+    A sibling of :class:`ModuleBayTypeError`, never a subclass: every caller recovers from
+    that one per definition, which would turn a single unreadable catalog into one skipped
+    component after another instead of ending the run once.
+    """
+
+
 class ModuleBayTypeCatalog:
     """Turn module-bay-type names into NetBox ids, creating what is missing.
 
@@ -137,7 +146,7 @@ class ModuleBayTypeCatalog:
             raise self._load_error
         try:
             self._entries = self._read_catalog()
-        except ModuleBayTypeError as exc:
+        except ModuleBayCatalogError as exc:
             self._load_error = exc
             raise
         return self._entries
@@ -154,7 +163,9 @@ class ModuleBayTypeCatalog:
                     with open(path, encoding="utf-8") as handle:
                         data = yaml.safe_load(handle)
                 except (OSError, yaml.YAMLError) as exc:
-                    raise ModuleBayTypeError(f"Module bay type catalog file {path!r} could not be read: {exc}") from exc
+                    raise ModuleBayCatalogError(
+                        f"Module bay type catalog file {path!r} could not be read: {exc}"
+                    ) from exc
                 if not isinstance(data, dict):
                     continue
                 # Reject a half-written entry here; the readers index on name and dereference slug.
@@ -164,12 +175,12 @@ class ModuleBayTypeCatalog:
                     if not isinstance(data.get(field), str) or not data[field].strip()
                 ]
                 if invalid:
-                    raise ModuleBayTypeError(
+                    raise ModuleBayCatalogError(
                         f"Module bay type in {path!r} is missing or malformed: {', '.join(invalid)}"
                     )
                 key = (manufacturer_slug(data.get("manufacturer")), data.get("name"))
                 if key in entries:
-                    raise ModuleBayTypeError(f"Duplicate module bay type {key[1]!r} for manufacturer {key[0]!r}")
+                    raise ModuleBayCatalogError(f"Duplicate module bay type {key[1]!r} for manufacturer {key[0]!r}")
                 entries[key] = data
         return entries
 

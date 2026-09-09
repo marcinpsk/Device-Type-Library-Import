@@ -143,6 +143,21 @@ def test_netbox_version_check(mock_settings, mock_pynetbox, mock_handle):
         assert nb.module_bay_types is module_bay_types, version
 
 
+def test_the_netbox_version_is_fetched_once(mock_settings, mock_pynetbox, mock_handle):
+    """Each pynetbox `version` access is another HTTP request, and only the first is error-mapped."""
+    from unittest.mock import PropertyMock
+
+    api_type = type(mock_pynetbox.api.return_value)
+    version = PropertyMock(return_value="4.7.0")
+    api_type.version = version
+    try:
+        NetBox(mock_settings, mock_handle)
+
+        assert version.call_count == 1, "the log lines must reuse the version already fetched"
+    finally:
+        del api_type.version
+
+
 def test_create_manufacturers(mock_settings, mock_pynetbox, mock_handle):
     mock_pynetbox.api.return_value.version = "4.3"
     mock_pynetbox.api.return_value.dcim.manufacturers.all.return_value = []

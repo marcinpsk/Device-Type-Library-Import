@@ -645,11 +645,11 @@ class NetBox:
         # https://github.com/netbox-community/netbox/issues/20564
         if version_split[0] > 4 or (version_split[0] == 4 and version_split[1] >= 5):
             self.m2m_front_ports = True
-            self.handle.log(f"Netbox version {self.netbox.version} found. Using M2M front/rear port mappings.")
+            self.handle.log(f"Netbox version {nb_version} found. Using M2M front/rear port mappings.")
 
         if supports_module_bay_types(nb_version):
             self.module_bay_types = True
-            self.handle.log(f"Netbox version {self.netbox.version} found. Module bay types are supported.")
+            self.handle.log(f"Netbox version {nb_version} found. Module bay types are supported.")
 
     def get_manufacturers(self):
         """Fetch all manufacturers from NetBox via GraphQL and return them indexed by name."""

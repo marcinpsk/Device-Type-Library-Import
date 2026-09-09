@@ -8,7 +8,7 @@ where the semantics that matter actually live.
 
 import pytest
 
-from core.module_bay_types import ModuleBayTypeCatalog, ModuleBayTypeError
+from core.module_bay_types import ModuleBayCatalogError, ModuleBayTypeCatalog, ModuleBayTypeError
 from helpers import FakeNetBox, write_module_bay_type
 
 
@@ -172,7 +172,7 @@ class TestCatalogReading:
         (directory / "sfp.yaml").write_text("name: SFP\nmanufacturer: Generic\n", encoding="utf-8")
         cat, _ = catalog(root=tmp_path)
 
-        with pytest.raises(ModuleBayTypeError) as exc:
+        with pytest.raises(ModuleBayCatalogError) as exc:
             cat.identities_for("generic", ["SFP"])
         assert "slug" in str(exc.value) and "sfp.yaml" in str(exc.value)
 
@@ -183,7 +183,7 @@ class TestCatalogReading:
         (directory / "sfp.yaml").write_text("name: [\n", encoding="utf-8")
         cat, _ = catalog(root=tmp_path)
 
-        with pytest.raises(ModuleBayTypeError) as exc:
+        with pytest.raises(ModuleBayCatalogError) as exc:
             cat.identities_for("generic", ["SFP"])
         assert "sfp.yaml" in str(exc.value)
 
@@ -200,7 +200,7 @@ class TestCatalogReading:
         monkeypatch.setattr(module.os, "walk", lambda *a, **k: walks.append(1) or real_walk(*a, **k))
 
         for _ in range(3):
-            with pytest.raises(ModuleBayTypeError):
+            with pytest.raises(ModuleBayCatalogError):
                 cat.identities_for("generic", ["SFP"])
         assert len(walks) == 1
 
@@ -209,7 +209,7 @@ class TestCatalogReading:
         write_module_bay_type(tmp_path, "Generic", "sfp", "SFP")
         write_module_bay_type(tmp_path, "Generic", "sfp-again", "SFP")
         cat, _ = catalog(root=tmp_path)
-        with pytest.raises(ModuleBayTypeError) as exc:
+        with pytest.raises(ModuleBayCatalogError) as exc:
             cat.ids_for("generic", ["SFP"])
         assert "Duplicate" in str(exc.value) and "SFP" in str(exc.value)
 
@@ -248,3 +248,55 @@ class TestMalformedReferences:
 
         assert len(once) == 1
         assert cat.ids_for("juniper", ["MX304-RE", "MX304-RE"]) == once
+
+
+@pytest.mark.real_http
+class TestACatalogFailureIsNotAPerComponentSkip:
+    """A broken catalog is terminal for the run, but every caller recovers per component."""
+
+    @staticmethod
+    def _broken_catalog(tmp_path, catalog):
+        root = tmp_path / "broken"
+        write_module_bay_type(root, "Juniper", "mx304-re", "MX304-RE", "fine")
+        # A half-written entry: the readers index on name and dereference slug.
+        (root / "module-bay-types" / "Juniper" / "bad.yaml").write_text(
+            "name: 123\nslug: bad\nmanufacturer: Juniper\n", encoding="utf-8"
+        )
+        return catalog(root=root)[0]
+
+    def test_a_malformed_entry_is_not_reported_as_a_relation_change(self, tmp_path, catalog):
+        """_relation_change recovers from ModuleBayTypeError, so a load failure must not be one."""
+        from types import SimpleNamespace
+
+        from core.change_detector import _relation_change
+        from core.module_bay_types import ModuleBayCatalogError
+
+        broken = self._broken_catalog(tmp_path, catalog)
+        netbox_comp = SimpleNamespace(name="RE0", module_bay_types=[])
+
+        with pytest.raises(ModuleBayCatalogError):
+            _relation_change(
+                "module_bay_types",
+                {"name": "RE0", "module_bay_types": ["MX304-RE"]},
+                netbox_comp,
+                catalog=broken,
+                manufacturer="Juniper",
+            )
+
+    def test_the_catalog_failure_is_not_a_module_bay_type_error(self, tmp_path, catalog):
+        """Sibling, not subclass: an `except ModuleBayTypeError` must not swallow it."""
+        from core.module_bay_types import ModuleBayCatalogError
+
+        broken = self._broken_catalog(tmp_path, catalog)
+
+        with pytest.raises(ModuleBayCatalogError) as caught:
+            broken.identities_for("Juniper", ["MX304-RE"])
+
+        assert not isinstance(caught.value, ModuleBayTypeError), "per-name catches would swallow it"
+
+    def test_an_unresolved_name_is_still_a_recoverable_module_bay_type_error(self, catalog):
+        """The split must not promote a per-name miss into a run-ending failure."""
+        resolver, _server = catalog()
+
+        with pytest.raises(ModuleBayTypeError):
+            resolver.identities_for("Juniper", ["NOT-IN-CATALOG"])
