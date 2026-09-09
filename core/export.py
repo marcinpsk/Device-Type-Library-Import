@@ -162,8 +162,17 @@ def _repo_supersedes(repo_yaml: dict, nb_serialized: dict) -> bool:
             return d
         return {**d, "manufacturer": _canon_mfr_slug(d["manufacturer"])}
 
-    nrepo = _normalize_for_compare(_norm_mfr(repo_yaml))
-    nnb = _normalize_for_compare(_norm_mfr(nb_serialized))
+    # The serializer always writes the schema-required positions; an entry that omits it
+    # means the default, so filling it here keeps those definitions from reading as differing.
+    def _default_positions(d: dict) -> dict:
+        ports = d.get("front-ports")
+        if not isinstance(ports, list):
+            return d
+        filled = [{"positions": 1, **p} if isinstance(p, dict) else p for p in ports]
+        return {**d, "front-ports": filled}
+
+    nrepo = _normalize_for_compare(_default_positions(_norm_mfr(repo_yaml)))
+    nnb = _normalize_for_compare(_default_positions(_norm_mfr(nb_serialized)))
     return _is_subset(nnb, nrepo)
 
 

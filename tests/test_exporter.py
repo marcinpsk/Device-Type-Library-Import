@@ -259,6 +259,32 @@ class TestRepoSupersedes:
         assert _repo_supersedes(repo, as_serialized), "an unchanged definition must not re-export"
         assert not _repo_supersedes(repo, with_empty_key), "which is exactly what the empty key would do"
 
+    def test_a_default_positions_does_not_make_every_front_port_differ(self):
+        """The export writes the schema-required positions; it must not re-export the library.
+
+        A library entry that omits positions means the default, 1. _is_subset requires every
+        NetBox leaf to be present in the repo YAML, so a serialized positions: 1 compared
+        against an entry that omits it would report every such definition as differing.
+        """
+        from types import SimpleNamespace
+        from core.nb_serializer import _serialize_front_port
+
+        legacy = SimpleNamespace(name="FP1", type="8p8c", label="", description="", color="")
+        serialized = _serialize_front_port(legacy)
+        assert serialized == {"name": "FP1", "type": "8p8c", "positions": 1}
+
+        repo = {"model": "PP", "front-ports": [{"name": "FP1", "type": "8p8c"}]}
+        nb = {"model": "PP", "front-ports": [serialized]}
+
+        assert _repo_supersedes(repo, nb), "an omitted positions is the default, not a difference"
+
+    def test_a_non_default_positions_still_differs(self):
+        """Only the default may be treated as absent, or a real change would be suppressed."""
+        repo = {"model": "PP", "front-ports": [{"name": "FP1", "type": "8p8c"}]}
+        nb = {"model": "PP", "front-ports": [{"name": "FP1", "type": "8p8c", "positions": 4}]}
+
+        assert _repo_supersedes(repo, nb) is False
+
     def test_equal_dicts(self):
         repo = {"manufacturer": "Nokia", "model": "X", "u_height": 1}
         nb = {"manufacturer": "Nokia", "model": "X", "u_height": 1}
