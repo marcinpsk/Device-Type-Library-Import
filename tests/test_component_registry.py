@@ -128,6 +128,7 @@ class TestDerivedGraphQLTables:
                 "label",
                 "description",
                 "color",
+                "positions",
                 _FRONT_PORT_MAPPINGS,
             ],
             "device_bay_templates": ["id", "name", "label", "description"],
