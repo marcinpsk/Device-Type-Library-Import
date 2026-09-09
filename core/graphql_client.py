@@ -299,6 +299,7 @@ class NetBoxGraphQLClient:
                 raise GraphQLSchemaError(messages)
 
             return body.get("data", {})
+        return None
 
     def query_all(self, graphql_query, list_key, page_size=None, variables=None, on_page=None):
         """Auto-paginate a GraphQL list query using offset/limit.

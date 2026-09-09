@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Import NetBox device and module types from the community library."""
 
+import sys
 from contextlib import contextmanager
 from datetime import datetime
-import sys
 
-from pynetbox.core.query import RequestError as NetBoxRequestError
 import requests
+from pynetbox.core.query import RequestError as NetBoxRequestError
 from rich.panel import Panel
 from rich.progress import (
     BarColumn,

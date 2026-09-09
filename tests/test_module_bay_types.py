@@ -7,9 +7,9 @@ where the semantics that matter actually live.
 """
 
 import pytest
+from helpers import FakeNetBox, write_module_bay_type
 
 from core.module_bay_types import ModuleBayCatalogError, ModuleBayTypeCatalog, ModuleBayTypeError
-from helpers import FakeNetBox, write_module_bay_type
 
 
 class Handle:
@@ -142,7 +142,8 @@ class TestRefusals:
         )
         with pytest.raises(ModuleBayTypeError) as exc:
             cat.ids_for("juniper", ["MX304-RE"])
-        assert "mx304_re" in str(exc.value) and "mx304-re" in str(exc.value)
+        assert "mx304_re" in str(exc.value)
+        assert "mx304-re" in str(exc.value)
         assert not server.sent("POST", "module_bay_types")
 
 
@@ -185,7 +186,8 @@ class TestCatalogReading:
 
         with pytest.raises(ModuleBayCatalogError) as exc:
             cat.identities_for("generic", ["SFP"])
-        assert "slug" in str(exc.value) and "sfp.yaml" in str(exc.value)
+        assert "slug" in str(exc.value)
+        assert "sfp.yaml" in str(exc.value)
 
     def test_unparseable_yaml_is_refused_as_a_catalog_error(self, tmp_path, catalog):
         """A parser error escaping the boundary ends the run before it reports anything."""
@@ -222,7 +224,8 @@ class TestCatalogReading:
         cat, _ = catalog(root=tmp_path)
         with pytest.raises(ModuleBayCatalogError) as exc:
             cat.ids_for("generic", ["SFP"])
-        assert "Duplicate" in str(exc.value) and "SFP" in str(exc.value)
+        assert "Duplicate" in str(exc.value)
+        assert "SFP" in str(exc.value)
 
 
 @pytest.mark.real_http
@@ -235,7 +238,8 @@ class TestMalformedReferences:
         with pytest.raises(ModuleBayTypeError) as exc:
             cat.ids_for("juniper", None)
         assert "list of names" in str(exc.value)
-        assert not server.sent("POST", "module_bay_types") and not server.sent("POST", "manufacturers")
+        assert not server.sent("POST", "module_bay_types")
+        assert not server.sent("POST", "manufacturers")
 
     def test_a_non_string_entry_is_refused(self, catalog):
         cat, _ = catalog()
@@ -250,7 +254,8 @@ class TestMalformedReferences:
         """`module_bay_types: []` is an explicit instruction, not a malformed value."""
         cat, server = catalog()
         assert cat.ids_for("juniper", []) == []
-        assert not server.sent("POST", "module_bay_types") and not server.sent("POST", "manufacturers")
+        assert not server.sent("POST", "module_bay_types")
+        assert not server.sent("POST", "manufacturers")
 
     def test_duplicate_names_collapse(self, catalog):
         """The relationship is a set, so a repeated name must not produce a repeated id."""

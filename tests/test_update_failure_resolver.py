@@ -9,10 +9,9 @@ import pytest
 
 from core.update_failure_resolver import (
     FailureKind,
-    extract_error_payload,
     classify_device_type_update_failure,
+    extract_error_payload,
 )
-
 
 SUBDEVICE_ROLE_ERROR_DICT = {
     "subdevice_role": [

@@ -74,6 +74,6 @@ class LogHandler:
         for port in created_ports:
             self.verbose_log(
                 f"{port_type} Template Created: {port.name} - "
-                + f"{port.type if hasattr(port, 'type') else ''} - {getattr(port, parent_attribute).id} - "
-                + f"{port.id}"
+                f"{port.type if hasattr(port, 'type') else ''} - {getattr(port, parent_attribute).id} - "
+                f"{port.id}"
             )

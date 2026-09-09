@@ -67,8 +67,8 @@ import requests
 import urllib3
 
 from core.change_detector import get_device_type_properties
-from core.config import resolve_run_config
 from core.component_registry import COMPONENT_TYPES
+from core.config import resolve_run_config
 from core.graphql_client import NetBoxGraphQLClient
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -399,7 +399,7 @@ def test_graphql_schema() -> None:
     ok("get_manufacturers() returned TestVendor")
 
     # ── Device types: every schema property present ──
-    dt_by_model, dt_by_slug = client.get_device_types()
+    _dt_by_model, dt_by_slug = client.get_device_types()
     fd = dt_by_slug.get(("testvendor", "testvendor-full-device"))
     if fd is None:
         fail("get_device_types() did not return full-device")

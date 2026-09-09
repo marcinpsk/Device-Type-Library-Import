@@ -1,9 +1,9 @@
-from types import SimpleNamespace
 from inspect import signature
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from core.log_handler import LogHandler
 from core.graphql_client import NetBoxGraphQLClient
+from core.log_handler import LogHandler
 from core.netbox_api import DeviceTypes, NetBox
 from core.repo import DTLRepo
 

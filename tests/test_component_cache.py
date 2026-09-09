@@ -19,7 +19,6 @@ from core.component_cache import (
 from core.component_registry import COMPONENT_TYPES
 from core.graphql_client import GraphQLCountMismatchError, GraphQLSchemaError
 
-
 # ── Fakes ─────────────────────────────────────────────────────────────────────
 
 
@@ -267,7 +266,8 @@ class TestLookupFallback:
         first = cache.get("interface_templates", "device", 1, endpoint)
         second = cache.get("interface_templates", "device", 1, endpoint)
 
-        assert set(first) == {"eth0"} and first == second
+        assert set(first) == {"eth0"}
+        assert first == second
         assert endpoint.filter_calls == [{"device_type_id": 1}]
 
     def test_a_miss_filters_by_module_type_for_a_module_parent(self):

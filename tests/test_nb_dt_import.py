@@ -826,9 +826,9 @@ class TestMain:
             patch("nb_dt_import.NetBox"),
             patch.dict(os.environ, {}, clear=True),
             patch("core.config.load_dotenv"),
+            pytest.raises(SystemExit),
         ):
-            with pytest.raises(SystemExit):
-                nb_dt_import.main()
+            nb_dt_import.main()
 
     def test_vendors_and_slugs_flags_log_lines(self, nb_dt_import, capsys):
         """--vendors and --slugs args cause their respective log lines to execute."""
@@ -1088,9 +1088,8 @@ class TestEntryPoint:
         with patch("core.repo.DTLRepo") as MockDTLRepo, patch("core.netbox_api.NetBox"):
             MockDTLRepo.side_effect = _requests.exceptions.ConnectionError("Remote end closed")
 
-            with patch.object(sys, "argv", ["nb-dt-import.py", "--only-new"]):
-                with pytest.raises(SystemExit):
-                    runpy.run_path(_NB_DT_IMPORT_PATH, run_name="__main__")
+            with patch.object(sys, "argv", ["nb-dt-import.py", "--only-new"]), pytest.raises(SystemExit):
+                runpy.run_path(_NB_DT_IMPORT_PATH, run_name="__main__")
 
         captured = capsys.readouterr()
         assert "connection" in captured.err.lower() or "netbox" in captured.err.lower()
@@ -1481,9 +1480,9 @@ class TestFatalErrorPolicy:
         with (
             patch.object(nb_dt_import, "resolve_run_config", return_value=make_config(verbose=False)),
             patch.object(nb_dt_import, "_run", side_effect=error),
+            pytest.raises(SystemExit) as exc_info,
         ):
-            with pytest.raises(SystemExit) as exc_info:
-                nb_dt_import.main()
+            nb_dt_import.main()
 
         assert str(exc_info.value) == 'An unknown error occurred: "Git Repository Error"'
         assert capsys.readouterr().out == ""
@@ -1498,9 +1497,9 @@ class TestFatalErrorPolicy:
         with (
             patch.object(nb_dt_import, "resolve_run_config", return_value=make_config(verbose=True)),
             patch.object(nb_dt_import, "_run", side_effect=error),
+            pytest.raises(SystemExit),
         ):
-            with pytest.raises(SystemExit):
-                nb_dt_import.main()
+            nb_dt_import.main()
 
         output = capsys.readouterr().out
         assert "Traceback (most recent call last)" in output
@@ -1895,9 +1894,9 @@ class TestMainAdditionalCoverage:
             patch("nb_dt_import.NetBox", return_value=mock_nb),
             patch("core.import_run._process_device_types", side_effect=RuntimeError("boom")),
             patch("nb_dt_import.get_progress_panel", return_value=_Ctx()),
+            pytest.raises(RuntimeError, match="boom"),
         ):
-            with pytest.raises(RuntimeError, match="boom"):
-                nb_dt_import.main()
+            nb_dt_import.main()
 
         mock_nb.device_types.components.close.assert_called()
 
@@ -2035,16 +2034,16 @@ class TestMainAdditionalCoverage:
         with (
             patch("core.import_run._process_device_types", side_effect=RuntimeError("boom")),
             patch("core.import_run._finalize_task_registry") as mock_finalize,
+            pytest.raises(RuntimeError, match="boom"),
         ):
-            with pytest.raises(RuntimeError, match="boom"):
-                run = import_run_module.ImportRun(
-                    config,
-                    dtl_repo,
-                    netbox,
-                    handle,
-                    lambda _show_remaining_time: nullcontext(progress),
-                )
-                run.execute()
+            run = import_run_module.ImportRun(
+                config,
+                dtl_repo,
+                netbox,
+                handle,
+                lambda _show_remaining_time: nullcontext(progress),
+            )
+            run.execute()
 
         netbox.device_types.components.close.assert_called()
         mock_finalize.assert_called_once_with(progress, {})
@@ -2239,7 +2238,8 @@ class TestExportDiffVendorFilterOverRealHTTP:
         queries = self._queries_for_version(nb_dt_import, monkeypatch, tmp_path, _real_library_root, "4.7.0")
 
         module_types = [q for q in queries if "module_type_list(" in q]
-        assert module_types and all("module_bay_types" in q for q in module_types)
+        assert module_types
+        assert all("module_bay_types" in q for q in module_types)
 
     def test_an_older_server_is_never_asked_for_it(self, nb_dt_import, monkeypatch, tmp_path, _real_library_root):
         """Selecting a field the schema lacks fails the whole query."""

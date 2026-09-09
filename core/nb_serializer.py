@@ -4,7 +4,8 @@ Direction: NetBox record → Python dict suitable for ``yaml.dump()`` and
 comparison against existing repo YAML files.
 """
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from core.component_registry import BY_ENDPOINT, COMPONENT_TYPES, MODULE_TYPE_RELATIONS
 

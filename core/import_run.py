@@ -1,18 +1,17 @@
 """Import pipeline planning and execution."""
 
+import os
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-import os
 from typing import Any
 
-from core.change_detector import ChangeDetector, ChangeType, IMAGE_PROPERTIES
+from core.change_detector import IMAGE_PROPERTIES, ChangeDetector, ChangeType
 from core.component_cache import NullTaskDisplay, RichTaskDisplay
 from core.config import RunConfig
 from core.errors import VendorSelectionError
 from core.outcomes import EntityKind, Outcome
-
 
 _PROGRESS_DESC_WIDTH = 28
 

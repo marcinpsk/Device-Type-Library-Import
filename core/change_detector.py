@@ -6,13 +6,13 @@ in the repository and existing data in NetBox, supporting the --update workflow.
 
 import os
 from dataclasses import dataclass, field
-from functools import lru_cache
-from typing import Any, List, Optional
 from enum import Enum
+from functools import lru_cache
+from typing import Any
 
 from core.component_registry import BY_YAML_KEY, COMPONENT_TYPES
-from core.normalization import is_explicit_list, normalize_values
 from core.formatting import log_property_diffs
+from core.normalization import is_explicit_list, normalize_values
 from core.schema_reader import load_properties_for_type
 
 
@@ -150,7 +150,7 @@ class ComponentChange:
     component_type: str  # e.g., "interfaces", "power-ports"
     component_name: str
     change_type: ChangeType
-    property_changes: List[PropertyChange] = field(default_factory=list)
+    property_changes: list[PropertyChange] = field(default_factory=list)
 
 
 @dataclass
@@ -161,9 +161,9 @@ class DeviceTypeChange:
     model: str
     slug: str
     is_new: bool = False
-    property_changes: List[PropertyChange] = field(default_factory=list)
-    component_changes: List[ComponentChange] = field(default_factory=list)
-    netbox_id: Optional[int] = None
+    property_changes: list[PropertyChange] = field(default_factory=list)
+    component_changes: list[ComponentChange] = field(default_factory=list)
+    netbox_id: int | None = None
 
     @property
     def has_changes(self) -> bool:
@@ -180,8 +180,8 @@ class DeviceTypeChange:
 class ChangeReport:
     """Aggregated change report for all device types."""
 
-    new_device_types: List[DeviceTypeChange] = field(default_factory=list)
-    modified_device_types: List[DeviceTypeChange] = field(default_factory=list)
+    new_device_types: list[DeviceTypeChange] = field(default_factory=list)
+    modified_device_types: list[DeviceTypeChange] = field(default_factory=list)
     unchanged_count: int = 0
 
 
@@ -257,7 +257,7 @@ class ChangeDetector:
         self.verbose = verbose
         self.remove_unmanaged_types = remove_unmanaged_types
 
-    def detect_changes(self, device_types: List[dict], progress=None) -> ChangeReport:
+    def detect_changes(self, device_types: list[dict], progress=None) -> ChangeReport:
         """Analyze all device types and generate a change report.
 
         Args:
@@ -308,7 +308,7 @@ class ChangeDetector:
 
         return report
 
-    def _compare_device_type_properties(self, yaml_data: dict, netbox_dt) -> List[PropertyChange]:
+    def _compare_device_type_properties(self, yaml_data: dict, netbox_dt) -> list[PropertyChange]:
         """Compare YAML device type properties against NetBox device type.
 
         Args:
@@ -349,7 +349,7 @@ class ChangeDetector:
         return changes
 
     @staticmethod
-    def _compare_image_properties(yaml_data: dict, netbox_dt) -> List[PropertyChange]:
+    def _compare_image_properties(yaml_data: dict, netbox_dt) -> list[PropertyChange]:
         """Compare image properties between YAML and NetBox device type.
 
         YAML uses boolean flags (front_image: true) meaning "an image should exist",
@@ -388,7 +388,7 @@ class ChangeDetector:
         yaml_data: dict,
         device_type_id: int,
         parent_type: str = "device",
-    ) -> List[ComponentChange]:
+    ) -> list[ComponentChange]:
         """Compare all components between YAML and cached NetBox data.
 
         Args:
@@ -481,10 +481,10 @@ class ChangeDetector:
         self,
         yaml_comp: dict,
         netbox_comp,
-        properties: List[str],
+        properties: list[str],
         comp_type: str = "",
         manufacturer: str = "",
-    ) -> List[PropertyChange]:
+    ) -> list[PropertyChange]:
         """Compare properties between YAML and NetBox component.
 
         *manufacturer* is the owning manufacturer's slug, used to resolve a relation
@@ -631,7 +631,7 @@ class ChangeDetector:
         if parts:
             self.handle.log(f"  Breakdown: {', '.join(parts)}")
 
-    def _log_property_diffs(self, prop_changes: List[PropertyChange], indent: str) -> None:
+    def _log_property_diffs(self, prop_changes: list[PropertyChange], indent: str) -> None:
         """Emit diff-u style lines for *prop_changes* at the given *indent*."""
         log_property_diffs(
             [(pc.property_name, pc.old_value, pc.new_value) for pc in prop_changes],

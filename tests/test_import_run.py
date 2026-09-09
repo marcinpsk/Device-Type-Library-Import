@@ -2,12 +2,12 @@
 
 from collections import Counter
 from contextlib import contextmanager
-
-import pytest
-
-from core.errors import VendorSelectionError
 from types import SimpleNamespace
 
+import pytest
+from helpers import recording_handle as _recording_handle
+
+from core.errors import VendorSelectionError
 from core.import_run import (
     ImportRun,
     RunSummary,
@@ -20,7 +20,6 @@ from core.import_run import (
 from core.log_handler import LogHandler
 from core.outcomes import EntityKind, Outcome
 from core.repo import DTLRepo
-from helpers import recording_handle as _recording_handle
 
 
 class _ComponentCache:
@@ -118,7 +117,7 @@ class _RepositoryBoundary:
     @staticmethod
     def resolve_slug_files(_slugs):
         """Force the pipeline to use its full file scan."""
-        return None
+        return
 
     @staticmethod
     def get_devices(path, vendors):
