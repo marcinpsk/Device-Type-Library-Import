@@ -150,7 +150,10 @@ def _serialize_front_port(record: Any) -> dict:
     table and the library schema follows, carrying it in a top-level ``port-mappings``
     stanza built by :func:`_port_mappings`.
     """
-    return _serialize_component(record, BY_ENDPOINT["front_port_templates"].fields)
+    result = _serialize_component(record, BY_ENDPOINT["front_port_templates"].fields)
+    # positions is schema-required but arrived in 4.5, so a pre-4.5 record has none.
+    result.setdefault("positions", 1)
+    return result
 
 
 def _port_mappings(records: list) -> list:

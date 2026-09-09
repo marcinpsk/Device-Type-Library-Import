@@ -654,6 +654,17 @@ class TestPortMappingsStanza:
         assert result["port-mappings"] == [
             {"front_port": "FP1", "front_port_position": 1, "rear_port": "RP1", "rear_port_position": 4}
         ]
+        assert result["front-ports"] == [{"name": "FP1", "type": "8p8c", "positions": 1}]
+
+    def test_a_legacy_front_port_carries_the_schema_required_positions(self):
+        """The schema requires positions, but it arrived in 4.5, so a pre-4.5 record needs the default."""
+        from types import SimpleNamespace
+
+        fp = SimpleNamespace(name="FP1", type="8p8c", label="", description="", color="")
+
+        result = serialize_device_type(self._device(), {1: {"front_port_templates": [fp]}})
+
+        assert result["front-ports"] == [{"name": "FP1", "type": "8p8c", "positions": 1}]
 
     def test_a_front_port_with_no_mapping_adds_no_stanza(self):
         result = serialize_device_type(self._device(), {1: {"front_port_templates": [self._front_port("FP1")]}})
