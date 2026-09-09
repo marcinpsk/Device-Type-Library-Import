@@ -179,12 +179,21 @@ class TestTimestampStaysOnLocalWallClock:
         monkeypatch.setenv("TZ", "Asia/Tokyo")
         time.tzset()
         try:
-            before = datetime.now().astimezone().strftime("%H:%M:%S")
-            stamp = LogHandler(False)._timestamp()
-            after = datetime.now().astimezone().strftime("%H:%M:%S")
+            # One absolute instant: 18:04:05 UTC is 03:04:05 the next day in Tokyo.
+            instant = datetime(2026, 1, 1, 18, 4, 5, tzinfo=UTC)
 
-            assert stamp in {before, after}, "the timestamp must follow the local clock"
-            assert stamp != datetime.now(UTC).strftime("%H:%M:%S"), "Asia/Tokyo is UTC+9, so UTC would differ"
+            class _FrozenClock:
+                """Models a real clock: naive now() is local, now(tz) converts the same instant."""
+
+                @staticmethod
+                def now(tz=None):
+                    if tz is not None:
+                        return instant.astimezone(tz)
+                    return instant.astimezone().replace(tzinfo=None)
+
+            monkeypatch.setattr("core.log_handler.datetime", _FrozenClock)
+
+            assert LogHandler(False)._timestamp() == "03:04:05", "local wall-clock, not the 18:04:05 UTC reading"
         finally:
             monkeypatch.undo()
             time.tzset()

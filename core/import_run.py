@@ -16,6 +16,11 @@ from core.outcomes import EntityKind, Outcome
 _PROGRESS_DESC_WIDTH = 28
 
 
+def _as_aware(moment):
+    """Return *moment* with a timezone attached; a naive value means local time."""
+    return moment if moment.tzinfo is not None else moment.astimezone()
+
+
 @dataclass(frozen=True)
 class RunSelection:
     """Selected vendors and source paths for one import run."""
@@ -579,7 +584,7 @@ class ImportRun:
             netbox (NetBox): Connected NetBox interface.
             reporter (LogHandler): Run message sink.
             progress_factory: Context manager factory for the Rich progress display.
-            started_at (datetime | None): Start time used for elapsed-time reporting.
+            started_at (datetime | None): Start time for elapsed-time reporting; naive means local.
         """
         if not isinstance(config, RunConfig):
             raise TypeError("config must be a RunConfig")
@@ -588,7 +593,8 @@ class ImportRun:
         self.netbox = netbox
         self.reporter = reporter
         self.progress_factory = progress_factory
-        self.started_at = started_at or datetime.now(UTC)
+        # Normalize here: a naive value would otherwise survive the run and raise in capture().
+        self.started_at = _as_aware(started_at) if started_at is not None else datetime.now(UTC)
         self.progress: Any = None
         self.task_registry = None
         self.vendor_task_id = None

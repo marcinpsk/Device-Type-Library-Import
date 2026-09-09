@@ -533,3 +533,54 @@ def test_headline_partials_match_the_itemised_rows():
     assert "2 device types partially updated" in text
     assert "1 modules partially updated" in text
     assert "Partial updates: 3" in text
+
+
+class TestNaiveStartedAtIsNormalized:
+    """A naive started_at used to survive construction and fail much later, in the summary."""
+
+    def test_a_naive_started_at_is_stored_timezone_aware(self, make_config, tmp_path):
+        from datetime import datetime
+
+        run = ImportRun(
+            make_config(),
+            _RepositoryBoundary(tmp_path),
+            _NetBoxBoundary(),
+            LogHandler(False),
+            _ProgressFactory(),
+            started_at=datetime(2020, 1, 1, 12, 0, 0),  # noqa: DTZ001 - a naive value is the subject of this test
+        )
+
+        assert run.started_at.tzinfo is not None, "a naive value cannot be subtracted from an aware now()"
+
+    def test_a_run_started_naive_still_produces_a_summary(self, make_config, tmp_path):
+        """The real failure: RunSummary.capture subtracts started_at from an aware now()."""
+        from datetime import datetime
+
+        run = ImportRun(
+            make_config(),
+            _RepositoryBoundary(tmp_path),
+            _NetBoxBoundary(),
+            LogHandler(False),
+            _ProgressFactory(),
+            started_at=datetime(2020, 1, 1, 12, 0, 0),  # noqa: DTZ001 - a naive value is the subject of this test
+        )
+
+        summary = RunSummary.capture(_NetBoxBoundary(), SimpleNamespace(duplicate_definitions=[]), run.started_at)
+
+        assert summary.elapsed.total_seconds() > 0
+
+    def test_an_aware_started_at_is_left_alone(self, make_config, tmp_path):
+        from datetime import UTC, datetime
+
+        given = datetime(2020, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+        run = ImportRun(
+            make_config(),
+            _RepositoryBoundary(tmp_path),
+            _NetBoxBoundary(),
+            LogHandler(False),
+            _ProgressFactory(),
+            started_at=given,
+        )
+
+        assert run.started_at == given
