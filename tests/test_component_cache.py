@@ -187,7 +187,6 @@ def make_cache(netbox=None, graphql=None, handle=None, **kwargs):
         netbox or FakeNetBox(),
         graphql or FakeGraphQL(),
         handle or FakeHandle(),
-        kwargs.pop("new_filters", True),
         kwargs.pop("max_threads", 4),
         **kwargs,
     )
@@ -278,14 +277,6 @@ class TestLookupFallback:
         cache.get("interface_templates", "module", 5, endpoint)
 
         assert endpoint.filter_calls == [{"module_type_id": 5}]
-
-    def test_old_netbox_filter_names_are_used_when_asked(self):
-        cache = make_cache(new_filters=False)
-        endpoint = FakeEndpoint()
-
-        cache.get("interface_templates", "device", 1, endpoint)
-
-        assert endpoint.filter_calls == [{"devicetype_id": 1}]
 
     def test_an_empty_result_still_becomes_a_hit(self):
         """Otherwise every parent with no components is re-read on each lookup."""

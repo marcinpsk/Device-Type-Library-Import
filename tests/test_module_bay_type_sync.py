@@ -84,7 +84,6 @@ def make_device_types(server, catalog_root):
             handle,
             {},
             False,
-            True,
             graphql=NetBoxGraphQLClient(server.url, "test-token", supports_module_bay_types=True),
             repo_path=str(catalog_root),
             module_bay_types_supported=module_bay_types_supported,

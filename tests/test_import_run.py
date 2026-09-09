@@ -59,7 +59,6 @@ class _NetBoxBoundary:
     """Expose run state and fail if planning starts an import."""
 
     def __init__(self):
-        self.modules = True
         self.rack_types = True
         self.device_types = _DeviceTypes()
         self.outcomes = _Outcomes()
@@ -271,8 +270,6 @@ def test_execute_returns_snapshot_and_owns_console_lifecycle(make_config, tmp_pa
 
     assert isinstance(summary, RunSummary)
     assert summary.counter["added"] == 2
-    assert summary.modules is True
-    assert summary.rack_types is True
     assert progress_factory.entered is True
     assert progress_factory.exited is True
     assert handle.console is None
@@ -434,11 +431,9 @@ def test_banners_omit_the_separator_when_no_vendor_is_given(make_config):
 class _OutcomeNetBox:
     """Run-state stand-in carrying a real OutcomeRegistry."""
 
-    def __init__(self, *, modules=True, rack_types=True, counter=None):
+    def __init__(self, *, counter=None):
         from core.outcomes import OutcomeRegistry
 
-        self.modules = modules
-        self.rack_types = rack_types
         self.outcomes = OutcomeRegistry()
         base = dict(
             added=0,
