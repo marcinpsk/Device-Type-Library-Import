@@ -82,6 +82,25 @@ def test_integration_collection_reads_credentials_from_a_local_env_file(tmp_path
     assert "1 passed" in result.stdout, result.stdout + result.stderr
 
 
+def test_the_fake_netbox_releases_its_listening_socket():
+    """shutdown() only stops the serve loop. One server per test leaks a descriptor each."""
+    import socket
+
+    from helpers import FakeNetBox
+
+    server = FakeNetBox(manufacturers=[{"id": 1, "name": "Juniper", "slug": "juniper"}])
+    port = server._server.server_port
+    server.close()
+
+    probe = socket.socket()
+    try:
+        probe.bind(("127.0.0.1", port))
+    except OSError as exc:  # pragma: no cover - only reached when close() leaks
+        raise AssertionError(f"FakeNetBox.close() left port {port} bound: {exc}") from exc
+    finally:
+        probe.close()
+
+
 def test_no_test_function_contains_an_orphaned_docstring():
     """A dropped ``def`` header silently merges two tests into one.
 

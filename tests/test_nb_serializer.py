@@ -677,3 +677,69 @@ class TestFrontPortSerialization:
         result = serialize_device_type(record, components)
         names = [i["name"] for i in result["interfaces"]]
         assert names == sorted(names)
+
+
+class TestRelationSerialization:
+    """A module bay's restriction has to survive the trip back out to YAML."""
+
+    @staticmethod
+    def _bay(name, module_bay_types=None, **extra):
+        """Build a module bay template as the GraphQL query returns it."""
+        return _dotdict(
+            name=name,
+            position=None,
+            label="",
+            description="",
+            module_bay_types=module_bay_types,
+            **extra,
+        )
+
+    def test_a_bay_exports_the_names_of_its_classes(self):
+        record = _dotdict(id=1, model="MX304", manufacturer=_make_mfr(), part_number=None)
+        bay = self._bay("FPC 0", [_dotdict(id=9, name="MX304-LMIC"), _dotdict(id=8, name="QSFP-DD")])
+
+        result = serialize_module_type(record, {1: {"module_bay_templates": [bay]}})
+
+        assert result["module-bays"] == [{"name": "FPC 0", "module_bay_types": ["MX304-LMIC", "QSFP-DD"]}]
+
+    def test_a_bay_with_no_classes_writes_no_key(self):
+        """An empty list here would add the key to every bay in the library.
+
+        See test_an_empty_relation_does_not_make_every_definition_differ for the effect
+        that has on the export diff.
+        """
+        record = _dotdict(id=1, model="MX304", manufacturer=_make_mfr(), part_number=None)
+
+        result = serialize_module_type(record, {1: {"module_bay_templates": [self._bay("FPC 0", [])]}})
+
+        assert result["module-bays"] == [{"name": "FPC 0"}]
+
+    def test_a_server_that_never_returned_the_field_omits_the_key(self):
+        """Below 4.7 the relation is not selected, and absent must not become empty."""
+        record = _dotdict(id=1, model="MX304", manufacturer=_make_mfr(), part_number=None)
+        bay = _dotdict(name="FPC 0", position=None, label="", description="")
+
+        result = serialize_module_type(record, {1: {"module_bay_templates": [bay]}})
+
+        assert result["module-bays"] == [{"name": "FPC 0"}]
+
+    def test_a_module_type_exports_the_classes_it_belongs_to(self):
+        record = _dotdict(
+            id=5,
+            model="JNP304-RE",
+            manufacturer=_make_mfr(name="Juniper", slug="juniper"),
+            part_number=None,
+            module_bay_types=[_dotdict(id=9, name="MX304-RE")],
+        )
+
+        assert serialize_module_type(record, {})["module_bay_types"] == ["MX304-RE"]
+
+    def test_a_device_type_bay_exports_its_classes_too(self):
+        record = _dotdict(
+            id=2, model="MX304", slug="mx304", manufacturer=_make_mfr(), u_height=None, is_full_depth=None
+        )
+        bay = self._bay("RE0", [_dotdict(id=9, name="MX304-RE")])
+
+        result = serialize_device_type(record, {2: {"module_bay_templates": [bay]}})
+
+        assert result["module-bays"] == [{"name": "RE0", "module_bay_types": ["MX304-RE"]}]

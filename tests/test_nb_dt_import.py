@@ -2190,7 +2190,7 @@ class TestExportDiffVendorFilterOverRealHTTP:
     """Same run against a local HTTP server, so the filter is asserted as it is serialized on the wire."""
 
     @staticmethod
-    def _serve():
+    def _serve(netbox_version="4.7.0"):
         """Serve empty GraphQL pages and record every decoded request body."""
         import json
         import threading
@@ -2199,15 +2199,21 @@ class TestExportDiffVendorFilterOverRealHTTP:
         bodies = []
 
         class Handler(BaseHTTPRequestHandler):
-            def do_POST(self):
-                length = int(self.headers["Content-Length"])
-                bodies.append(json.loads(self.rfile.read(length)))
-                payload = b'{"data": {}}'
+            def _reply(self, payload):
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))
                 self.end_headers()
                 self.wfile.write(payload)
+
+            def do_GET(self):
+                """Answer the version probe the export runs before its first query."""
+                self._reply(json.dumps({"netbox-version": netbox_version}).encode())
+
+            def do_POST(self):
+                length = int(self.headers["Content-Length"])
+                bodies.append(json.loads(self.rfile.read(length)))
+                self._reply(b'{"data": {}}')
 
             def log_message(self, *args):
                 """Silence the default stderr access log."""
@@ -2229,3 +2235,33 @@ class TestExportDiffVendorFilterOverRealHTTP:
         assert set(filters) == set(_LIST_FIELDS)
         for field, variables in filters.items():
             assert variables["manufacturer_slugs"] == ["cisco", "juniper"], field
+
+    def _queries_for_version(self, nb_dt_import, monkeypatch, tmp_path, library_root, version):
+        """Run one whole export against a server reporting *version* and return its queries."""
+        url, server, bodies = self._serve(version)
+        monkeypatch.setenv("NETBOX_URL", url)
+        try:
+            _run_export_diff_cli(nb_dt_import, monkeypatch, tmp_path, library_root, "Juniper")
+        finally:
+            server.shutdown()
+            server.server_close()
+        return [payload["query"] for payload in bodies]
+
+    def test_a_47_server_is_asked_for_the_module_bay_type_relation(
+        self, nb_dt_import, monkeypatch, tmp_path, _real_library_root
+    ):
+        """Not selecting it exports every bay without its restriction, silently.
+
+        Asserted on the module-type query, which this run always issues; the component
+        queries only run once there is something to export.
+        """
+        queries = self._queries_for_version(nb_dt_import, monkeypatch, tmp_path, _real_library_root, "4.7.0")
+
+        module_types = [q for q in queries if "module_type_list(" in q]
+        assert module_types and all("module_bay_types" in q for q in module_types)
+
+    def test_an_older_server_is_never_asked_for_it(self, nb_dt_import, monkeypatch, tmp_path, _real_library_root):
+        """Selecting a field the schema lacks fails the whole query."""
+        queries = self._queries_for_version(nb_dt_import, monkeypatch, tmp_path, _real_library_root, "4.6.9")
+
+        assert not [q for q in queries if "module_bay_types" in q]

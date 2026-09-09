@@ -239,6 +239,26 @@ class TestYamlEqual:
 class TestRepoSupersedes:
     """Tests for _repo_supersedes / _is_subset (asymmetric containment)."""
 
+    def test_an_empty_relation_does_not_make_every_definition_differ(self):
+        """The serializer omits an empty relation, and this is why it has to.
+
+        _is_subset requires every NetBox leaf to be present in the repo YAML, and
+        _normalize_for_compare does not drop empty lists. A serialized
+        "module_bay_types: []" would therefore be absent from every library definition
+        and re-export the whole library on a NetBox 4.7 server.
+        """
+        from core.nb_serializer import _serialize_relations
+
+        bay = type("Bay", (), {"name": "FPC 0", "module_bay_types": []})()
+        assert _serialize_relations(bay, ("module_bay_types",)) == {}
+
+        repo = {"model": "MX304", "module-bays": [{"name": "FPC 0"}]}
+        as_serialized = {"model": "MX304", "module-bays": [{"name": "FPC 0"}]}
+        with_empty_key = {"model": "MX304", "module-bays": [{"name": "FPC 0", "module_bay_types": []}]}
+
+        assert _repo_supersedes(repo, as_serialized), "an unchanged definition must not re-export"
+        assert not _repo_supersedes(repo, with_empty_key), "which is exactly what the empty key would do"
+
     def test_equal_dicts(self):
         repo = {"manufacturer": "Nokia", "model": "X", "u_height": 1}
         nb = {"manufacturer": "Nokia", "model": "X", "u_height": 1}
@@ -853,11 +873,17 @@ class TestExporterAdditionalCoverage:
         def _side_effect(endpoint_name, manufacturer_slug=None):
             return [dt_rec, mt_rec] if endpoint_name == "interface_templates" else []
 
+        # A worker must fetch through its own clone, so only the clone answers.
+        worker = MagicMock()
+        worker.get_component_templates.side_effect = _side_effect
         mock_client = MagicMock()
-        mock_client.get_component_templates.side_effect = _side_effect
-        with patch("core.export.NetBoxGraphQLClient", return_value=mock_client):
-            dt_result, mt_result = exporter._fetch_vendor_components("nokia")
+        mock_client.get_component_templates.side_effect = AssertionError("worker must use clone()")
+        mock_client.clone.return_value = worker
+        exporter.graphql = mock_client
 
+        dt_result, mt_result = exporter._fetch_vendor_components("nokia")
+
+        assert mock_client.clone.called
         assert dt_result[11]["interface_templates"] == [dt_rec]
         assert mt_result[22]["interface_templates"] == [mt_rec]
 

@@ -76,8 +76,14 @@ def mock_git_repo(request):
 
 @pytest.fixture
 def mock_pynetbox():
-    """Mock pynetbox to prevent API calls."""
+    """Mock pynetbox to prevent API calls.
+
+    Defaults the reported version to the oldest supported release, so a test that does not
+    care about version gating still constructs a NetBox; the importer refuses anything
+    older. Individual tests override it to exercise a specific release.
+    """
     with patch("core.netbox_api.pynetbox") as mock_nb:
+        mock_nb.api.return_value.version = "4.3"
         yield mock_nb
 
 
