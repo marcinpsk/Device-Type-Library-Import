@@ -23,6 +23,7 @@ from core.export_manifest import (
 from core.graphql_client import GraphQLError, NetBoxGraphQLClient
 from core.nb_serializer import (
     COMPONENT_ENDPOINT_NAMES,
+    module_bays_missing_position,
     serialize_device_type,
     serialize_module_type,
     serialize_rack_type,
@@ -466,6 +467,12 @@ class Exporter:
                 continue
 
             written_count += 1
+            bays = module_bays_missing_position(to_write)
+            if bays:
+                self.handle.log(
+                    f"[yellow]{item.mfr_name}/{item.filename}: module bay(s) {', '.join(bays)} have "
+                    f"no position, which the library schema requires[/yellow]"
+                )
             images_ok = self._download_type_images(item)
             if images_ok:
                 update_entry(manifest, f"{item.kind}s", item.manifest_key, item.nb_record.last_updated)

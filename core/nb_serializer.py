@@ -196,6 +196,15 @@ def _port_mappings(records: list) -> list:
     return stanza
 
 
+def module_bays_missing_position(serialized: dict) -> list:
+    """Return the names of module bays the library schema would reject.
+
+    NetBox leaves ``position`` blank on a bay that names no physical slot, and a blank
+    string writes no key, but the schema requires one on every module bay.
+    """
+    return [bay.get("name", "?") for bay in serialized.get("module-bays", []) if "position" not in bay]
+
+
 def _serialize_component_list(endpoint_name: str, records: list) -> list:
     """Serialize a list of component template records for a given endpoint."""
     component = BY_ENDPOINT[endpoint_name]

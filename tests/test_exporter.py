@@ -1565,3 +1565,62 @@ class TestRepoAvailability:
 
         with pytest.raises(FileNotFoundError, match="No device-type library found"):
             self._exporter(tmp_path, repo)._verify_repo_available()
+
+
+class TestModuleBayPositionWarning:
+    """NetBox allows a blank module-bay position; the DTL schema requires one."""
+
+    @staticmethod
+    def _item(module_bays, kind="device-type"):
+        return ExportItem(
+            kind=kind,
+            nb_record=_make_dt(),
+            repo_yaml=None,
+            serialized={"model": "7750-SR-7s", "module-bays": module_bays},
+            reason="absent",
+            mfr_name="Nokia",
+            filename="nokia-7750-sr-7s.yaml",
+            manifest_key="Nokia/nokia-7750-sr-7s",
+        )
+
+    @staticmethod
+    def _write(tmp_path, item):
+        """Drive the real write path with a real LogHandler, which prints to stdout."""
+        exporter = Exporter(_make_settings(tmp_path), LogHandler(False), str(tmp_path / "extra"), False, None)
+        exporter._get_module_image_details = lambda: {}
+        exporter._write_export_items([item], {}, tmp_path / "manifest.json", None)
+
+    def test_a_bay_without_a_position_is_named_in_the_log(self, tmp_path, capsys):
+        item = self._item([{"name": "Slot 0"}, {"name": "Slot 1", "position": "1"}])
+
+        self._write(tmp_path, item)
+
+        out = capsys.readouterr().out
+        assert "Slot 0" in out
+        assert "position" in out
+        assert "nokia-7750-sr-7s.yaml" in out
+        assert "Slot 1" not in out, "a bay that has a position is not a problem"
+
+    def test_a_bay_positioned_at_zero_is_not_reported(self, tmp_path, capsys):
+        """'0' is a real position: the MX304 PSU bays use '0' and '1'."""
+        item = self._item([{"name": "Slot 0", "position": "0"}])
+
+        self._write(tmp_path, item)
+
+        assert "no position" not in capsys.readouterr().out
+
+    def test_a_type_with_no_module_bays_reports_nothing(self, tmp_path, capsys):
+        exporter = Exporter(_make_settings(tmp_path), LogHandler(False), str(tmp_path / "extra"), False, None)
+        item = replace(self._item([]), serialized={"model": "7750-SR-7s"})
+
+        exporter._write_export_items([item], {}, tmp_path / "manifest.json", None)
+
+        assert "no position" not in capsys.readouterr().out
+
+    def test_a_module_type_bay_is_checked_too(self, tmp_path, capsys):
+        """Device types and module types share the module-bay schema definition."""
+        item = self._item([{"name": "Sub 0"}], kind="module-type")
+
+        self._write(tmp_path, item)
+
+        assert "Sub 0" in capsys.readouterr().out
