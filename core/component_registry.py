@@ -119,7 +119,8 @@ COMPONENT_TYPES = (
         yaml_key="front-ports",
         endpoint="front_port_templates",
         label="Front Port",
-        fields=("name", "type", "label", "description", "color"),
+        # positions arrived with the 4.5 mapping model; the query drops it on older servers.
+        fields=("name", "type", "label", "description", "color", "positions"),
         graphql_extra=("mappings { id front_port_position rear_port_position rear_port { id name } }",),
         compare_extra=("_mappings",),
         link=LINK_REAR_PORTS,

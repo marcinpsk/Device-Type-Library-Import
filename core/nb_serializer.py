@@ -4,7 +4,6 @@ Direction: NetBox record → Python dict suitable for ``yaml.dump()`` and
 comparison against existing repo YAML files.
 """
 
-import warnings
 from typing import Any, Sequence
 
 from core.component_registry import BY_ENDPOINT, COMPONENT_TYPES, MODULE_TYPE_RELATIONS
@@ -26,7 +25,6 @@ _OMIT_IF_EQUAL = {
     "feed_leg": None,
     "maximum_draw": None,
     "allocated_draw": None,
-    "positions": 1,  # rear port default; include only when > 1
 }
 
 # Device type scalar field order for output.
@@ -146,37 +144,53 @@ def _serialize_relations(record: Any, relations: Sequence[str]) -> dict:
 
 
 def _serialize_front_port(record: Any) -> dict:
-    """Serialize a front port template, including rear_port mapping."""
-    result = _serialize_component(record, BY_ENDPOINT["front_port_templates"].fields)
-    mappings = getattr(record, "mappings", None) or []
-    if mappings:
-        if len(mappings) > 1:
-            port_name = getattr(record, "name", "<unknown>")
-            warnings.warn(
-                f"Front port '{port_name}' has {len(mappings)} mappings; "
-                "only the first will be exported. "
-                "Full multi-mapping support requires DTL schema update (see issue #78).",
-                UserWarning,
-                stacklevel=4,
+    """Serialize a front port template's own fields.
+
+    The rear-port linkage is no longer written here: NetBox 4.5 moved it to a through
+    table and the library schema follows, carrying it in a top-level ``port-mappings``
+    stanza built by :func:`_port_mappings`.
+    """
+    return _serialize_component(record, BY_ENDPOINT["front_port_templates"].fields)
+
+
+def _port_mappings(records: list) -> list:
+    """Return the ``port-mappings`` stanza for a type's front port templates.
+
+    Every mapping is written, not just the first: one front port may occupy several
+    positions across rear ports, which is what the through table exists to express.
+
+    A server below 4.5 has no through table and answers with ``rear_port`` and
+    ``rear_port_position`` scalars instead.  Those describe one mapping, so they are
+    written as one entry rather than dropped.
+    """
+    stanza = []
+    for record in sorted(records, key=lambda r: str(getattr(r, "name", "") or "")):
+        name = getattr(record, "name", None)
+        for mapping in getattr(record, "mappings", None) or []:
+            rear_port = getattr(mapping, "rear_port", None)
+            if not rear_port:
+                continue
+            stanza.append(
+                {
+                    "front_port": name,
+                    "front_port_position": _coerce_numeric(getattr(mapping, "front_port_position", None)) or 1,
+                    "rear_port": rear_port.name,
+                    "rear_port_position": _coerce_numeric(getattr(mapping, "rear_port_position", None)) or 1,
+                }
             )
-        m = mappings[0]
-        rear_port = getattr(m, "rear_port", None)
-        if rear_port:
-            result["rear_port"] = rear_port.name
-        rear_pos = getattr(m, "rear_port_position", None)
-        rear_pos = _coerce_numeric(rear_pos)
-        if rear_pos is not None and rear_pos > 1:
-            result["rear_port_position"] = rear_pos
-    else:
-        # Legacy: pre-4.5 NetBox returns rear_port / rear_port_position as direct scalar fields
-        legacy_rp = getattr(record, "rear_port", None)
-        if legacy_rp:
-            result["rear_port"] = legacy_rp.name
-        legacy_pos = getattr(record, "rear_port_position", None)
-        legacy_pos = _coerce_numeric(legacy_pos)
-        if legacy_pos is not None and legacy_pos > 1:
-            result["rear_port_position"] = legacy_pos
-    return result
+        if getattr(record, "mappings", None):
+            continue
+        legacy = getattr(record, "rear_port", None)
+        if legacy:
+            stanza.append(
+                {
+                    "front_port": name,
+                    "front_port_position": 1,
+                    "rear_port": legacy.name,
+                    "rear_port_position": _coerce_numeric(getattr(record, "rear_port_position", None)) or 1,
+                }
+            )
+    return stanza
 
 
 def _serialize_component_list(endpoint_name: str, records: list) -> list:
@@ -200,6 +214,9 @@ def _add_components(result: dict, type_id: int, components_by_id: dict) -> None:
         records = type_components.get(component.endpoint, [])
         if records:
             result[component.yaml_key] = _serialize_component_list(component.endpoint, records)
+    mappings = _port_mappings(type_components.get("front_port_templates", []))
+    if mappings:
+        result["port-mappings"] = mappings
 
 
 def serialize_device_type(nb_record: Any, components_by_dt_id: dict) -> dict:

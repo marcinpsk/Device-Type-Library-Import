@@ -744,7 +744,7 @@ class NetBoxGraphQLClient:
     def _front_port_field_variants(fields):
         """Yield successive field-list tiers for the front_port_templates fallback.
 
-        Tier 1: mappings block (NetBox 4.5+)
+        Tier 1: mappings block and positions (NetBox 4.5+)
         Tier 2: rear_port_position scalar (<4.5)
         Tier 3: neither (field removed entirely)
         """
@@ -753,7 +753,8 @@ class NetBoxGraphQLClient:
         for f in fields:
             if "mappings" in f:
                 fallback.extend(["rear_port_position", "rear_port { id name }"])
-            else:
+            elif f != "positions":
+                # positions arrived with the mapping model, so no pre-4.5 tier may ask for it.
                 fallback.append(f)
         yield fallback
         stripped = [f for f in fallback if f != "rear_port_position" and "rear_port" not in f]

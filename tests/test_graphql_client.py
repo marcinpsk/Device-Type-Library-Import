@@ -1152,6 +1152,24 @@ class TestGetComponentTemplates:
         assert "module_bay_types" in _query_for(True)
         assert "module_bay_types" not in _query_for(False)
 
+    def test_the_front_port_fallback_drops_every_45_only_field(self, mock_post):
+        """Positions arrived with the mapping model, so a pre-4.5 tier must not ask for it.
+
+        Leaving it in a fallback tier makes every tier fail the same way, and the whole
+        front-port preload dies on a server that would answer the older shape.
+        """
+        from core.component_registry import BY_ENDPOINT
+        from core.graphql_client import NetBoxGraphQLClient
+
+        fields = list(BY_ENDPOINT["front_port_templates"].graphql_fields)
+        assert "positions" in fields, "guard: the registry is expected to select positions"
+
+        tiers = list(NetBoxGraphQLClient._front_port_field_variants(fields))
+
+        assert any("positions" in f for f in tiers[0]), "the 4.5 tier keeps it"
+        for tier in tiers[1:]:
+            assert not any("positions" in f for f in tier), f"pre-4.5 tier still asks for it: {tier}"
+
     def test_returns_dotdict_records_with_parent_info(self, mock_post):
         """Records should be DotDicts with device_type/module_type and correct id types."""
         data = {
