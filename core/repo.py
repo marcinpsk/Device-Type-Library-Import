@@ -110,7 +110,7 @@ def _vendor_slugs_from_index(
         return None
     try:
         entries = _safe_index_load(index_path)
-    except Exception:
+    except Exception:  # an unreadable index or definition is skipped, not fatal  # noqa: BLE001
         return None
     result = set()
     for model_name, vendor_dir in entries:
@@ -216,9 +216,7 @@ def validate_git_url(url):
     if url.startswith("https://"):
         parsed = urlparse(url)
         if parsed.scheme == "https" and parsed.hostname:
-            # Optional: enforce an allowlist if desired
-            # if parsed.hostname not in ("github.com", "gitlab.com"):
-            #     return False, f"Host not allowed: {parsed.hostname}"
+            # Any HTTPS host is accepted: the library is forked and self-hosted widely.
             return True, None
         return False, "Invalid HTTPS URL"
 
@@ -451,7 +449,7 @@ def parse_single_file(file):
             return data
         except yaml.YAMLError as excep:
             return f"Error: {excep}"
-        except Exception as e:
+        except Exception as e:  # an unreadable index or definition is skipped, not fatal  # noqa: BLE001
             return f"Error: {e}"
 
 
@@ -703,7 +701,7 @@ class DTLRepo:
         device_files: dict = {}  # vendor_slug -> [abs_path]
         try:
             known_slugs = _safe_index_load(device_index)
-        except Exception:
+        except Exception:  # an unreadable index or definition is skipped, not fatal  # noqa: BLE001
             return None
 
         for entry_slug, relpath in known_slugs:

@@ -19,29 +19,29 @@ already imported).
 Test scenarios
 --------------
 A. All component types created with correct field values
-     – interfaces (including mgmt_only), power-ports (draw values),
+     - interfaces (including mgmt_only), power-ports (draw values),
        console-ports, console-server-ports, power-outlets (power_port link),
        rear-ports (positions), front-ports (M2M rear_ports), device-bays,
        module-bays (position).
 B. Device-type properties stored correctly
-     – u_height (decimal), is_full_depth (bool), weight, weight_unit,
+     - u_height (decimal), is_full_depth (bool), weight, weight_unit,
        airflow, part_number, comments.
 C. Image linkage
-     – front_image and rear_image URLs are set on the device type (not just
+     - front_image and rear_image URLs are set on the device type (not just
        "uploaded" as orphan files) and the URLs return HTTP 200.
 D. GraphQL schema consistency
-     – Query every device-type schema field and every
+     - Query every device-type schema field and every
        registry field directly through the GraphQL client so a
        removed/renamed schema field raises an explicit error rather than a
        silent false-positive.
 E. Front-port multi-position linkage
-     – FP1 → RP1 position 1; FP2 → RP1 position 2 (same rear port).
+     - FP1 → RP1 position 1; FP2 → RP1 position 2 (same rear port).
 F. Module-type component creation
-     – All module component types created; front-port rear_port mapping set.
+     - All module component types created; front-port rear_port mapping set.
 G. Idempotency
-     – Second run: 0 new, 0 modified device types and module types.
+     - Second run: 0 new, 0 modified device types and module types.
 H. Update mode
-     – Delete one interface via REST API; re-run with --update; verify it is
+     - Delete one interface via REST API; re-run with --update; verify it is
        recreated with the original type value.
 
 Usage::
@@ -426,7 +426,7 @@ def test_graphql_schema() -> None:
         expected_fields = component.graphql_fields
         try:
             records = client.get_component_templates(endpoint_name)
-        except Exception as exc:
+        except Exception as exc:  # the test reports whatever the client raised  # noqa: BLE001
             fail(
                 f"get_component_templates({endpoint_name!r}) raised {type(exc).__name__}: {exc} — "
                 f"likely a GraphQL schema error (field removed or renamed)."

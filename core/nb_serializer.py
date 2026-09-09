@@ -108,9 +108,7 @@ def _should_include(field: str, val: Any) -> bool:
         return False
     if isinstance(val, str) and val == "":
         return False
-    if field in _OMIT_IF_EQUAL and val == _OMIT_IF_EQUAL[field]:
-        return False
-    return True
+    return not (field in _OMIT_IF_EQUAL and val == _OMIT_IF_EQUAL[field])
 
 
 def _serialize_component(record: Any, fields: Sequence[str]) -> dict:

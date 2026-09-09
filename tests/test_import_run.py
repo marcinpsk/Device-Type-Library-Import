@@ -434,31 +434,31 @@ class _OutcomeNetBox:
         from core.outcomes import OutcomeRegistry
 
         self.outcomes = OutcomeRegistry()
-        base = dict(
-            added=0,
-            properties_updated=0,
-            components_updated=0,
-            components_added=0,
-            components_removed=0,
-            images=0,
-            manufacturer=0,
-            module_added=0,
-            module_updated=0,
-            rack_type_added=0,
-            rack_type_updated=0,
-        )
+        base = {
+            "added": 0,
+            "properties_updated": 0,
+            "components_updated": 0,
+            "components_added": 0,
+            "components_removed": 0,
+            "images": 0,
+            "manufacturer": 0,
+            "module_added": 0,
+            "module_updated": 0,
+            "rack_type_added": 0,
+            "rack_type_updated": 0,
+        }
         base.update(counter or {})
         self.counter = Counter(base)
 
 
 def _summary_lines(netbox):
     """Render a run summary through the real LogHandler and return its lines."""
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     handle, console = _recording_handle()
     handle.verbose = True
     repo = SimpleNamespace(duplicate_definitions=[])
-    summary = RunSummary.capture(netbox, repo, datetime.now())
+    summary = RunSummary.capture(netbox, repo, datetime.now(UTC))
     _log_run_summary(handle, summary)
     return console.lines
 

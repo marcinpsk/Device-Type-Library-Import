@@ -4628,7 +4628,7 @@ class TestVerifyCompatibility:
     """Tests for NetBox.verify_compatibility() version thresholds."""
 
     @pytest.mark.parametrize(
-        "version_str, expected_m2m, expected_module_bay_types",
+        ("version_str", "expected_m2m", "expected_module_bay_types"),
         [
             ("4.3", False, False),
             ("4.4", False, False),
@@ -7199,13 +7199,13 @@ class TestSummaryWordingMatchesTheFailedOperation:
 
     def _summary_text(self, nb):
         """Render the real end-of-run summary for *nb* and return it as one string."""
-        from datetime import datetime
+        from datetime import UTC, datetime
         from types import SimpleNamespace
 
         from core.import_run import RunSummary, _log_run_summary
 
         handle, console = recording_handle()
-        summary = RunSummary.capture(nb, SimpleNamespace(duplicate_definitions=[]), datetime.now())
+        summary = RunSummary.capture(nb, SimpleNamespace(duplicate_definitions=[]), datetime.now(UTC))
         _log_run_summary(handle, summary)
         return "\n".join(console.lines)
 

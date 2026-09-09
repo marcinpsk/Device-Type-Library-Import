@@ -19,7 +19,7 @@ class LogHandler:
 
     def _timestamp(self):
         """Return the current time formatted as HH:MM:SS."""
-        return datetime.now().strftime("%H:%M:%S")
+        return datetime.now().astimezone().strftime("%H:%M:%S")
 
     def set_console(self, console):
         """Set the Rich Console instance used for output, or None to fall back to print()."""

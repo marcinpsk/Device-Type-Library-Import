@@ -92,7 +92,7 @@ def extract_error_payload(error: Any) -> Any:
     if isinstance(error, (bytes, bytearray)):
         try:
             error = error.decode("utf-8", errors="replace")
-        except Exception:
+        except Exception:  # pynetbox raises many types; a probe failure is not fatal  # noqa: BLE001
             return error
     if isinstance(error, str):
         try:
@@ -136,7 +136,7 @@ def _count_dependent_devices(netbox: Any, device_type_id: int) -> tuple[int, lis
     filter_kwargs = {"device_type_id": device_type_id}
     try:
         devices = list(netbox.dcim.devices.filter(**filter_kwargs, limit=5))
-    except Exception:
+    except Exception:  # pynetbox raises many types; a probe failure is not fatal  # noqa: BLE001
         return -1, []
     sample = [getattr(d, "name", None) or str(getattr(d, "id", "?")) for d in devices[:5]]
     if len(devices) < 5:
@@ -144,7 +144,7 @@ def _count_dependent_devices(netbox: Any, device_type_id: int) -> tuple[int, lis
     # We capped at limit=5; query the real total separately.
     try:
         total = netbox.dcim.devices.count(**filter_kwargs)
-    except Exception:
+    except Exception:  # pynetbox raises many types; a probe failure is not fatal  # noqa: BLE001
         total = len(devices)
     return total, sample
 
@@ -161,7 +161,7 @@ def _list_device_bay_templates(netbox: Any, device_type_id: int) -> list[Any] | 
     """
     try:
         return list(netbox.dcim.device_bay_templates.filter(device_type_id=device_type_id))
-    except Exception:
+    except Exception:  # pynetbox raises many types; a probe failure is not fatal  # noqa: BLE001
         return None
 
 

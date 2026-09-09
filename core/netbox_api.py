@@ -432,9 +432,6 @@ def _image_dir_for_yaml(src_file: str, src_segment: str, dst_segment: str) -> "P
     return Path(*parts)
 
 
-# from pynetbox import RequestError as APIRequestError
-
-
 def _is_mapping_removal(prop_change):
     """Return True when a ``_mappings`` change only takes mappings away."""
     return (
@@ -800,7 +797,7 @@ class NetBox:
                 device_type_id=dt.id,
                 device_type_yaml=device_type,
             )
-        except Exception as exc:  # defensive: classifier must never break the run
+        except Exception as exc:  # defensive: classifier must never break the run  # noqa: BLE001
             self.handle.verbose_log(f"Failure classifier raised {type(exc).__name__}: {exc}")
             return False, None
 
@@ -833,7 +830,7 @@ class NetBox:
         try:
             for step in resolution.remediation_steps:
                 step()
-        except Exception as exc:
+        except Exception as exc:  # a failed remediation is reported, not raised  # noqa: BLE001
             self.handle.log(f"Auto-resolve failed for {dt.model}: {exc}")
             return False, resolution
 
@@ -1476,11 +1473,11 @@ class NetBox:
         Returns:
             list[dict]: Module types not found in *all_module_types*.
         """
-        new_module_types = []
-        for module_type in module_types:
-            if NetBox._find_existing_module_type(module_type, all_module_types) is None:
-                new_module_types.append(module_type)
-        return new_module_types
+        return [
+            module_type
+            for module_type in module_types
+            if NetBox._find_existing_module_type(module_type, all_module_types) is None
+        ]
 
     def _log_module_property_diffs(self, mfr_slug, model, fields_info, component_changes=None):
         """Emit diff-u style lines for changed module type properties and component changes.
@@ -2511,7 +2508,7 @@ class DeviceTypes:
                 payload = extract_error_payload(excep.error)
                 per_item = payload if isinstance(payload, list) and len(payload) == len(to_create) else []
                 reported = 0
-                for item, error in zip(to_create, per_item):
+                for item, error in zip(to_create, per_item, strict=False):
                     if error:
                         reported += 1
                         self._log_component_error(
@@ -3154,7 +3151,7 @@ class DeviceTypes:
         file_handles = {}
         try:
             for field, path in images.items():
-                file_handles[field] = (os.path.basename(path), open(path, "rb"))
+                file_handles[field] = (os.path.basename(path), open(path, "rb"))  # noqa: SIM115
             response = requests.patch(
                 url,
                 headers=headers,
@@ -3172,7 +3169,7 @@ class DeviceTypes:
         except OSError as e:
             self.handle.log(f"Error reading image file for device type {device_type}: {e}")
         finally:
-            for _, (_, fh) in file_handles.items():
+            for _, fh in file_handles.values():
                 with suppress(Exception):
                     fh.close()
 

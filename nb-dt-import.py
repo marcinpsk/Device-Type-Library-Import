@@ -3,7 +3,7 @@
 
 import sys
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 
 import requests
 from pynetbox.core.query import RequestError as NetBoxRequestError
@@ -80,10 +80,7 @@ class ItemsPerSecondColumn(ProgressColumn):
 
     def render(self, task):
         """Render the current or finished speed."""
-        if task.finished:
-            speed = self._effective_speed(task, "finished_speed")
-        else:
-            speed = self._effective_speed(task, "speed")
+        speed = self._effective_speed(task, "finished_speed") if task.finished else self._effective_speed(task, "speed")
         if speed is None:
             return Text("- it/s")
         return Text(f"{speed:.1f} it/s")
@@ -135,7 +132,7 @@ def _run_export_diff(config: RunConfig, handle):
 
 def _run(config: RunConfig):
     """Build and execute the selected run pipeline."""
-    started_at = datetime.now()
+    started_at = datetime.now(UTC)
     handle = LogHandler(config.verbose)
     for notice in config.notices:
         handle.log(notice)
@@ -161,40 +158,41 @@ def main():
     try:
         config = resolve_run_config()
     except ConfigError as exc:
-        raise SystemExit(str(exc))
+        raise SystemExit(str(exc)) from exc
     try:
         return _run(config)
     except FatalError as exc:
         if config.verbose and exc.formatted_traceback:
             print(exc.formatted_traceback, end="")
-        raise SystemExit(str(exc))
+        raise SystemExit(str(exc)) from exc
     except requests.exceptions.ConnectionError as exc:
+        detail = _fmt_connection_error(config.netbox_url, exc)
         print(
-            f"[{datetime.now().strftime('%H:%M:%S')}] Error: {_fmt_connection_error(config.netbox_url, exc)}",
+            f"[{datetime.now().astimezone().strftime('%H:%M:%S')}] Error: {detail}",
             file=sys.stderr,
         )
-        raise SystemExit(1)
+        raise SystemExit(1) from exc
     except GraphQLError as exc:
         print(
-            f"[{datetime.now().strftime('%H:%M:%S')}] Error: NetBox GraphQL request failed — {exc}\n"
-            f"[{datetime.now().strftime('%H:%M:%S')}] This may be a temporary connectivity issue. "
+            f"[{datetime.now().astimezone().strftime('%H:%M:%S')}] Error: NetBox GraphQL request failed — {exc}\n"
+            f"[{datetime.now().astimezone().strftime('%H:%M:%S')}] This may be a temporary connectivity issue. "
             "Check that NetBox is reachable and try again.",
             file=sys.stderr,
         )
-        raise SystemExit(1)
+        raise SystemExit(1) from exc
     except NetBoxRequestError as exc:
         print(
-            f"[{datetime.now().strftime('%H:%M:%S')}] Error: NetBox REST API request failed — {exc}\n"
-            f"[{datetime.now().strftime('%H:%M:%S')}] Check that NetBox is reachable and"
+            f"[{datetime.now().astimezone().strftime('%H:%M:%S')}] Error: NetBox REST API request failed — {exc}\n"
+            f"[{datetime.now().astimezone().strftime('%H:%M:%S')}] Check that NetBox is reachable and"
             " the API token has the required permissions.",
             file=sys.stderr,
         )
-        raise SystemExit(1)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] Interrupted by user (Ctrl-C). Exiting.")
-        raise SystemExit(130)
+        print(f"[{datetime.now().astimezone().strftime('%H:%M:%S')}] Interrupted by user (Ctrl-C). Exiting.")
+        raise SystemExit(130) from None

@@ -166,3 +166,25 @@ def test_progress_group_supports_nested_blocks():
         handle.end_progress_group()
 
     print_mock.assert_called_once_with("[12:00:00] Nested message")
+
+
+class TestTimestampStaysOnLocalWallClock:
+    """The timestamp is timezone-aware now, which must not move what the operator reads to UTC."""
+
+    def test_the_timestamp_reads_local_time_not_utc(self, monkeypatch):
+        """A UTC-based fix for DTZ005 would silently shift every logged line by the local offset."""
+        import time
+        from datetime import UTC, datetime
+
+        monkeypatch.setenv("TZ", "Asia/Tokyo")
+        time.tzset()
+        try:
+            before = datetime.now().astimezone().strftime("%H:%M:%S")
+            stamp = LogHandler(False)._timestamp()
+            after = datetime.now().astimezone().strftime("%H:%M:%S")
+
+            assert stamp in {before, after}, "the timestamp must follow the local clock"
+            assert stamp != datetime.now(UTC).strftime("%H:%M:%S"), "Asia/Tokyo is UTC+9, so UTC would differ"
+        finally:
+            monkeypatch.undo()
+            time.tzset()

@@ -418,9 +418,9 @@ class ChangeDetector:
             # same as an empty list so chassis YAMLs that omit (e.g.) interfaces can
             # still drive cleanup of stale templates in NetBox.
             if yaml_key in yaml_data or self.remove_unmanaged_types:
-                for existing_name in existing_components.keys():
+                for existing_name in existing_components:
                     if existing_name not in yaml_component_names:
-                        changes.append(
+                        changes.append(  # noqa: PERF401
                             ComponentChange(
                                 component_type=yaml_key,
                                 component_name=existing_name,

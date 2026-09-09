@@ -3,6 +3,7 @@
 Entry point: ``Exporter(config, handle, export_dir, force_overwrite, vendor_slugs).run()``
 """
 
+import contextlib
 import hashlib
 import os
 import re
@@ -32,7 +33,6 @@ from core.nb_serializer import (
 )
 from core.netbox_api import IMAGE_EXTENSIONS, _build_auth_header
 from core.repo import LIBRARY_TYPE_DIRS, library_dirs_present
-import contextlib
 
 
 class _SkipSentinel:

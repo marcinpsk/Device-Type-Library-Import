@@ -4,7 +4,7 @@ import os
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from core.change_detector import IMAGE_PROPERTIES, ChangeDetector, ChangeType
@@ -66,7 +66,7 @@ class RunSummary:
             outcome_counts=netbox.outcomes.summary_by_kind(),
             failure_lines=tuple(netbox.outcomes.render_failure_report()),
             duplicate_definitions=tuple(repo.duplicate_definitions),
-            elapsed=datetime.now() - started_at,
+            elapsed=datetime.now(UTC) - started_at,
         )
 
     def outcome_count(self, kind, outcome):
@@ -588,7 +588,7 @@ class ImportRun:
         self.netbox = netbox
         self.reporter = reporter
         self.progress_factory = progress_factory
-        self.started_at = started_at or datetime.now()
+        self.started_at = started_at or datetime.now(UTC)
         self.progress: Any = None
         self.task_registry = None
         self.vendor_task_id = None

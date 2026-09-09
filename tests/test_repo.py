@@ -1,4 +1,5 @@
 import os
+import re
 from unittest.mock import MagicMock, call, mock_open, patch
 
 import pytest
@@ -146,7 +147,7 @@ class TestDTLRepoInit:
         mock_args.repo_url = "ftp://bad.url"
         mock_args.repo_branch = "master"
         with _clone_present(False), patch("core.repo.Repo"):
-            with pytest.raises(InvalidGitURLError, match="Invalid Git URL: ftp://bad.url"):
+            with pytest.raises(InvalidGitURLError, match=re.escape("Invalid Git URL: ftp://bad.url")):
                 _dtl_repo(mock_args, "/tmp/repo", LogHandler(False))
 
     def test_invalid_path_raises_before_repository_access(self, tmp_path):
@@ -258,7 +259,7 @@ class TestDTLRepoRealGit:
     @pytest.fixture(autouse=True)
     def mock_git_repo(self):
         """Override the global autouse git mock so these tests exercise real git."""
-        yield None
+        return
 
     @pytest.fixture(autouse=True)
     def clear_ambient_git_env(self, monkeypatch):
@@ -475,7 +476,7 @@ class TestPullRepo:
         failure = git_exc.GitCommandError("status", 1)
 
         with _clone_present(), patch("core.repo.Repo", side_effect=failure):
-            with pytest.raises(GitCommandError, match="https://example.invalid/repo.git") as exc_info:
+            with pytest.raises(GitCommandError, match=re.escape("https://example.invalid/repo.git")) as exc_info:
                 _dtl_repo(mock_args, "/tmp/repo", LogHandler(False))
 
         assert "cmdline: status" in exc_info.value.formatted_traceback
@@ -501,7 +502,9 @@ class TestPullRepo:
         invalid = git_exc.InvalidGitRepositoryError("/tmp/repo")
 
         with _clone_present(), patch("core.repo.Repo", side_effect=invalid):
-            with pytest.raises(GitInvalidRepositoryError, match='The repo "/tmp/repo" is not a valid git repo.'):
+            with pytest.raises(
+                GitInvalidRepositoryError, match=re.escape('The repo "/tmp/repo" is not a valid git repo.')
+            ):
                 _dtl_repo(mock_args, "/tmp/repo", LogHandler(False))
 
 

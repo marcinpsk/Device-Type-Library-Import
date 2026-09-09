@@ -304,10 +304,7 @@ class ComponentCache:
         if key in cached:
             return cached[key]
 
-        if parent_type == "device":
-            filter_kwargs = {"device_type_id": parent_id}
-        else:
-            filter_kwargs = {"module_type_id": parent_id}
+        filter_kwargs = {"device_type_id": parent_id} if parent_type == "device" else {"module_type_id": parent_id}
         result = {item.name: item for item in endpoint.filter(**filter_kwargs)}
         self.record(endpoint_name, parent_type, parent_id, result)
         return result
@@ -378,7 +375,7 @@ class ComponentCache:
         """Mark *endpoint_name* complete on the display, sizing the bar to the result."""
         try:
             total = max(len(future.result()), 1)
-        except Exception:
+        except Exception:  # a worker error must not break the progress display  # noqa: BLE001
             total = 1
         self._job["display"].finish(endpoint_name, total)
         self._job["done"].add(endpoint_name)

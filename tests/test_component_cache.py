@@ -7,6 +7,7 @@ test rather than a mock's idea of them.
 
 import threading
 import time
+from typing import ClassVar
 
 import pytest
 
@@ -349,7 +350,7 @@ class TestPrefetch:
         """Concurrent endpoint requests must not share a requests session."""
 
         class WorkerClient:
-            instances = []
+            instances: ClassVar[list] = []
 
             def __init__(self, *args, **kwargs):
                 self.thread_id = None
@@ -377,7 +378,7 @@ class TestPrefetch:
         """Cancelling a prefetch must not leak the sessions of workers already running."""
 
         class WorkerClient:
-            instances = []
+            instances: ClassVar[list] = []
             started = threading.Event()
 
             def __init__(self, *args, **kwargs):
@@ -417,7 +418,7 @@ class TestPrefetch:
         cache = make_cache()
         cache.begin_prefetch(manufacturer_slug="cisco")
 
-        with pytest.raises(ValueError, match="cisco.*juniper"):
+        with pytest.raises(ValueError, match=r"cisco.*juniper"):
             cache.ensure_ready(manufacturer_slug="juniper")
 
         cache.close()

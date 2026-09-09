@@ -2476,12 +2476,12 @@ class TestVendorScopedComponentTemplates:
 
         # Verify both filters were applied via GraphQL variables (not string interpolation)
         calls = mock_post.call_args_list
-        # calls[0]: device_type filter query – data page
+        # calls[0]: device_type filter query - data page
         device_payload = calls[0][1]["json"]
         device_query = device_payload["query"]
         device_vars = device_payload["variables"]
-        # calls[1]: device_type filter query – empty terminator (pagination ends)
-        # calls[2]: module_type filter query – data page
+        # calls[1]: device_type filter query - empty terminator (pagination ends)
+        # calls[2]: module_type filter query - data page
         module_payload = calls[2][1]["json"]
         module_query = module_payload["query"]
         module_vars = module_payload["variables"]
