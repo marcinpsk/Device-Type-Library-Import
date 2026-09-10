@@ -295,10 +295,12 @@ def _collect_inline_mappings(front_ports, rear_by_name, rear_ports_declared):
 
 
 def _conflicting_mapping(inline_mappings, stanza_mappings):
-    """Return an error when both formats describe the same front port differently.
+    """Return an error when the two formats cannot both be honoured.
 
     Carrying both is allowed only while they agree, which is what a half-finished migration
     looks like; disagreeing is the case where guessing a winner would silently pick one.
+    A stanza speaks for the whole file, so an inline linkage it omits cannot be honoured
+    either. A port the stanza alone names is not in question: it had no inline linkage.
     """
     if not (inline_mappings and stanza_mappings):
         return None
@@ -306,9 +308,15 @@ def _conflicting_mapping(inline_mappings, stanza_mappings):
     def _shape(mappings):
         return sorted((m["rear_port"], m["front_port_position"], m["rear_port_position"]) for m in mappings)
 
-    for name in set(inline_mappings) | set(stanza_mappings):
-        inline = _shape(inline_mappings.get(name, []))
-        stanza = _shape(stanza_mappings.get(name, []))
+    for name in sorted(inline_mappings):
+        if name not in stanza_mappings:
+            return (
+                f"Error: front port '{name}' declares an inline rear_port but the port-mappings "
+                f"stanza does not list it; the stanza is authoritative, so add '{name}' to it "
+                f"or remove the inline rear_port keys"
+            )
+        inline = _shape(inline_mappings[name])
+        stanza = _shape(stanza_mappings[name])
         if inline != stanza:
             return (
                 f"Error: front port '{name}' has conflicting mapping definitions "

@@ -1838,3 +1838,75 @@ class TestAnExplicitlyEmptyStanza:
 
         assert normalize_port_mappings(data) is None
         assert "_mappings" not in data["front-ports"][0]
+
+
+class TestAStanzaThatDoesNotListAFrontPort:
+    """A stanza speaks for the whole file, so a port it omits has no mapping."""
+
+    def test_an_inline_linkage_the_stanza_omits_names_the_stanza_as_authoritative(self):
+        """The old wording blamed a conflict against a stanza that never mentioned the port."""
+        from core.repo import normalize_port_mappings
+
+        data = {
+            "front-ports": [
+                {"name": "FP1", "type": "8p8c", "rear_port": "RP1"},
+                {"name": "FP2", "type": "8p8c"},
+            ],
+            "rear-ports": [
+                {"name": "RP1", "type": "8p8c", "positions": 1},
+                {"name": "RP2", "type": "8p8c", "positions": 1},
+            ],
+            "port-mappings": [{"front_port": "FP2", "rear_port": "RP2"}],
+        }
+
+        result = normalize_port_mappings(data)
+
+        assert result is not None, "an inline linkage the stanza omits must not pass silently"
+        assert "conflicting mapping definitions" not in result, result
+        assert "FP1" in result, result
+        assert "does not list it" in result, result
+
+    def test_a_disagreement_on_a_shared_front_port_still_reads_as_a_conflict(self):
+        """Both formats naming one port differently is a real conflict, not an omission."""
+        from core.repo import normalize_port_mappings
+
+        data = {
+            "front-ports": [{"name": "FP1", "type": "8p8c", "rear_port": "RP1"}],
+            "rear-ports": [
+                {"name": "RP1", "type": "8p8c", "positions": 1},
+                {"name": "RP2", "type": "8p8c", "positions": 1},
+            ],
+            "port-mappings": [{"front_port": "FP1", "rear_port": "RP2"}],
+        }
+
+        result = normalize_port_mappings(data)
+
+        assert result is not None
+        assert "conflicting mapping definitions" in result, result
+
+    def test_a_stanza_may_add_a_port_the_inline_format_never_linked(self):
+        """The half-finished migration the two formats exist to allow: both are kept."""
+        from core.repo import normalize_port_mappings
+
+        data = {
+            "front-ports": [
+                {"name": "FP1", "type": "8p8c", "rear_port": "RP1"},
+                {"name": "FP2", "type": "8p8c"},
+            ],
+            "rear-ports": [
+                {"name": "RP1", "type": "8p8c", "positions": 1},
+                {"name": "RP2", "type": "8p8c", "positions": 1},
+            ],
+            "port-mappings": [
+                {"front_port": "FP1", "rear_port": "RP1"},
+                {"front_port": "FP2", "rear_port": "RP2"},
+            ],
+        }
+
+        assert normalize_port_mappings(data) is None
+        assert data["front-ports"][0]["_mappings"] == [
+            {"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 1}
+        ]
+        assert data["front-ports"][1]["_mappings"] == [
+            {"rear_port": "RP2", "front_port_position": 1, "rear_port_position": 1}
+        ]
