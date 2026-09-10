@@ -335,4 +335,4 @@ class TestUnreadableCatalogDirectory:
             with pytest.raises(ModuleBayCatalogError):
                 resolver.identities_for("Juniper", ["QSFP-DD"])
         finally:
-            os.chmod(vendor_dir, 0o755)
+            os.chmod(vendor_dir, 0o700)
