@@ -1796,3 +1796,44 @@ class TestResolveSlugFilesJson:
         repo.cwd = ""
 
         assert repo.resolve_slug_files(["nokia"]) is None
+
+
+class TestAnExplicitlyEmptyStanza:
+    """`port-mappings: []` is an author saying "none", which is not the same as saying nothing."""
+
+    def test_an_empty_stanza_clears_every_front_port_mapping(self):
+        """Without _mappings: [] the change detector cannot express removing a mapping."""
+        from core.repo import normalize_port_mappings
+
+        data = {
+            "front-ports": [{"name": "FP1", "type": "8p8c"}, {"name": "FP2", "type": "8p8c"}],
+            "rear-ports": [{"name": "RP1", "type": "8p8c", "positions": 2}],
+            "port-mappings": [],
+        }
+
+        assert normalize_port_mappings(data) is None
+        assert data["front-ports"][0]["_mappings"] == []
+        assert data["front-ports"][1]["_mappings"] == []
+
+    def test_an_empty_stanza_beside_an_inline_linkage_is_a_conflict(self):
+        """Silently preferring the inline linkage ignores the newer, explicit statement."""
+        from core.repo import normalize_port_mappings
+
+        data = {
+            "front-ports": [{"name": "FP1", "type": "8p8c", "rear_port": "RP1"}],
+            "rear-ports": [{"name": "RP1", "type": "8p8c", "positions": 1}],
+            "port-mappings": [],
+        }
+
+        result = normalize_port_mappings(data)
+
+        assert result is not None and result.startswith("Error:"), result
+
+    def test_no_stanza_at_all_still_leaves_mappings_unmanaged(self):
+        """An absent key must keep meaning "no opinion", or every file would clear its mappings."""
+        from core.repo import normalize_port_mappings
+
+        data = {"front-ports": [{"name": "FP1", "type": "8p8c"}], "rear-ports": []}
+
+        assert normalize_port_mappings(data) is None
+        assert "_mappings" not in data["front-ports"][0]

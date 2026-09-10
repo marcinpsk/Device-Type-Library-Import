@@ -518,6 +518,40 @@ def test_update_components_legacy_mapping_two_tuple_warns_and_skips(
     assert any("NetBox < 4.5" in str(c) for c in mock_handle.log.call_args_list)
 
 
+def test_update_components_legacy_truncation_is_reported(
+    mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
+):
+    """The create path says "only first mapping applied"; the update path said nothing at all."""
+    from core.change_detector import ChangeType, ComponentChange, PropertyChange
+
+    mock_nb_api = MagicMock()
+    dt = make_device_types(nb_api=mock_nb_api)
+    dt.m2m_front_ports = False
+
+    existing_fp = MagicMock(id=10, name="FP1")
+    rp1 = MagicMock(id=21, name="RP1")
+    rp2 = MagicMock(id=22, name="RP2")
+    dt.components.record("front_port_templates", "device", 1, {"FP1": existing_fp})
+    dt.components.record("rear_port_templates", "device", 1, {"RP1": rp1, "RP2": rp2})
+
+    # Two mappings: the legacy model can hold only one of them.
+    new_mappings_set = frozenset({("RP1", 1, 1), ("RP2", 2, 1)})
+    changes = [
+        ComponentChange(
+            component_type="front-ports",
+            component_name="FP1",
+            change_type=ChangeType.COMPONENT_CHANGED,
+            property_changes=[PropertyChange("_mappings", frozenset(), new_mappings_set)],
+        ),
+    ]
+
+    mock_handle.log.reset_mock()
+    dt.update_components({}, 1, changes, parent_type="device")
+
+    logged = " ".join(str(c) for c in mock_handle.log.call_args_list)
+    assert "FP1" in logged and "4.5" in logged, f"truncation must be reported, got: {logged}"
+
+
 def test_update_components_legacy_mapping_two_tuple_uses_yaml_fallback(
     mock_settings, mock_pynetbox, graphql_client, make_device_types
 ):

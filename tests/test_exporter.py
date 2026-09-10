@@ -1633,6 +1633,9 @@ class TestModuleBayPositionWarning:
 
         self._write(tmp_path, item)
 
+        # Assert the file was written too: silence alone would also hold if nothing ran.
+        written = yaml.safe_load((tmp_path / "extra" / "device-types" / "Nokia" / item.filename).read_text())
+        assert written["module-bays"] == [{"name": "Slot 0", "position": "0"}]
         assert "no position" not in capsys.readouterr().out
 
     def test_a_type_with_no_module_bays_reports_nothing(self, tmp_path, capsys):
@@ -1641,6 +1644,8 @@ class TestModuleBayPositionWarning:
 
         exporter._write_export_items([item], {}, tmp_path / "manifest.json", None)
 
+        written = yaml.safe_load((tmp_path / "extra" / "device-types" / "Nokia" / item.filename).read_text())
+        assert written == {"model": "7750-SR-7s"}, "the write path ran, it simply had nothing to warn about"
         assert "no position" not in capsys.readouterr().out
 
     def test_a_module_type_bay_is_checked_too(self, tmp_path, capsys):

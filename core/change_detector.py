@@ -518,10 +518,11 @@ class ChangeDetector:
                     # GraphQL response lacked both mappings and rear_port_position;
                     # treat as unmanaged to avoid a false COMPONENT_CHANGED.
                     continue
-                # The wrapper records the model it read; fall back to inference only for a
-                # caller that did not wrap the record.
-                m2m = getattr(netbox_comp, "_mappings_m2m", None)
-                has_names = m2m if m2m is not None else any(m.get("rear_port_name") is not None for m in canonical)
+                # Compare by name whenever one is available: an empty M2M list has no name to
+                # infer from but still needs the named path, and the pre-4.5 query returns one.
+                has_names = bool(getattr(netbox_comp, "_mappings_m2m", False)) or any(
+                    m.get("rear_port_name") is not None for m in canonical
+                )
                 if has_names:
                     # NetBox >= 4.5: compare with rear port names
                     netbox_set: frozenset = frozenset(

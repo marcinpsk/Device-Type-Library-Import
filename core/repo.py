@@ -272,6 +272,51 @@ def validate_repo_path(repo_path):
     return True, ""
 
 
+def _collect_inline_mappings(front_ports, rear_by_name, rear_ports_declared):
+    """Return ``({front_port_name: [mapping, ...]}, error)`` for the pre-4.5 inline format.
+
+    The inline keys are removed from each entry as they are read, so the caller is left with
+    one representation to reason about.
+    """
+    inline_mappings: dict = {}
+    for fp in front_ports:
+        rp_name = fp.get("rear_port")
+        if rp_name is None:
+            continue
+        fp_name = fp.get("name")
+        if rear_ports_declared and rp_name not in rear_by_name:
+            return {}, f"Error: front-port '{fp_name}' references unknown rear_port '{rp_name}'"
+        rp_pos = fp.pop("rear_port_position", 1)
+        fp.pop("rear_port")
+        inline_mappings.setdefault(fp_name, []).append(
+            {"rear_port": rp_name, "front_port_position": 1, "rear_port_position": rp_pos}
+        )
+    return inline_mappings, None
+
+
+def _conflicting_mapping(inline_mappings, stanza_mappings):
+    """Return an error when both formats describe the same front port differently.
+
+    Carrying both is allowed only while they agree, which is what a half-finished migration
+    looks like; disagreeing is the case where guessing a winner would silently pick one.
+    """
+    if not (inline_mappings and stanza_mappings):
+        return None
+
+    def _shape(mappings):
+        return sorted((m["rear_port"], m["front_port_position"], m["rear_port_position"]) for m in mappings)
+
+    for name in set(inline_mappings) | set(stanza_mappings):
+        inline = _shape(inline_mappings.get(name, []))
+        stanza = _shape(stanza_mappings.get(name, []))
+        if inline != stanza:
+            return (
+                f"Error: front port '{name}' has conflicting mapping definitions "
+                f"(inline: {inline}, port-mappings stanza: {stanza})"
+            )
+    return None
+
+
 def normalize_port_mappings(data):
     """Normalize port mapping definitions in a parsed YAML device/module type dict.
 
@@ -320,27 +365,14 @@ def normalize_port_mappings(data):
 
     # --- Old inline format ---
     # Collect rear_port references declared directly on front-port entries.
-    inline_mappings: dict = {}  # {front_port_name: [mapping_dict, ...]}
-    for fp in front_ports:
-        rp_name = fp.get("rear_port")
-        if rp_name is None:
-            continue
-        fp_name = fp.get("name")
-        if rear_ports_declared and rp_name not in rear_by_name:
-            return f"Error: front-port '{fp_name}' references unknown rear_port '{rp_name}'"
-        rp_pos = fp.pop("rear_port_position", 1)
-        fp.pop("rear_port")
-        inline_mappings.setdefault(fp_name, []).append(
-            {
-                "rear_port": rp_name,
-                "front_port_position": 1,
-                "rear_port_position": rp_pos,
-            }
-        )
+    inline_mappings, error = _collect_inline_mappings(front_ports, rear_by_name, rear_ports_declared)
+    if error:
+        return error
 
     # --- New port-mappings stanza ---
     stanza_mappings: dict = {}  # {front_port_name: [mapping_dict, ...]}
-    if "port-mappings" in data:
+    stanza_present = "port-mappings" in data
+    if stanza_present:
         for entry in port_mappings_stanza or []:
             fp_name = entry.get("front_port")
             rp_name = entry.get("rear_port")
@@ -359,24 +391,21 @@ def normalize_port_mappings(data):
             )
         del data["port-mappings"]
 
-    # --- Conflict detection ---
-    # Accept both formats simultaneously only when they describe identical mappings.
-    if inline_mappings and stanza_mappings:
-        all_names = set(inline_mappings) | set(stanza_mappings)
-        for name in all_names:
-            inline = sorted(
-                (m["rear_port"], m["front_port_position"], m["rear_port_position"])
-                for m in inline_mappings.get(name, [])
+    conflict = _conflicting_mapping(inline_mappings, stanza_mappings)
+    if conflict:
+        return conflict
+
+    # An explicitly empty stanza states there are no mappings.  An absent key states nothing,
+    # so only the first may clear what NetBox already holds.
+    if stanza_present and not stanza_mappings:
+        if inline_mappings:
+            return (
+                "Error: port-mappings is empty but front port(s) "
+                f"{sorted(inline_mappings)} still declare an inline rear_port"
             )
-            stanza = sorted(
-                (m["rear_port"], m["front_port_position"], m["rear_port_position"])
-                for m in stanza_mappings.get(name, [])
-            )
-            if inline != stanza:
-                return (
-                    f"Error: front port '{name}' has conflicting mapping definitions "
-                    f"(inline: {inline}, port-mappings stanza: {stanza})"
-                )
+        for fp in front_ports:
+            fp["_mappings"] = []
+        return None
 
     effective = stanza_mappings if stanza_mappings else inline_mappings
     for fp_name, mappings in effective.items():

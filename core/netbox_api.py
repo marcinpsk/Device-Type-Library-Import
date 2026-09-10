@@ -2275,10 +2275,18 @@ class _FrontPortRecordWithMappings:
         else:
             # NetBox < 4.5: rear_port_position is a direct scalar field
             rp_pos = getattr(record, "rear_port_position", None)
+            # The pre-4.5 query asks for rear_port { id name }; keeping the name is what lets
+            # a move to a different rear port be seen at all.
+            legacy_rp = getattr(record, "rear_port", None)
+            legacy_name = (
+                (legacy_rp.get("name") if isinstance(legacy_rp, dict) else getattr(legacy_rp, "name", None))
+                if legacy_rp is not None
+                else None
+            )
             canonical = (
                 [
                     {
-                        "rear_port_name": None,
+                        "rear_port_name": legacy_name,
                         "front_port_position": 1,
                         "rear_port_position": rp_pos,
                     }
@@ -2547,7 +2555,11 @@ class DeviceTypes:
                 update_data["rear_port"] = None
                 update_data["rear_port_position"] = None
                 return
-            first = next(iter(new_mappings))
+            if len(new_mappings) > 1:
+                self._log_component_error(
+                    f'Multiple mappings for front port "{comp_name}" on NetBox < 4.5: only first mapping applied'
+                )
+            first = sorted(new_mappings)[0]
             if len(first) != 3:
                 # Legacy NetBox (<4.5): ChangeDetector emits 2-tuples (fp_pos, rp_pos)
                 # because rear port names are unavailable via the GraphQL API.
@@ -2917,7 +2929,7 @@ class DeviceTypes:
                 else:
                     if len(resolved) > 1:
                         ctx = f" (Context: {context})" if context else ""
-                        self.handle.log(
+                        self._log_component_error(
                             f'Multiple mappings for {label} "{port["name"]}" on NetBox < 4.5: '
                             f"only first mapping applied{ctx}"
                         )
