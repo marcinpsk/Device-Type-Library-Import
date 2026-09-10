@@ -518,7 +518,10 @@ class ChangeDetector:
                     # GraphQL response lacked both mappings and rear_port_position;
                     # treat as unmanaged to avoid a false COMPONENT_CHANGED.
                     continue
-                has_names = any(m.get("rear_port_name") is not None for m in canonical)
+                # The wrapper records the model it read; fall back to inference only for a
+                # caller that did not wrap the record.
+                m2m = getattr(netbox_comp, "_mappings_m2m", None)
+                has_names = m2m if m2m is not None else any(m.get("rear_port_name") is not None for m in canonical)
                 if has_names:
                     # NetBox >= 4.5: compare with rear port names
                     netbox_set: frozenset = frozenset(

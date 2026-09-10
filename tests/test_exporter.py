@@ -1650,3 +1650,50 @@ class TestModuleBayPositionWarning:
         self._write(tmp_path, item)
 
         assert "Sub 0" in capsys.readouterr().out
+
+
+class TestUnqueriedRelationsSurviveTheExport:
+    """A pre-4.7 server never returns module_bay_types, so the export must not strip it."""
+
+    @staticmethod
+    def _item(repo_yaml, serialized):
+        return ExportItem(
+            kind="device-type",
+            nb_record=_make_dt(),
+            repo_yaml=repo_yaml,
+            serialized=serialized,
+            reason="differs",
+            mfr_name="Juniper",
+            filename="mx304.yaml",
+            manifest_key="Juniper/mx304",
+        )
+
+    def _write(self, tmp_path, item, supported):
+        exporter = Exporter(_make_settings(tmp_path), _make_handle(), str(tmp_path / "extra"), True, None)
+        exporter.graphql.supports_module_bay_types = supported
+        exporter._get_module_image_details = lambda: {}
+        exporter._write_export_items([item], {}, tmp_path / "manifest.json", None)
+        return yaml.safe_load((tmp_path / "extra" / "device-types" / "Juniper" / "mx304.yaml").read_text())
+
+    def test_a_bay_relation_survives_when_the_server_cannot_return_it(self, tmp_path):
+        """Only the description changed; the relation must not be collateral damage."""
+        repo = {
+            "model": "MX304",
+            "description": "old",
+            "module-bays": [{"name": "RE0", "position": "0", "module_bay_types": ["MX304-RE"]}],
+        }
+        serialized = {"model": "MX304", "description": "new", "module-bays": [{"name": "RE0", "position": "0"}]}
+
+        written = self._write(tmp_path, self._item(repo, serialized), supported=False)
+
+        assert written["description"] == "new", "the real change still lands"
+        assert written["module-bays"][0]["module_bay_types"] == ["MX304-RE"]
+
+    def test_a_server_that_can_return_it_stays_authoritative(self, tmp_path):
+        """On 4.7 an absent relation means NetBox cleared it, so it must not be resurrected."""
+        repo = {"model": "MX304", "module-bays": [{"name": "RE0", "module_bay_types": ["MX304-RE"]}]}
+        serialized = {"model": "MX304", "description": "new", "module-bays": [{"name": "RE0"}]}
+
+        written = self._write(tmp_path, self._item(repo, serialized), supported=True)
+
+        assert "module_bay_types" not in written["module-bays"][0]

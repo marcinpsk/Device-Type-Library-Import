@@ -321,6 +321,8 @@ class TestUnreadableCatalogDirectory:
         """The owner-scoped entry would vanish and the name would resolve to Generic instead."""
         import os
 
+        if not hasattr(os, "geteuid"):
+            pytest.skip("no POSIX ownership, so the permission bits mean nothing here")
         if os.geteuid() == 0:
             pytest.skip("root ignores the permission bits this test relies on")
 

@@ -14,6 +14,7 @@ from typing import Any, List, Optional, Sequence
 import requests
 import yaml
 
+from core.component_registry import COMPONENT_TYPES, MODULE_TYPE_RELATIONS
 from core.export_manifest import (
     is_entry_fresh,
     load_manifest,
@@ -139,6 +140,40 @@ def _normalize_for_compare(obj: Any) -> Any:
 def _yaml_equal(a: dict, b: dict) -> bool:
     """Return True when *a* and *b* are semantically equal YAML dicts."""
     return _normalize_for_compare(a) == _normalize_for_compare(b)
+
+
+def _relation_names() -> set:
+    """Every relation key the registry knows, so this does not become a second source."""
+    return {relation for component in COMPONENT_TYPES for relation in component.relations} | set(MODULE_TYPE_RELATIONS)
+
+
+def _carry_unqueried_relations(repo_yaml: dict, serialized: dict) -> dict:
+    """Return *serialized* with relations the server never answered for taken from the repo.
+
+    Below NetBox 4.7 module_bay_types is not queried at all, so its absence means "not asked",
+    not "cleared".  Writing NetBox's answer as it stands would delete the restriction from
+    every definition the export touches for any other reason.
+    """
+    relations = _relation_names()
+    result = dict(serialized)
+    for relation in relations:
+        if relation in repo_yaml and relation not in result:
+            result[relation] = repo_yaml[relation]
+    for key, repo_value in repo_yaml.items():
+        if not isinstance(repo_value, list) or not isinstance(result.get(key), list):
+            continue
+        by_name = {e.get("name"): e for e in repo_value if isinstance(e, dict)}
+        merged = []
+        for entry in result[key]:
+            if isinstance(entry, dict):
+                repo_entry = by_name.get(entry.get("name"))
+                if isinstance(repo_entry, dict):
+                    carried = {r: repo_entry[r] for r in relations if r in repo_entry and r not in entry}
+                    if carried:
+                        entry = {**entry, **carried}
+            merged.append(entry)
+        result[key] = merged
+    return result
 
 
 def _repo_supersedes(repo_yaml: dict, nb_serialized: dict) -> bool:
@@ -456,15 +491,15 @@ class Exporter:
             # top-level fields (e.g. comments, profile) that NetBox does not return
             # in its serialized output.  Component lists are left as NB authoritative.
             to_write = item.serialized
+            if item.repo_yaml and not self.graphql.supports_module_bay_types:
+                to_write = _carry_unqueried_relations(item.repo_yaml, to_write)
             if item.reason == "differs" and item.repo_yaml:
                 # Only preserve scalar/metadata repo fields not present in the NB output.
                 # Exclude list-valued keys (component sections such as interfaces, power-ports,
                 # console-ports, etc.) so that NB remains authoritative for all components.
-                extra = {
-                    k: v for k, v in item.repo_yaml.items() if k not in item.serialized and not isinstance(v, list)
-                }
+                extra = {k: v for k, v in item.repo_yaml.items() if k not in to_write and not isinstance(v, list)}
                 if extra:
-                    to_write = {**item.serialized, **extra}
+                    to_write = {**to_write, **extra}
             written = self._write_yaml(dest, to_write)
             if not written:
                 skipped_overwrite += 1

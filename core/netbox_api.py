@@ -2241,7 +2241,7 @@ class _FrontPortRecordWithMappings:
     All other attribute accesses are forwarded to the underlying record.
     """
 
-    __slots__ = ("_record", "_mappings_canonical")
+    __slots__ = ("_record", "_mappings_canonical", "_mappings_m2m")
 
     def __init__(self, record):
         """Wrap *record* and pre-compute a canonical mappings list for ChangeDetector compatibility.
@@ -2287,6 +2287,10 @@ class _FrontPortRecordWithMappings:
                 else None  # Both mappings and rear_port_position absent; skip comparison.
             )
         object.__setattr__(self, "_mappings_canonical", canonical)
+        # Which model the record came from, recorded rather than inferred: an empty M2M list
+        # carries no names to infer from, and reading it as pre-4.5 drops the rear port name
+        # the patch needs.
+        object.__setattr__(self, "_mappings_m2m", mappings_raw is not None)
 
     def __getattr__(self, name):
         """Delegate attribute access to the wrapped record."""

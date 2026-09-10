@@ -28,7 +28,12 @@ def _sends_token_in_cleartext(url):
     """Return True when *url* would send the API token over plain HTTP off this host."""
     # requests treats a backslash in the authority as a delimiter and urlparse does not, so
     # "http://10.0.0.1\\@localhost" would otherwise look like loopback and skip the notice.
-    parsed = urlparse(str(url or "").strip().replace("\\", "/"))
+    try:
+        parsed = urlparse(str(url or "").strip().replace("\\", "/"))
+    except ValueError:
+        # urlparse rejects some authorities outright. An authority this tool cannot read is
+        # also one it cannot clear as loopback, and a notice must never abort the run.
+        return True
     if parsed.scheme != "http":
         return False
     host = (parsed.hostname or "").casefold()

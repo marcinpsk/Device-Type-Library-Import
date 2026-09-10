@@ -185,3 +185,9 @@ class TestCleartextCheckMatchesWhatRequestsWillDo:
         config = _resolve(NETBOX_URL="http://198.18.0.1\\@localhost")
 
         assert any("NETBOX_URL" in notice for notice in config.notices), config.notices
+
+    def test_an_unparseable_url_is_reported_not_raised(self):
+        """Urlparse raises on some authorities; an advisory notice must not abort the run."""
+        config = _resolve(NETBOX_URL="http://user[foo]@198.18.0.1")
+
+        assert any("NETBOX_URL" in notice for notice in config.notices), config.notices
