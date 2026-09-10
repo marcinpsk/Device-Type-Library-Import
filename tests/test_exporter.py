@@ -1613,7 +1613,7 @@ class TestModuleBayPositionWarning:
     def _write(tmp_path, item):
         """Drive the real write path with a real LogHandler, which prints to stdout."""
         exporter = Exporter(_make_settings(tmp_path), LogHandler(False), str(tmp_path / "extra"), False, None)
-        exporter._get_module_image_details = lambda: {}
+        exporter._get_module_image_details = dict
         exporter._write_export_items([item], {}, tmp_path / "manifest.json", None)
 
     def test_a_bay_without_a_position_is_named_in_the_log(self, tmp_path, capsys):
@@ -1676,7 +1676,7 @@ class TestUnqueriedRelationsSurviveTheExport:
     def _write(self, tmp_path, item, supported):
         exporter = Exporter(_make_settings(tmp_path), _make_handle(), str(tmp_path / "extra"), True, None)
         exporter.graphql.supports_module_bay_types = supported
-        exporter._get_module_image_details = lambda: {}
+        exporter._get_module_image_details = dict
         exporter._write_export_items([item], {}, tmp_path / "manifest.json", None)
         return yaml.safe_load((tmp_path / "extra" / "device-types" / "Juniper" / "mx304.yaml").read_text())
 

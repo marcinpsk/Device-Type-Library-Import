@@ -1827,7 +1827,8 @@ class TestAnExplicitlyEmptyStanza:
 
         result = normalize_port_mappings(data)
 
-        assert result is not None and result.startswith("Error:"), result
+        assert result is not None, "an empty stanza beside an inline linkage must not pass silently"
+        assert result.startswith("Error:"), result
 
     def test_no_stanza_at_all_still_leaves_mappings_unmanaged(self):
         """An absent key must keep meaning "no opinion", or every file would clear its mappings."""

@@ -549,7 +549,8 @@ def test_update_components_legacy_truncation_is_reported(
     dt.update_components({}, 1, changes, parent_type="device")
 
     logged = " ".join(str(c) for c in mock_handle.log.call_args_list)
-    assert "FP1" in logged and "4.5" in logged, f"truncation must be reported, got: {logged}"
+    assert "FP1" in logged, f"truncation must name the port, got: {logged}"
+    assert "4.5" in logged, f"truncation must say why, got: {logged}"
 
 
 def test_update_components_legacy_mapping_two_tuple_uses_yaml_fallback(
