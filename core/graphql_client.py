@@ -212,12 +212,17 @@ class NetBoxGraphQLClient:
         try:
             response = self._session.get(status_url, timeout=_STATUS_TIMEOUT_SECONDS)
             response.raise_for_status()
-            version = response.json().get("netbox-version", "")
+            payload = response.json()
         except requests.RequestException as exc:
             raise GraphQLError(f"Could not read {status_url}: {exc}{_response_body_detail(exc.response)}") from exc
         except ValueError as exc:
             # A proxy error page answers 200 with HTML, so the body is not JSON.
             raise GraphQLError(f"Invalid JSON from {status_url}: {exc}") from exc
+        # Reading an absent version as "" would answer "unsupported" for a 4.7 server and
+        # export without the relation, so demand the field rather than defaulting it.
+        version = payload.get("netbox-version") if isinstance(payload, dict) else None
+        if not isinstance(version, str) or not version.strip():
+            raise GraphQLError(f"No netbox-version in the status payload from {status_url}: {payload!r}")
         self.supports_module_bay_types = supports_module_bay_types(version)
         return self.supports_module_bay_types
 

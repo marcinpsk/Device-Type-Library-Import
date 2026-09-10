@@ -1626,7 +1626,7 @@ class NetBox:
                 continue
             related = netbox_value if isinstance(netbox_value, (list, tuple)) else []
             declared = module_type[field]
-            if not isinstance(declared, list) or any(not isinstance(x, str) or not x for x in declared):
+            if not isinstance(declared, list) or any(not isinstance(x, str) or not x.strip() for x in declared):
                 # Malformed or bare key: leave the relation unmanaged rather than clear it.
                 continue
             wanted = sorted(set(declared))

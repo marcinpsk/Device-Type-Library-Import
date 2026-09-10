@@ -26,7 +26,9 @@ _DEFAULT_REPO_PATH = f"{os.path.dirname(os.path.dirname(os.path.realpath(__file_
 
 def _sends_token_in_cleartext(url):
     """Return True when *url* would send the API token over plain HTTP off this host."""
-    parsed = urlparse(str(url or "").strip())
+    # requests treats a backslash in the authority as a delimiter and urlparse does not, so
+    # "http://10.0.0.1\\@localhost" would otherwise look like loopback and skip the notice.
+    parsed = urlparse(str(url or "").strip().replace("\\", "/"))
     if parsed.scheme != "http":
         return False
     host = (parsed.hostname or "").casefold()

@@ -45,8 +45,12 @@ def _relation_properties(comp_type):
 
 
 def _is_relation_list(value):
-    """Return True when *value* is a list of non-empty strings, the only shape a reference takes."""
-    return isinstance(value, list) and all(isinstance(item, str) and item for item in value)
+    """Return True when *value* is a list of non-empty strings, the only shape a reference takes.
+
+    Blank is checked after stripping, matching the catalog: accepting "   " here only defers
+    the rejection to the write path, where it skips the whole component's update.
+    """
+    return isinstance(value, list) and all(isinstance(item, str) and item.strip() for item in value)
 
 
 def _relation_change(prop, yaml_comp, netbox_comp, catalog=None, manufacturer=None, handle=None):

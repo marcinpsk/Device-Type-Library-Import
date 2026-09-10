@@ -114,6 +114,13 @@ def mock_graphql_requests(request):
             }
         }
         mock_session.post.return_value = response
+        # /api/status/ is a GET; without this the probe reads a synthesized MagicMock and
+        # any shape check on the payload sees something no NetBox would ever return.
+        status = MagicMock()
+        status.status_code = 200
+        status.raise_for_status = MagicMock()
+        status.json.return_value = {"netbox-version": "4.7.0"}
+        mock_session.get.return_value = status
         yield mock_session.post
 
 

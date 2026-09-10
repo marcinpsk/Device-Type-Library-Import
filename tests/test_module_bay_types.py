@@ -165,6 +165,17 @@ class TestCatalogReading:
         cat, _ = catalog(root=tmp_path)
         assert len(cat.ids_for("generic", ["SFP"])) == 1
 
+    def test_a_yaml_document_that_is_not_a_mapping_is_refused(self, tmp_path, catalog):
+        """Silently skipping it shrinks the catalog, and a Generic entry then answers instead."""
+        write_module_bay_type(tmp_path, "Generic", "sfp", "SFP")
+        directory = tmp_path / "module-bay-types" / "Juniper"
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "sfp.yaml").write_text("- name: SFP\n  slug: sfp\n", encoding="utf-8")
+        cat, _ = catalog(root=tmp_path)
+
+        with pytest.raises(ModuleBayCatalogError):
+            cat.identities_for("Juniper", ["SFP"])
+
     def test_an_entry_missing_a_required_field_is_refused_at_load(self, tmp_path, catalog):
         """A half-written entry must fail as a catalog error, not as a KeyError mid-run."""
         directory = tmp_path / "module-bay-types" / "Generic"
@@ -300,3 +311,28 @@ class TestACatalogFailureIsNotAPerComponentSkip:
 
         with pytest.raises(ModuleBayTypeError):
             resolver.identities_for("Juniper", ["NOT-IN-CATALOG"])
+
+
+@pytest.mark.real_http
+class TestUnreadableCatalogDirectory:
+    """os.walk swallows a directory it cannot read, which silently shrinks the catalog."""
+
+    def test_an_unreadable_vendor_directory_is_not_silently_skipped(self, tmp_path, catalog):
+        """The owner-scoped entry would vanish and the name would resolve to Generic instead."""
+        import os
+
+        if os.geteuid() == 0:
+            pytest.skip("root ignores the permission bits this test relies on")
+
+        root = tmp_path / "library"
+        write_module_bay_type(root, "Juniper", "qsfp-dd", "QSFP-DD", "the owner-scoped entry")
+        write_module_bay_type(root, "Generic", "qsfp-dd", "QSFP-DD", "the fallback entry")
+        vendor_dir = root / "module-bay-types" / "Juniper"
+        os.chmod(vendor_dir, 0o000)
+        try:
+            resolver, _server = catalog(root=root)
+
+            with pytest.raises(ModuleBayCatalogError):
+                resolver.identities_for("Juniper", ["QSFP-DD"])
+        finally:
+            os.chmod(vendor_dir, 0o755)

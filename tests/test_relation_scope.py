@@ -138,6 +138,15 @@ class TestUnmanagedRelations:
         netbox_comp = NetBoxBay("Slot 0", [Related("X", "acme-x", "acme")])
         assert _changes(detector, {"name": "Slot 0", "module_bay_types": [{"name": "X"}]}, netbox_comp) == []
 
+    def test_a_whitespace_only_entry_leaves_the_relation_alone(self, two_scope_catalog):
+        """The catalog rejects it later, which would skip the whole component's update."""
+        handle = Handle()
+        detector = _detector(ModuleBayTypeCatalog(None, two_scope_catalog, Handle()), handle)
+        netbox_comp = NetBoxBay("Slot 0", [Related("X", "acme-x", "acme")])
+
+        assert _changes(detector, {"name": "Slot 0", "module_bay_types": ["   "]}, netbox_comp) == []
+        assert any("module_bay_types" in line and "Slot 0" in line for line in handle.lines)
+
     def test_a_field_the_query_did_not_return_is_skipped(self, two_scope_catalog):
         """Reading an absent field as empty would report a change on every run."""
         detector = _detector(ModuleBayTypeCatalog(None, two_scope_catalog, Handle()))

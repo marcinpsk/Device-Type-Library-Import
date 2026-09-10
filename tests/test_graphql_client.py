@@ -202,6 +202,44 @@ class TestNetBoxGraphQLClient:
             server.server_close()
 
     @pytest.mark.real_http
+    @pytest.mark.parametrize(
+        ("body", "why"),
+        [
+            (b"[]", "a JSON list has no .get, so the probe raised a bare AttributeError"),
+            (b"{}", "no netbox-version read as '' and silently disabled the relation"),
+            (b'{"netbox-version": ""}', "an empty version is not a version"),
+            (b'{"netbox-version": null}', "a null version is not a version"),
+        ],
+    )
+    def test_a_wrong_shaped_status_body_fails_the_probe(self, body, why):
+        """Silently deciding 'unsupported' on a 4.7 server exports without the relation."""
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        from core.graphql_client import GraphQLError
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                """Silence the default stderr access log."""
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            client = NetBoxGraphQLClient(f"http://127.0.0.1:{server.server_port}", "tok")
+            with pytest.raises(GraphQLError):
+                client.detect_module_bay_type_support()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @pytest.mark.real_http
     def test_the_version_probe_decides_whether_the_relation_may_be_selected(self):
         """Export has no pynetbox client, so it asks NetBox here and both sides use compat."""
         from helpers import FakeNetBox

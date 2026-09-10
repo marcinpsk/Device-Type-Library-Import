@@ -175,3 +175,13 @@ class TestInsecureNetboxUrlIsReported:
         config = _resolve(NETBOX_URL="https://netbox.example.com")
 
         assert not any("NETBOX_URL" in notice for notice in config.notices), config.notices
+
+
+class TestCleartextCheckMatchesWhatRequestsWillDo:
+    """The notice is worthless if the URL it parses is not the URL the token is sent to."""
+
+    def test_a_backslash_authority_is_not_treated_as_loopback(self):
+        """The host reads as localhost here, but requests targets the address before the backslash."""
+        config = _resolve(NETBOX_URL="http://198.18.0.1\\@localhost")
+
+        assert any("NETBOX_URL" in notice for notice in config.notices), config.notices

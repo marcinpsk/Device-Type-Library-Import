@@ -153,8 +153,16 @@ class ModuleBayTypeCatalog:
 
     def _read_catalog(self):
         """Walk the catalog directory and return every entry, indexed by (manufacturer, name)."""
+
+        def _unreadable(exc):
+            # os.walk skips a directory it cannot read; a short catalog resolves to the
+            # wrong entry rather than failing, so make the traversal error terminal.
+            raise ModuleBayCatalogError(
+                f"Module bay type catalog directory {exc.filename!r} could not be read: {exc}"
+            ) from exc
+
         entries = {}
-        for root, _dirs, files in os.walk(self._catalog_dir):
+        for root, _dirs, files in os.walk(self._catalog_dir, onerror=_unreadable):
             for filename in sorted(files):
                 if not filename.endswith((".yaml", ".yml")):
                     continue
@@ -166,8 +174,12 @@ class ModuleBayTypeCatalog:
                     raise ModuleBayCatalogError(
                         f"Module bay type catalog file {path!r} could not be read: {exc}"
                     ) from exc
+                if data is None:
+                    continue  # an empty or comment-only document is not an entry
                 if not isinstance(data, dict):
-                    continue
+                    raise ModuleBayCatalogError(
+                        f"Module bay type in {path!r} is not a mapping, got {type(data).__name__}"
+                    )
                 # Reject a half-written entry here; the readers index on name and dereference slug.
                 invalid = [
                     field
