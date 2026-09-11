@@ -1,6 +1,7 @@
 """NetBox REST and GraphQL API client for importing device and module type libraries."""
 
 from collections import Counter
+from dataclasses import replace
 from contextlib import contextmanager
 from functools import lru_cache
 import hashlib
@@ -432,6 +433,42 @@ def _image_dir_for_yaml(src_file: str, src_segment: str, dst_segment: str) -> "P
 
 
 # from pynetbox import RequestError as APIRequestError
+
+
+def _is_mapping_removal(prop_change):
+    """Return True when a ``_mappings`` change only takes mappings away."""
+    return (
+        prop_change.property_name == "_mappings"
+        and isinstance(prop_change.old_value, (set, frozenset))
+        and isinstance(prop_change.new_value, (set, frozenset))
+        and prop_change.new_value < prop_change.old_value
+    )
+
+
+def _without_gated_mapping_clears(changes, remove_components, handle=None):
+    """Drop mapping clears unless removal is enabled.
+
+    Clearing a front-to-rear linkage deletes data, but it reaches NetBox as a property
+    change rather than a COMPONENT_REMOVED, so it would otherwise ignore the flag and
+    contradict the "will not remove components" notice.  Filtering here rather than at the
+    write boundary keeps the actionable count and the applied changes in agreement.
+    """
+    if remove_components:
+        return changes
+    kept, gated = [], []
+    for change in changes:
+        remaining = [pc for pc in change.property_changes if not _is_mapping_removal(pc)]
+        if len(remaining) == len(change.property_changes):
+            kept.append(change)
+            continue
+        gated.append(change.component_name)
+        if remaining:
+            kept.append(replace(change, property_changes=remaining))
+    if gated and handle is not None:
+        handle.log(
+            f"Kept existing port mappings on {sorted(gated)}; use --remove-components with --update to clear them."
+        )
+    return kept
 
 
 def _count_actionable_component_changes(changes, remove_components):
@@ -1071,7 +1108,10 @@ class NetBox:
             # Apply component changes
             component_errors = []
             if dt_change.component_changes:
-                actionable_count = _count_actionable_component_changes(dt_change.component_changes, remove_components)
+                component_changes = _without_gated_mapping_clears(
+                    dt_change.component_changes, remove_components, self.handle
+                )
+                actionable_count = _count_actionable_component_changes(component_changes, remove_components)
                 before_components = (
                     self.counter["components_updated"],
                     self.counter["components_added"],
@@ -1081,11 +1121,11 @@ class NetBox:
                     self.device_types.update_components(
                         device_type,
                         dt.id,
-                        dt_change.component_changes,
+                        component_changes,
                         parent_type="device",
                     )
                     if remove_components:
-                        self.device_types.remove_components(dt.id, dt_change.component_changes, parent_type="device")
+                        self.device_types.remove_components(dt.id, component_changes, parent_type="device")
                 after_components = (
                     self.counter["components_updated"],
                     self.counter["components_added"],
@@ -1754,6 +1794,7 @@ class NetBox:
         self.device_types.ensure_components_ready(manufacturer_slug=curr_mt["manufacturer"]["slug"])
         identity = f"{module_type_res.manufacturer.name}/{module_type_res.model}"
         component_changes = self.change_detector._compare_components(curr_mt, module_type_res.id, parent_type="module")
+        component_changes = _without_gated_mapping_clears(component_changes, remove_components, self.handle)
         if component_changes:
             actionable_count = _count_actionable_component_changes(component_changes, remove_components)
             before_updated = self.counter["components_updated"]

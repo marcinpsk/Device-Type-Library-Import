@@ -1,5 +1,6 @@
 import os
 import threading
+from types import SimpleNamespace
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -7570,3 +7571,86 @@ def test_netbox_below_minimum_version_is_refused_with_a_clear_message(mock_setti
         message = str(exc.value)
         assert "4.3" in message, f"{version}: the message must name the minimum"
         assert version in message, f"{version}: the message must name what was found"
+
+
+class TestAMappingClearNeedsTheRemovalFlag:
+    """Clearing a front-port mapping removes data, so it obeys --remove-components.
+
+    The tool tells the user "will not remove components from existing models" when the flag
+    is off. A mapping clear reaches NetBox as a COMPONENT_CHANGED property change, so it
+    bypassed that promise and cleared the linkage under a plain --update.
+    """
+
+    def _module_type_losing_a_mapping(self, nb):
+        """Record an existing FP1 mapped to RP1, and return YAML whose stanza omits it."""
+        existing_module = MagicMock()
+        existing_module.id = 55
+        existing_module.manufacturer.name = "Cisco"
+        existing_module.model = "CM-Map"
+
+        existing_fp = SimpleNamespace(
+            name="FP1",
+            _mappings_canonical=[{"rear_port_name": "RP1", "front_port_position": 1, "rear_port_position": 1}],
+            _mappings_m2m=True,
+        )
+        nb.device_types.components.record("front_port_templates", "module", 55, {"FP1": existing_fp})
+        _mark_cache_ready(nb.device_types)
+
+        curr_mt = {
+            "manufacturer": {"slug": "cisco"},
+            "model": "CM-Map",
+            "slug": "cm-map",
+            # normalize_port_mappings assigns [] to a front port the stanza omits
+            "front-ports": [{"name": "FP1", "type": "8p8c", "_mappings": []}],
+        }
+        return {"cisco": {"CM-Map": existing_module}}, curr_mt
+
+    def _mapping_clears_sent(self, nb):
+        """Return the _mappings property changes that reached update_components."""
+        from core.change_detector import ChangeType
+
+        sent = []
+        for call_args in nb.device_types.update_components.call_args_list:
+            for change in call_args.args[2]:
+                if change.change_type is not ChangeType.COMPONENT_CHANGED:
+                    continue
+                sent += [pc for pc in change.property_changes if pc.property_name == "_mappings"]
+        return sent
+
+    @pytest.mark.parametrize("remove_components, expected", [(False, 0), (True, 1)])
+    def test_the_flag_decides_whether_a_clear_reaches_netbox(
+        self, mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle, remove_components, expected
+    ):
+        """Without the flag the clear must never be sent; with it, it must."""
+        mock_pynetbox.api.return_value.version = "4.3"
+        nb = NetBox(mock_settings, mock_handle)
+        all_module_types, curr_mt = self._module_type_losing_a_mapping(nb)
+        nb.device_types.update_components = MagicMock()
+        nb.device_types.remove_components = MagicMock()
+
+        nb._process_single_module_type(
+            curr_mt, "test.yaml", all_module_types, {}, only_new=False, remove_components=remove_components
+        )
+
+        clears = self._mapping_clears_sent(nb)
+        assert [pc.new_value for pc in clears] == [frozenset()] * expected
+
+    def test_a_changed_mapping_still_applies_without_the_flag(
+        self, mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle
+    ):
+        """Only removal is gated. Repointing FP1 to another rear port is an ordinary update."""
+        mock_pynetbox.api.return_value.version = "4.3"
+        nb = NetBox(mock_settings, mock_handle)
+        all_module_types, curr_mt = self._module_type_losing_a_mapping(nb)
+        curr_mt["front-ports"][0]["_mappings"] = [
+            {"rear_port": "RP2", "front_port_position": 1, "rear_port_position": 1}
+        ]
+        nb.device_types.update_components = MagicMock()
+        nb.device_types.remove_components = MagicMock()
+
+        nb._process_single_module_type(
+            curr_mt, "test.yaml", all_module_types, {}, only_new=False, remove_components=False
+        )
+
+        clears = self._mapping_clears_sent(nb)
+        assert [pc.new_value for pc in clears] == [frozenset({("RP2", 1, 1)})]
