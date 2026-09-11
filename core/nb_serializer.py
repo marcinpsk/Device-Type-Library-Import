@@ -4,10 +4,9 @@ Direction: NetBox record → Python dict suitable for ``yaml.dump()`` and
 comparison against existing repo YAML files.
 """
 
-import warnings
 from typing import Any, Sequence
 
-from core.component_registry import BY_ENDPOINT, COMPONENT_TYPES
+from core.component_registry import BY_ENDPOINT, COMPONENT_TYPES, MODULE_TYPE_RELATIONS
 
 # Row order sets the component key order of the serialized YAML.
 COMPONENT_ENDPOINT_NAMES = [component.endpoint for component in COMPONENT_TYPES]
@@ -26,7 +25,6 @@ _OMIT_IF_EQUAL = {
     "feed_leg": None,
     "maximum_draw": None,
     "allocated_draw": None,
-    "positions": 1,  # rear port default; include only when > 1
 }
 
 # Device type scalar field order for output.
@@ -125,48 +123,103 @@ def _serialize_component(record: Any, fields: Sequence[str]) -> dict:
     return result
 
 
-def _serialize_front_port(record: Any) -> dict:
-    """Serialize a front port template, including rear_port mapping."""
-    result = _serialize_component(record, BY_ENDPOINT["front_port_templates"].fields)
-    mappings = getattr(record, "mappings", None) or []
-    if mappings:
-        if len(mappings) > 1:
-            port_name = getattr(record, "name", "<unknown>")
-            warnings.warn(
-                f"Front port '{port_name}' has {len(mappings)} mappings; "
-                "only the first will be exported. "
-                "Full multi-mapping support requires DTL schema update (see issue #78).",
-                UserWarning,
-                stacklevel=4,
-            )
-        m = mappings[0]
-        rear_port = getattr(m, "rear_port", None)
-        if rear_port:
-            result["rear_port"] = rear_port.name
-        rear_pos = getattr(m, "rear_port_position", None)
-        rear_pos = _coerce_numeric(rear_pos)
-        if rear_pos is not None and rear_pos > 1:
-            result["rear_port_position"] = rear_pos
-    else:
-        # Legacy: pre-4.5 NetBox returns rear_port / rear_port_position as direct scalar fields
-        legacy_rp = getattr(record, "rear_port", None)
-        if legacy_rp:
-            result["rear_port"] = legacy_rp.name
-        legacy_pos = getattr(record, "rear_port_position", None)
-        legacy_pos = _coerce_numeric(legacy_pos)
-        if legacy_pos is not None and legacy_pos > 1:
-            result["rear_port_position"] = legacy_pos
+def _serialize_relations(record: Any, relations: Sequence[str]) -> dict:
+    """Return the catalog name of each related object, which is how YAML names them.
+
+    The names come off the record the query returned, not from the import-side catalog:
+    an export run resolves nothing, so it has no id-to-name mapping of its own.
+
+    An empty relation writes no key.  Emitting an empty list instead would add the key to
+    every bay in the library and make _repo_supersedes report every existing definition as
+    differing, and it tells a fresh import nothing that omitting it does not.
+    """
+    result = {}
+    for relation in relations:
+        names = sorted(
+            name for name in (getattr(item, "name", None) for item in getattr(record, relation, None) or []) if name
+        )
+        if names:
+            result[relation] = names
     return result
+
+
+def _serialize_front_port(record: Any) -> dict:
+    """Serialize a front port template's own fields.
+
+    The rear-port linkage is no longer written here: NetBox 4.5 moved it to a through
+    table and the library schema follows, carrying it in a top-level ``port-mappings``
+    stanza built by :func:`_port_mappings`.
+    """
+    result = _serialize_component(record, BY_ENDPOINT["front_port_templates"].fields)
+    # positions is schema-required but arrived in 4.5, so a pre-4.5 record has none.
+    result.setdefault("positions", 1)
+    return result
+
+
+def _port_mappings(records: list) -> list:
+    """Return the ``port-mappings`` stanza for a type's front port templates.
+
+    Every mapping is written, not just the first: one front port may occupy several
+    positions across rear ports, which is what the through table exists to express.
+
+    A server below 4.5 has no through table and answers with ``rear_port`` and
+    ``rear_port_position`` scalars instead.  Those describe one mapping, so they are
+    written as one entry rather than dropped.
+    """
+    stanza = []
+    for record in sorted(records, key=lambda r: str(getattr(r, "name", "") or "")):
+        name = getattr(record, "name", None)
+        mappings = []
+        for mapping in getattr(record, "mappings", None) or []:
+            rear_port = getattr(mapping, "rear_port", None)
+            if not rear_port:
+                continue
+            mappings.append(
+                {
+                    "front_port": name,
+                    "front_port_position": _coerce_numeric(getattr(mapping, "front_port_position", None)) or 1,
+                    "rear_port": rear_port.name,
+                    "rear_port_position": _coerce_numeric(getattr(mapping, "rear_port_position", None)) or 1,
+                }
+            )
+        stanza.extend(
+            sorted(mappings, key=lambda m: (m["front_port_position"], m["rear_port_position"], m["rear_port"] or ""))
+        )
+        if getattr(record, "mappings", None):
+            continue
+        legacy = getattr(record, "rear_port", None)
+        if legacy:
+            stanza.append(
+                {
+                    "front_port": name,
+                    "front_port_position": 1,
+                    "rear_port": legacy.name,
+                    "rear_port_position": _coerce_numeric(getattr(record, "rear_port_position", None)) or 1,
+                }
+            )
+    return stanza
+
+
+def module_bays_missing_position(serialized: dict) -> list:
+    """Return the names of module bays the library schema would reject.
+
+    NetBox leaves ``position`` blank on a bay that names no physical slot, and a blank
+    string writes no key, but the schema requires one on every module bay.
+    """
+    return [bay.get("name", "?") for bay in serialized.get("module-bays", []) if "position" not in bay]
 
 
 def _serialize_component_list(endpoint_name: str, records: list) -> list:
     """Serialize a list of component template records for a given endpoint."""
+    component = BY_ENDPOINT[endpoint_name]
     out = []
     for record in sorted(records, key=lambda r: str(getattr(r, "name", "") or "")):
         if endpoint_name == "front_port_templates":
-            out.append(_serialize_front_port(record))
+            serialized = _serialize_front_port(record)
         else:
-            out.append(_serialize_component(record, BY_ENDPOINT[endpoint_name].fields))
+            serialized = _serialize_component(record, component.fields)
+        serialized.update(_serialize_relations(record, component.relations))
+        out.append(serialized)
     return out
 
 
@@ -177,6 +230,9 @@ def _add_components(result: dict, type_id: int, components_by_id: dict) -> None:
         records = type_components.get(component.endpoint, [])
         if records:
             result[component.yaml_key] = _serialize_component_list(component.endpoint, records)
+    mappings = _port_mappings(type_components.get("front_port_templates", []))
+    if mappings:
+        result["port-mappings"] = mappings
 
 
 def serialize_device_type(nb_record: Any, components_by_dt_id: dict) -> dict:
@@ -236,6 +292,7 @@ def serialize_module_type(nb_record: Any, components_by_mt_id: dict) -> dict:
         if _should_include(field, val):
             result[field] = val
 
+    result.update(_serialize_relations(nb_record, MODULE_TYPE_RELATIONS))
     _add_components(result, nb_record.id, components_by_mt_id)
     return result
 

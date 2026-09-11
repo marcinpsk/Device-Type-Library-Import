@@ -14,6 +14,7 @@ from typing import Any, List, Optional, Sequence
 import requests
 import yaml
 
+from core.component_registry import COMPONENT_TYPES, MODULE_TYPE_RELATIONS
 from core.export_manifest import (
     is_entry_fresh,
     load_manifest,
@@ -23,6 +24,7 @@ from core.export_manifest import (
 from core.graphql_client import GraphQLError, NetBoxGraphQLClient
 from core.nb_serializer import (
     COMPONENT_ENDPOINT_NAMES,
+    module_bays_missing_position,
     serialize_device_type,
     serialize_module_type,
     serialize_rack_type,
@@ -140,6 +142,40 @@ def _yaml_equal(a: dict, b: dict) -> bool:
     return _normalize_for_compare(a) == _normalize_for_compare(b)
 
 
+def _relation_names() -> set:
+    """Every relation key the registry knows, so this does not become a second source."""
+    return {relation for component in COMPONENT_TYPES for relation in component.relations} | set(MODULE_TYPE_RELATIONS)
+
+
+def _carry_unqueried_relations(repo_yaml: dict, serialized: dict) -> dict:
+    """Return *serialized* with relations the server never answered for taken from the repo.
+
+    Below NetBox 4.7 module_bay_types is not queried at all, so its absence means "not asked",
+    not "cleared".  Writing NetBox's answer as it stands would delete the restriction from
+    every definition the export touches for any other reason.
+    """
+    relations = _relation_names()
+    result = dict(serialized)
+    for relation in relations:
+        if relation in repo_yaml and relation not in result:
+            result[relation] = repo_yaml[relation]
+    for key, repo_value in repo_yaml.items():
+        if not isinstance(repo_value, list) or not isinstance(result.get(key), list):
+            continue
+        by_name = {e.get("name"): e for e in repo_value if isinstance(e, dict)}
+        merged = []
+        for entry in result[key]:
+            if isinstance(entry, dict):
+                repo_entry = by_name.get(entry.get("name"))
+                if isinstance(repo_entry, dict):
+                    carried = {r: repo_entry[r] for r in relations if r in repo_entry and r not in entry}
+                    if carried:
+                        entry = {**entry, **carried}
+            merged.append(entry)
+        result[key] = merged
+    return result
+
+
 def _repo_supersedes(repo_yaml: dict, nb_serialized: dict) -> bool:
     """Return True when *repo_yaml* already contains every field NetBox would write.
 
@@ -161,8 +197,24 @@ def _repo_supersedes(repo_yaml: dict, nb_serialized: dict) -> bool:
             return d
         return {**d, "manufacturer": _canon_mfr_slug(d["manufacturer"])}
 
-    nrepo = _normalize_for_compare(_norm_mfr(repo_yaml))
-    nnb = _normalize_for_compare(_norm_mfr(nb_serialized))
+    # The serializer always writes the schema-required positions; an entry that omits it
+    # means the default, so filling it here keeps those definitions from reading as differing.
+    def _default_positions(d: dict) -> dict:
+        ports = d.get("front-ports")
+        if not isinstance(ports, list):
+            return d
+        filled = [{"positions": 1, **p} if isinstance(p, dict) else p for p in ports]
+        return {**d, "front-ports": filled}
+
+    def _sort_port_mappings(d: dict) -> dict:
+        mappings = d.get("port-mappings")
+        if not isinstance(mappings, list) or not all(isinstance(mapping, dict) for mapping in mappings):
+            return d
+        fields = ("front_port", "front_port_position", "rear_port", "rear_port_position")
+        return {**d, "port-mappings": sorted(mappings, key=lambda m: tuple(str(m.get(field)) for field in fields))}
+
+    nrepo = _sort_port_mappings(_normalize_for_compare(_default_positions(_norm_mfr(repo_yaml))))
+    nnb = _sort_port_mappings(_normalize_for_compare(_default_positions(_norm_mfr(nb_serialized))))
     return _is_subset(nnb, nrepo)
 
 
@@ -240,6 +292,9 @@ class Exporter:
             else " (all vendors)"
         )
         self.handle.log(f"Export-diff: fetching NetBox device/module/rack types{scope}")
+
+        # Decided before the first query: the selection depends on the answer.
+        self.graphql.detect_module_bay_type_support()
 
         # ── Fetch all types from NetBox ──────────────────────────────────────
         by_model, by_slug = self.graphql.get_device_types(manufacturer_slugs=self.vendor_slugs)
@@ -443,15 +498,15 @@ class Exporter:
             # top-level fields (e.g. comments, profile) that NetBox does not return
             # in its serialized output.  Component lists are left as NB authoritative.
             to_write = item.serialized
+            if item.repo_yaml and not self.graphql.supports_module_bay_types:
+                to_write = _carry_unqueried_relations(item.repo_yaml, to_write)
             if item.reason == "differs" and item.repo_yaml:
                 # Only preserve scalar/metadata repo fields not present in the NB output.
                 # Exclude list-valued keys (component sections such as interfaces, power-ports,
                 # console-ports, etc.) so that NB remains authoritative for all components.
-                extra = {
-                    k: v for k, v in item.repo_yaml.items() if k not in item.serialized and not isinstance(v, list)
-                }
+                extra = {k: v for k, v in item.repo_yaml.items() if k not in to_write and not isinstance(v, list)}
                 if extra:
-                    to_write = {**item.serialized, **extra}
+                    to_write = {**to_write, **extra}
             written = self._write_yaml(dest, to_write)
             if not written:
                 skipped_overwrite += 1
@@ -463,6 +518,12 @@ class Exporter:
                 continue
 
             written_count += 1
+            bays = module_bays_missing_position(to_write)
+            if bays:
+                self.handle.log(
+                    f"[yellow]{item.mfr_name}/{item.filename}: module bay(s) {', '.join(bays)} have "
+                    f"no position, which the library schema requires[/yellow]"
+                )
             images_ok = self._download_type_images(item)
             if images_ok:
                 update_entry(manifest, f"{item.kind}s", item.manifest_key, item.nb_record.last_updated)
@@ -624,13 +685,7 @@ class Exporter:
 
         def _fetch_one(endpoint_name):
             if not getattr(_thread_local, "graphql", None):
-                client = NetBoxGraphQLClient(
-                    self.graphql.url,
-                    self.graphql.token,
-                    self.graphql.ignore_ssl,
-                    self.graphql.handle,
-                    self.graphql.DEFAULT_PAGE_SIZE,
-                )
+                client = self.graphql.clone()
                 _thread_local.graphql = client
                 with _clients_lock:
                     _clients.append(client)

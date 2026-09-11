@@ -139,3 +139,55 @@ class TestLocalRepoUrlIgnoresTheBranch:
         config = _resolve(REPO_URL="https://example.com/repo.git", REPO_BRANCH="feature")
 
         assert not any("REPO_BRANCH" in notice for notice in config.notices), config.notices
+
+
+class TestInsecureNetboxUrlIsReported:
+    """The API token travels in an Authorization header, so cleartext transport leaks it."""
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://netbox.example.com",
+            "http://netbox.example.com:8000/",
+            "http://10.0.0.5:8000",
+        ],
+    )
+    def test_http_to_a_remote_host_is_reported(self, url):
+        config = _resolve(NETBOX_URL=url)
+
+        assert any("NETBOX_URL" in notice for notice in config.notices), config.notices
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://localhost:8000",
+            "http://127.0.0.1:8000/",
+            "http://[::1]:8000",
+        ],
+    )
+    def test_http_to_loopback_needs_no_notice(self, url):
+        """A loopback URL never leaves the host, and the integration tests rely on it."""
+        config = _resolve(NETBOX_URL=url)
+
+        assert not any("NETBOX_URL" in notice for notice in config.notices), config.notices
+
+    def test_https_needs_no_notice(self):
+        config = _resolve(NETBOX_URL="https://netbox.example.com")
+
+        assert not any("NETBOX_URL" in notice for notice in config.notices), config.notices
+
+
+class TestCleartextCheckMatchesWhatRequestsWillDo:
+    """The notice is worthless if the URL it parses is not the URL the token is sent to."""
+
+    def test_a_backslash_authority_is_not_treated_as_loopback(self):
+        """The host reads as localhost here, but requests targets the address before the backslash."""
+        config = _resolve(NETBOX_URL="http://198.18.0.1\\@localhost")
+
+        assert any("NETBOX_URL" in notice for notice in config.notices), config.notices
+
+    def test_an_unparseable_url_is_reported_not_raised(self):
+        """Urlparse raises on some authorities; an advisory notice must not abort the run."""
+        config = _resolve(NETBOX_URL="http://user[foo]@198.18.0.1")
+
+        assert any("NETBOX_URL" in notice for notice in config.notices), config.notices

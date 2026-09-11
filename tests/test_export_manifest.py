@@ -93,11 +93,10 @@ class TestIsEntryFresh:
     """Tests for is_entry_fresh function."""
 
     def test_fresh_when_last_updated_matches(self):
-        manifest = {
-            "device-types": {"Nokia/acme-x": {"last_updated": "2024-01-01T00:00:00Z"}},
-            "module-types": {},
-            "rack-types": {},
-        }
+        """Built through update_entry: a hand-written entry cannot carry the schema revision."""
+        manifest = {"device-types": {}, "module-types": {}, "rack-types": {}}
+        update_entry(manifest, "device-types", "Nokia/acme-x", "2024-01-01T00:00:00Z")
+
         assert is_entry_fresh(manifest, "device-types", "Nokia/acme-x", "2024-01-01T00:00:00Z") is True
 
     def test_stale_when_last_updated_differs(self):
@@ -125,3 +124,32 @@ class TestUpdateEntry:
         manifest = {"device-types": {"Nokia/acme-x": {"last_updated": "old"}}, "module-types": {}, "rack-types": {}}
         update_entry(manifest, "device-types", "Nokia/acme-x", "2024-02-01T00:00:00Z")
         assert manifest["device-types"]["Nokia/acme-x"]["last_updated"] == "2024-02-01T00:00:00Z"
+
+
+class TestExportSchemaRevision:
+    """last_updated alone cannot see a change in what the exporter writes."""
+
+    def test_an_entry_from_an_older_exporter_is_not_fresh(self):
+        """The record did not change, but the serialized shape did, so it must be rewritten."""
+        from core.export_manifest import is_entry_fresh
+
+        manifest = {"device-types": {"Acme/x": {"last_updated": "2026-01-01T00:00:00Z"}}}
+
+        assert is_entry_fresh(manifest, "device-types", "Acme/x", "2026-01-01T00:00:00Z") is False
+
+    def test_an_entry_this_exporter_wrote_is_fresh(self):
+        from core.export_manifest import is_entry_fresh, update_entry
+
+        manifest = {"device-types": {}}
+        update_entry(manifest, "device-types", "Acme/x", "2026-01-01T00:00:00Z")
+
+        assert is_entry_fresh(manifest, "device-types", "Acme/x", "2026-01-01T00:00:00Z") is True
+
+    def test_a_changed_record_is_still_not_fresh(self):
+        """The revision must not paper over the timestamp check it sits beside."""
+        from core.export_manifest import is_entry_fresh, update_entry
+
+        manifest = {"device-types": {}}
+        update_entry(manifest, "device-types", "Acme/x", "2026-01-01T00:00:00Z")
+
+        assert is_entry_fresh(manifest, "device-types", "Acme/x", "2026-02-02T00:00:00Z") is False

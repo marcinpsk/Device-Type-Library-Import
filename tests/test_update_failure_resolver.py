@@ -314,57 +314,18 @@ def test_classifier_count_fallback_when_count_query_fails():
     assert res.dependent_devices_count == 5
 
 
-def test_new_filters_uses_device_type_id_key():
-    """new_filters=True must call filter(device_type_id=...) not devicetype_id=...
+def test_the_device_bay_template_lookup_uses_the_supported_filter_key():
+    """The 4.1 rename is below the supported floor, so only device_type_id is ever sent.
 
-    This matters because NetBox >= 4.1 changed the query param name.
-    Passing the wrong key causes pynetbox to silently return ALL templates.
+    The wrong key does not raise: pynetbox silently returns every template, so the
+    classifier would report an unrelated device type as the blocker.
     """
     nb = _make_netbox()
-    classify_device_type_update_failure(
-        SUBDEVICE_ROLE_ERROR_DICT,
-        netbox=nb,
-        device_type_id=99,
-        device_type_yaml={},
-        new_filters=True,
-    )
+    classify_device_type_update_failure(SUBDEVICE_ROLE_ERROR_DICT, netbox=nb, device_type_id=99, device_type_yaml={})
     nb.dcim.device_bay_templates.filter.assert_called_once_with(device_type_id=99)
 
 
-def test_old_filters_uses_devicetype_id_key():
-    """new_filters=False (default) must call filter(devicetype_id=...) for NetBox < 4.1."""
-    nb = _make_netbox()
-    classify_device_type_update_failure(
-        SUBDEVICE_ROLE_ERROR_DICT,
-        netbox=nb,
-        device_type_id=99,
-        device_type_yaml={},
-        new_filters=False,
-    )
-    nb.dcim.device_bay_templates.filter.assert_called_once_with(devicetype_id=99)
-
-
-def test_count_dependent_devices_uses_new_filter_key():
-    """When new_filters=True, dcim.devices must be queried with device_type_id= not devicetype_id=."""
+def test_the_dependent_device_count_uses_the_supported_filter_key():
     nb = _make_netbox(devices=[], device_count=0)
-    classify_device_type_update_failure(
-        SUBDEVICE_ROLE_ERROR_DICT,
-        netbox=nb,
-        device_type_id=77,
-        device_type_yaml={},
-        new_filters=True,
-    )
+    classify_device_type_update_failure(SUBDEVICE_ROLE_ERROR_DICT, netbox=nb, device_type_id=77, device_type_yaml={})
     nb.dcim.devices.filter.assert_called_once_with(device_type_id=77, limit=5)
-
-
-def test_count_dependent_devices_uses_legacy_filter_key():
-    """When new_filters=False (default), dcim.devices must be queried with devicetype_id=."""
-    nb = _make_netbox(devices=[], device_count=0)
-    classify_device_type_update_failure(
-        SUBDEVICE_ROLE_ERROR_DICT,
-        netbox=nb,
-        device_type_id=77,
-        device_type_yaml={},
-        new_filters=False,
-    )
-    nb.dcim.devices.filter.assert_called_once_with(devicetype_id=77, limit=5)

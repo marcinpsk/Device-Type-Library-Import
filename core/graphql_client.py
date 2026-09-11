@@ -5,13 +5,15 @@ pagination, authentication, and convenience methods that return data structures
 compatible with the existing REST-based code in ``netbox_api.py``.
 """
 
+import copy
 import threading
 import time
 from collections.abc import Sequence
 
 import requests
 
-from core.component_registry import BY_ENDPOINT
+from core.compat import supports_module_bay_types
+from core.component_registry import BY_ENDPOINT, MODULE_TYPE_RELATIONS, relation_selection
 
 # Module-level dedup: tracks (url, requested_page_size) pairs that have already
 # emitted the page-size clamping warning so the message appears at most once
@@ -102,6 +104,9 @@ _MAX_ERROR_BODY_CHARS = 1000
 # connections, which is transient during a long paginated run.
 _RETRYABLE_STATUSES = {429, 500, 502, 503, 504}
 
+# One small metadata read; a run that cannot get it fails at the next query anyway.
+_STATUS_TIMEOUT_SECONDS = 30
+
 
 def _response_body_detail(response):
     """Return the response body as a suffix for an error message, truncated and stripped."""
@@ -136,7 +141,7 @@ class NetBoxGraphQLClient:
         or raise the server's ``MAX_PAGE_SIZE`` setting to match.
     """
 
-    def __init__(self, url, token, ignore_ssl=False, handle=None, page_size=5000):
+    def __init__(self, url, token, ignore_ssl=False, handle=None, page_size=5000, supports_module_bay_types=False):
         """Store connection parameters for later use in :meth:`query`.
 
         Args:
@@ -148,6 +153,8 @@ class NetBoxGraphQLClient:
                 ``print`` when not provided.
             page_size: Default number of items per GraphQL page
                 (default: 5 000).
+            supports_module_bay_types: True when NetBox is >= 4.7 and its schema
+                exposes the module bay type relation.
         """
         self.DEFAULT_PAGE_SIZE = page_size
         self.url = url.rstrip("/")
@@ -155,22 +162,28 @@ class NetBoxGraphQLClient:
         self.token = token
         self.ignore_ssl = ignore_ssl
         self._handle = handle
+        self.supports_module_bay_types = supports_module_bay_types
 
-        self._session = requests.Session()
+        self._session = self._new_session()
+
+    def _new_session(self):
+        """Return an HTTP session carrying this client's auth and TLS settings."""
+        session = requests.Session()
         # v2 tokens start with "nbt_" prefix (format: nbt_<key>.<secret>);
         # v1 tokens are plain 40-char hex strings using legacy Token auth.
         auth_scheme = "Bearer" if self.token.startswith("nbt_") else "Token"
-        self._session.headers.update(
+        session.headers.update(
             {
                 "Authorization": f"{auth_scheme} {self.token}",
                 "Content-Type": "application/json",
             }
         )
-        self._session.verify = not self.ignore_ssl
+        session.verify = not self.ignore_ssl
         if self.ignore_ssl:
             import urllib3
 
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+        return session
 
     @property
     def handle(self):
@@ -178,8 +191,40 @@ class NetBoxGraphQLClient:
         return self._handle
 
     def clone(self):
-        """Return an independent client with the same connection settings."""
-        return type(self)(self.url, self.token, self.ignore_ssl, self.handle, self.DEFAULT_PAGE_SIZE)
+        """Return an independent client with the same settings and its own HTTP session.
+
+        Copied rather than reconstructed, so a setting added to ``__init__`` travels with
+        the clone instead of quietly reverting to its default.  The session is the one
+        thing a worker must not share, so it is the one thing rebuilt here.
+        """
+        clone = copy.copy(self)
+        clone._session = self._new_session()
+        return clone
+
+    def detect_module_bay_type_support(self):
+        """Ask NetBox for its version and record whether the relation can be selected.
+
+        The importer learns this from its pynetbox client; the export entry point has no
+        such client, so it asks here.  Both sides decide from core.compat, so the line
+        cannot drift between them.
+        """
+        status_url = f"{self.url}/api/status/"
+        try:
+            response = self._session.get(status_url, timeout=_STATUS_TIMEOUT_SECONDS)
+            response.raise_for_status()
+            payload = response.json()
+        except requests.RequestException as exc:
+            raise GraphQLError(f"Could not read {status_url}: {exc}{_response_body_detail(exc.response)}") from exc
+        except ValueError as exc:
+            # A proxy error page answers 200 with HTML, so the body is not JSON.
+            raise GraphQLError(f"Invalid JSON from {status_url}: {exc}") from exc
+        # Reading an absent version as "" would answer "unsupported" for a 4.7 server and
+        # export without the relation, so demand the field rather than defaulting it.
+        version = payload.get("netbox-version") if isinstance(payload, dict) else None
+        if not isinstance(version, str) or not version.strip():
+            raise GraphQLError(f"No netbox-version in the status payload from {status_url}: {payload!r}")
+        self.supports_module_bay_types = supports_module_bay_types(version)
+        return self.supports_module_bay_types
 
     def close(self):
         """Close the underlying HTTP session."""
@@ -477,6 +522,11 @@ class NetBoxGraphQLClient:
                 sequence of non-blank strings.
         """
         var_decl, filter_fragment, extra_vars = self._build_manufacturer_filter(manufacturer_slugs)
+        module_bay_type_selection = (
+            "".join(f"{relation_selection(name)}\n            " for name in MODULE_TYPE_RELATIONS)
+            if self.supports_module_bay_types
+            else ""
+        )
 
         query = f"""
         query($pagination: OffsetPaginationInput{var_decl}) {{
@@ -490,7 +540,7 @@ class NetBoxGraphQLClient:
             weight
             weight_unit
             last_updated
-            manufacturer {{
+            {module_bay_type_selection}manufacturer {{
               id
               name
               slug
@@ -698,7 +748,7 @@ class NetBoxGraphQLClient:
     def _front_port_field_variants(fields):
         """Yield successive field-list tiers for the front_port_templates fallback.
 
-        Tier 1: mappings block (NetBox 4.5+)
+        Tier 1: mappings block and positions (NetBox 4.5+)
         Tier 2: rear_port_position scalar (<4.5)
         Tier 3: neither (field removed entirely)
         """
@@ -707,7 +757,8 @@ class NetBoxGraphQLClient:
         for f in fields:
             if "mappings" in f:
                 fallback.extend(["rear_port_position", "rear_port { id name }"])
-            else:
+            elif f != "positions":
+                # positions arrived with the mapping model, so no pre-4.5 tier may ask for it.
                 fallback.append(f)
         yield fallback
         stripped = [f for f in fallback if f != "rear_port_position" and "rear_port" not in f]
@@ -801,6 +852,9 @@ class NetBoxGraphQLClient:
             raise ValueError("manufacturer_slug must be None or a non-empty string")
 
         fields = component.graphql_fields
+        if not self.supports_module_bay_types:
+            # Selecting a field the server's schema lacks fails the whole query.
+            fields = [f for f in fields if f not in component.graphql_relation_fields]
         list_key = component.list_key
 
         parent_fields = "device_type { id }"

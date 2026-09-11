@@ -76,8 +76,14 @@ def mock_git_repo(request):
 
 @pytest.fixture
 def mock_pynetbox():
-    """Mock pynetbox to prevent API calls."""
+    """Mock pynetbox to prevent API calls.
+
+    Defaults the reported version to the oldest supported release, so a test that does not
+    care about version gating still constructs a NetBox; the importer refuses anything
+    older. Individual tests override it to exercise a specific release.
+    """
     with patch("core.netbox_api.pynetbox") as mock_nb:
+        mock_nb.api.return_value.version = "4.3"
         yield mock_nb
 
 
@@ -108,6 +114,13 @@ def mock_graphql_requests(request):
             }
         }
         mock_session.post.return_value = response
+        # /api/status/ is a GET; without this the probe reads a synthesized MagicMock and
+        # any shape check on the payload sees something no NetBox would ever return.
+        status = MagicMock()
+        status.status_code = 200
+        status.raise_for_status = MagicMock()
+        status.json.return_value = {"netbox-version": "4.7.0"}
+        mock_session.get.return_value = status
         yield mock_session.post
 
 

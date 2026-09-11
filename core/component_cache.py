@@ -14,12 +14,6 @@ import queue
 import threading
 from typing import Any
 
-from core.compat import (
-    device_type_filter_key,
-    device_type_filter_kwargs,
-    module_type_filter_key,
-    module_type_filter_kwargs,
-)
 from core.component_registry import COMPONENT_TYPES
 from core.graphql_client import GraphQLCountMismatchError, GraphQLSchemaError
 
@@ -118,14 +112,13 @@ class ComponentCache:
     filter, which happens for types created during this run and after an invalidation.
     """
 
-    def __init__(self, netbox, graphql, handle, new_filters, max_threads, wrap_record=None):
+    def __init__(self, netbox, graphql, handle, max_threads, wrap_record=None):
         """Build a cache over the *netbox* REST client and the *graphql* client.
 
         Args:
             netbox: pynetbox API object, used for REST fallbacks and count checks.
             graphql: GraphQL client used for the bulk fetch.
             handle: Log handler.
-            new_filters (bool): Whether this NetBox takes the newer filter parameter names.
             max_threads (int): Upper bound on concurrent endpoint fetches.
             wrap_record (callable | None): Applied to every front-port record, so change
                 detection sees one mappings shape across NetBox versions.
@@ -133,7 +126,6 @@ class ComponentCache:
         self.netbox = netbox
         self.graphql = graphql
         self.handle = handle
-        self.new_filters = new_filters
         self.max_threads = max_threads
         self._wrap_record = wrap_record or (lambda record: record)
 
@@ -313,9 +305,9 @@ class ComponentCache:
             return cached[key]
 
         if parent_type == "device":
-            filter_kwargs = device_type_filter_kwargs(parent_id, new_filters=self.new_filters)
+            filter_kwargs = {"device_type_id": parent_id}
         else:
-            filter_kwargs = module_type_filter_kwargs(parent_id, new_filters=self.new_filters)
+            filter_kwargs = {"module_type_id": parent_id}
         result = {item.name: item for item in endpoint.filter(**filter_kwargs)}
         self.record(endpoint_name, parent_type, parent_id, result)
         return result
@@ -479,8 +471,6 @@ class ComponentCache:
         Raises:
             GraphQLCountMismatchError: When an endpoint holds fewer records than REST reports.
         """
-        dt_filter_key = device_type_filter_key(self.new_filters)
-        mt_filter_key = module_type_filter_key(self.new_filters)
         dt_ids = list(device_type_ids)
         mt_ids = list(module_type_ids)
 
@@ -495,9 +485,9 @@ class ComponentCache:
             rest_endpoint = getattr(self.netbox.dcim, endpoint_name)
             rest_count = 0
             if dt_ids:
-                rest_count += self._rest_count(rest_endpoint, dt_filter_key, dt_ids)
+                rest_count += self._rest_count(rest_endpoint, "device_type_id", dt_ids)
             if mt_ids and component.module_types:
-                rest_count += self._rest_count(rest_endpoint, mt_filter_key, mt_ids)
+                rest_count += self._rest_count(rest_endpoint, "module_type_id", mt_ids)
 
             if cached_count != rest_count:
                 if vendor_scope_valid:

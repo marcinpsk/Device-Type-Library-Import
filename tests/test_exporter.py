@@ -239,6 +239,119 @@ class TestYamlEqual:
 class TestRepoSupersedes:
     """Tests for _repo_supersedes / _is_subset (asymmetric containment)."""
 
+    def test_an_empty_relation_does_not_make_every_definition_differ(self):
+        """The serializer omits an empty relation, and this is why it has to.
+
+        _is_subset requires every NetBox leaf to be present in the repo YAML, and
+        _normalize_for_compare does not drop empty lists. A serialized
+        "module_bay_types: []" would therefore be absent from every library definition
+        and re-export the whole library on a NetBox 4.7 server.
+        """
+        from core.graphql_client import DotDict
+        from core.nb_serializer import serialize_device_type
+
+        repo = yaml.safe_load("""
+manufacturer: Acme
+model: Chassis
+slug: acme-chassis
+u_height: 1
+is_full_depth: false
+module-bays:
+  - {name: Slot 0, position: '0'}
+""")
+        record = DotDict(
+            id=1,
+            manufacturer=DotDict(name="Acme"),
+            model="Chassis",
+            slug="acme-chassis",
+            u_height=1,
+            is_full_depth=False,
+        )
+        bay = DotDict(name="Slot 0", position="0", module_bay_types=[])
+        components = {1: {"module_bay_templates": [bay]}}
+        serialized = serialize_device_type(record, components)
+
+        assert serialized["module-bays"] == [{"name": "Slot 0", "position": "0"}]
+        assert _repo_supersedes(repo, serialized), "an unchanged definition must not re-export"
+        bay.module_bay_types = [DotDict(name="Control")]
+        populated = serialize_device_type(record, components)
+        assert populated["module-bays"][0]["module_bay_types"] == ["Control"]
+        assert not _repo_supersedes(repo, populated), "a new restriction must trigger export"
+
+    def test_a_default_positions_does_not_make_every_front_port_differ(self):
+        """The export writes the schema-required positions; it must not re-export the library.
+
+        A library entry that omits positions means the default, 1. _is_subset requires every
+        NetBox leaf to be present in the repo YAML, so a serialized positions: 1 compared
+        against an entry that omits it would report every such definition as differing.
+        """
+        from types import SimpleNamespace
+        from core.nb_serializer import _serialize_front_port
+
+        legacy = SimpleNamespace(name="FP1", type="8p8c", label="", description="", color="")
+        serialized = _serialize_front_port(legacy)
+        assert serialized == {"name": "FP1", "type": "8p8c", "positions": 1}
+
+        repo = {"model": "PP", "front-ports": [{"name": "FP1", "type": "8p8c"}]}
+        nb = {"model": "PP", "front-ports": [serialized]}
+
+        assert _repo_supersedes(repo, nb), "an omitted positions is the default, not a difference"
+
+    def test_a_non_default_positions_still_differs(self):
+        """Only the default may be treated as absent, or a real change would be suppressed."""
+        repo = {"model": "PP", "front-ports": [{"name": "FP1", "type": "8p8c"}]}
+        nb = {"model": "PP", "front-ports": [{"name": "FP1", "type": "8p8c", "positions": 4}]}
+
+        assert _repo_supersedes(repo, nb) is False
+
+    @pytest.mark.parametrize("reverse_repo", [False, True])
+    @pytest.mark.parametrize("reverse_netbox", [False, True])
+    def test_reordered_netbox_mappings_do_not_trigger_export(self, reverse_repo, reverse_netbox):
+        from core.graphql_client import DotDict
+        from core.nb_serializer import serialize_device_type
+
+        repo = yaml.safe_load("""
+manufacturer: Acme
+model: Panel
+slug: acme-panel
+u_height: 1
+is_full_depth: false
+front-ports:
+  - {name: FP1, type: lc-upc, positions: 2}
+port-mappings:
+  - {front_port: FP1, front_port_position: 1, rear_port: RP1, rear_port_position: 1}
+  - {front_port: FP1, front_port_position: 2, rear_port: RP2, rear_port_position: 3}
+""")
+        record = DotDict(
+            id=1, manufacturer=DotDict(name="Acme"), model="Panel", slug="acme-panel", u_height=1, is_full_depth=False
+        )
+        port = DotDict(
+            name="FP1",
+            type="lc-upc",
+            positions=2,
+            mappings=[
+                DotDict(rear_port=DotDict(name="RP2"), front_port_position=2, rear_port_position=3),
+                DotDict(rear_port=DotDict(name="RP1"), front_port_position=1, rear_port_position=1),
+            ],
+        )
+        if reverse_repo:
+            repo["port-mappings"].reverse()
+        if reverse_netbox:
+            port.mappings.reverse()
+        serialized = serialize_device_type(record, {1: {"front_port_templates": [port]}})
+
+        assert _repo_supersedes(repo, serialized), "unchanged mappings must not trigger export"
+        repo["port-mappings"].append(dict(repo["port-mappings"][0]))
+        assert not _repo_supersedes(repo, serialized), "duplicate mappings must keep their multiplicity"
+        repo["port-mappings"].pop()
+        port.mappings.append(port.mappings[0])
+        duplicated = serialize_device_type(record, {1: {"front_port_templates": [port]}})
+        assert not _repo_supersedes(repo, duplicated), "NetBox duplicates must keep their multiplicity"
+        port.mappings.pop()
+        port.mappings[0].rear_port_position = 4
+        changed = serialize_device_type(record, {1: {"front_port_templates": [port]}})
+        assert not _repo_supersedes(repo, changed)
+
     def test_equal_dicts(self):
         repo = {"manufacturer": "Nokia", "model": "X", "u_height": 1}
         nb = {"manufacturer": "Nokia", "model": "X", "u_height": 1}
@@ -853,11 +966,17 @@ class TestExporterAdditionalCoverage:
         def _side_effect(endpoint_name, manufacturer_slug=None):
             return [dt_rec, mt_rec] if endpoint_name == "interface_templates" else []
 
+        # A worker must fetch through its own clone, so only the clone answers.
+        worker = MagicMock()
+        worker.get_component_templates.side_effect = _side_effect
         mock_client = MagicMock()
-        mock_client.get_component_templates.side_effect = _side_effect
-        with patch("core.export.NetBoxGraphQLClient", return_value=mock_client):
-            dt_result, mt_result = exporter._fetch_vendor_components("nokia")
+        mock_client.get_component_templates.side_effect = AssertionError("worker must use clone()")
+        mock_client.clone.return_value = worker
+        exporter.graphql = mock_client
 
+        dt_result, mt_result = exporter._fetch_vendor_components("nokia")
+
+        assert mock_client.clone.called
         assert dt_result[11]["interface_templates"] == [dt_rec]
         assert mt_result[22]["interface_templates"] == [mt_rec]
 
@@ -1539,3 +1658,146 @@ class TestRepoAvailability:
 
         with pytest.raises(FileNotFoundError, match="No device-type library found"):
             self._exporter(tmp_path, repo)._verify_repo_available()
+
+
+class TestModuleBayPositionWarning:
+    """NetBox allows a blank module-bay position; the DTL schema requires one."""
+
+    @staticmethod
+    def _item(module_bays, kind="device-type"):
+        return ExportItem(
+            kind=kind,
+            nb_record=_make_dt(),
+            repo_yaml=None,
+            serialized={"model": "7750-SR-7s", "module-bays": module_bays},
+            reason="absent",
+            mfr_name="Nokia",
+            filename="nokia-7750-sr-7s.yaml",
+            manifest_key="Nokia/nokia-7750-sr-7s",
+        )
+
+    @staticmethod
+    def _write(tmp_path, item):
+        """Drive the real write path with a real LogHandler, which prints to stdout."""
+        exporter = Exporter(_make_settings(tmp_path), LogHandler(False), str(tmp_path / "extra"), False, None)
+        exporter._get_module_image_details = dict
+        exporter._write_export_items([item], {}, tmp_path / "manifest.json", None)
+
+    def test_a_bay_without_a_position_is_named_in_the_log(self, tmp_path, capsys):
+        item = self._item([{"name": "Slot 0"}, {"name": "Slot 1", "position": "1"}])
+
+        self._write(tmp_path, item)
+
+        out = capsys.readouterr().out
+        assert "Slot 0" in out
+        assert "position" in out
+        assert "nokia-7750-sr-7s.yaml" in out
+        assert "Slot 1" not in out, "a bay that has a position is not a problem"
+
+    def test_a_bay_positioned_at_zero_is_not_reported(self, tmp_path, capsys):
+        """'0' is a real position: the MX304 PSU bays use '0' and '1'."""
+        item = self._item([{"name": "Slot 0", "position": "0"}])
+
+        self._write(tmp_path, item)
+
+        # Assert the file was written too: silence alone would also hold if nothing ran.
+        written = yaml.safe_load((tmp_path / "extra" / "device-types" / "Nokia" / item.filename).read_text())
+        assert written["module-bays"] == [{"name": "Slot 0", "position": "0"}]
+        assert "no position" not in capsys.readouterr().out
+
+    def test_a_type_with_no_module_bays_reports_nothing(self, tmp_path, capsys):
+        exporter = Exporter(_make_settings(tmp_path), LogHandler(False), str(tmp_path / "extra"), False, None)
+        item = replace(self._item([]), serialized={"model": "7750-SR-7s"})
+
+        exporter._write_export_items([item], {}, tmp_path / "manifest.json", None)
+
+        written = yaml.safe_load((tmp_path / "extra" / "device-types" / "Nokia" / item.filename).read_text())
+        assert written == {"model": "7750-SR-7s"}, "the write path ran, it simply had nothing to warn about"
+        assert "no position" not in capsys.readouterr().out
+
+    def test_a_module_type_bay_is_checked_too(self, tmp_path, capsys):
+        """Device types and module types share the module-bay schema definition."""
+        item = self._item([{"name": "Sub 0"}], kind="module-type")
+
+        self._write(tmp_path, item)
+
+        assert "Sub 0" in capsys.readouterr().out
+
+
+class TestUnqueriedRelationsSurviveTheExport:
+    """A pre-4.7 server never returns module_bay_types, so the export must not strip it."""
+
+    @staticmethod
+    def _item(repo_yaml, serialized):
+        return ExportItem(
+            kind="device-type",
+            nb_record=_make_dt(),
+            repo_yaml=repo_yaml,
+            serialized=serialized,
+            reason="differs",
+            mfr_name="Juniper",
+            filename="mx304.yaml",
+            manifest_key="Juniper/mx304",
+        )
+
+    def _write(self, tmp_path, item, supported):
+        exporter = Exporter(_make_settings(tmp_path), _make_handle(), str(tmp_path / "extra"), True, None)
+        exporter.graphql.supports_module_bay_types = supported
+        exporter._get_module_image_details = dict
+        exporter._write_export_items([item], {}, tmp_path / "manifest.json", None)
+        return yaml.safe_load((tmp_path / "extra" / "device-types" / "Juniper" / "mx304.yaml").read_text())
+
+    def test_a_bay_relation_survives_when_the_server_cannot_return_it(self, tmp_path):
+        """Only the description changed; the relation must not be collateral damage."""
+        repo = {
+            "model": "MX304",
+            "description": "old",
+            "module-bays": [{"name": "RE0", "position": "0", "module_bay_types": ["MX304-RE"]}],
+        }
+        serialized = {"model": "MX304", "description": "new", "module-bays": [{"name": "RE0", "position": "0"}]}
+
+        written = self._write(tmp_path, self._item(repo, serialized), supported=False)
+
+        assert written["description"] == "new", "the real change still lands"
+        assert written["module-bays"][0]["module_bay_types"] == ["MX304-RE"]
+
+    def test_a_server_that_can_return_it_stays_authoritative(self, tmp_path):
+        """An export selected for a changed description must retain the supported server's answer."""
+        from core.graphql_client import DotDict
+
+        repo = yaml.safe_load("""
+manufacturer: Acme
+model: Chassis
+slug: acme-chassis
+u_height: 1
+is_full_depth: false
+description: old
+module-bays:
+  - {name: Slot 0, position: '0', module_bay_types: [Control]}
+""")
+        record = DotDict(
+            id=1,
+            manufacturer=DotDict(name="Acme", slug="acme"),
+            model="Chassis",
+            slug="acme-chassis",
+            u_height=1,
+            is_full_depth=False,
+            description="new",
+            front_image=None,
+            rear_image=None,
+            last_updated="2026-01-01T00:00:00Z",
+        )
+        bay = DotDict(name="Slot 0", position="0", module_bay_types=[])
+        exporter = Exporter(_make_settings(tmp_path), LogHandler(False), str(tmp_path / "extra"), True, None)
+        exporter.graphql.supports_module_bay_types = True
+        items = exporter._determine_export_set_for_device_types(
+            [record], {("acme", "acme-chassis"): repo}, {1: {"module_bay_templates": [bay]}}
+        )
+
+        assert len(items) == 1
+        assert items[0].reason == "differs"
+        exporter._write_export_items(items, {}, tmp_path / "manifest.json", None)
+        written = yaml.safe_load((tmp_path / "extra" / "device-types" / "Acme" / "Chassis.yaml").read_text())
+        assert written["description"] == "new"
+        assert written["module-bays"] == [{"name": "Slot 0", "position": "0"}]
+        assert "module_bay_types" not in written["module-bays"][0]

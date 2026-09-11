@@ -1,11 +1,11 @@
 """NetBox REST and GraphQL API client for importing device and module type libraries."""
 
 from collections import Counter
+from dataclasses import replace
 from contextlib import contextmanager
 from functools import lru_cache
 import hashlib
 import json
-import re
 import tempfile
 import time
 import pynetbox
@@ -24,7 +24,9 @@ from core.component_registry import (
     LINK_POWER_PORT,
     LINK_REAR_PORTS,
     MODULE_TYPE_COMPONENTS,
+    MODULE_TYPE_RELATIONS,
 )
+from core.compat import parse_netbox_version, supports_module_bay_types
 from core.formatting import log_property_diffs
 from core.errors import FatalError, UnknownError
 from core.graphql_client import GraphQLError, NetBoxGraphQLClient
@@ -48,6 +50,35 @@ class SSLVerificationError(FatalError):
             "Set IGNORE_SSL_ERRORS to True if you want to ignore this error. EXITING.",
             cause=cause,
         )
+
+
+# Oldest NetBox this importer is tested against; see the CI matrix and the README.
+MINIMUM_NETBOX_VERSION = (4, 3)
+
+
+def _relation_identities_differ(catalog, manufacturer, declared, related, *, names_differ):
+    """Return True when the assigned objects are not the ones the references resolve to.
+
+    Comparing names alone reports equality when NetBox holds a same-named class from
+    another manufacturer's scope, so the identity is compared where both sides can supply
+    one.  Where they cannot, the name comparison the caller already made stands.
+    """
+    from core.module_bay_types import ModuleBayTypeError, manufacturer_slug
+
+    if not catalog or not manufacturer:
+        return names_differ
+    current = set()
+    for item in related:
+        slug = getattr(item, "slug", None)
+        owner = getattr(getattr(item, "manufacturer", None), "slug", None)
+        if not slug or not owner:
+            return names_differ
+        current.add((manufacturer_slug(owner), slug))
+    try:
+        return catalog.identities_for(manufacturer, declared) != frozenset(current)
+    except ModuleBayTypeError:
+        # A matching name must not make an unresolvable reference look applied.
+        return True
 
 
 class NetBoxError(FatalError):
@@ -404,6 +435,42 @@ def _image_dir_for_yaml(src_file: str, src_segment: str, dst_segment: str) -> "P
 # from pynetbox import RequestError as APIRequestError
 
 
+def _is_mapping_removal(prop_change):
+    """Return True when a ``_mappings`` change only takes mappings away."""
+    return (
+        prop_change.property_name == "_mappings"
+        and isinstance(prop_change.old_value, (set, frozenset))
+        and isinstance(prop_change.new_value, (set, frozenset))
+        and prop_change.new_value < prop_change.old_value
+    )
+
+
+def _without_gated_mapping_clears(changes, remove_components, handle=None):
+    """Drop mapping clears unless removal is enabled.
+
+    Clearing a front-to-rear linkage deletes data, but it reaches NetBox as a property
+    change rather than a COMPONENT_REMOVED, so it would otherwise ignore the flag and
+    contradict the "will not remove components" notice.  Filtering here rather than at the
+    write boundary keeps the actionable count and the applied changes in agreement.
+    """
+    if remove_components:
+        return changes
+    kept, gated = [], []
+    for change in changes:
+        remaining = [pc for pc in change.property_changes if not _is_mapping_removal(pc)]
+        if len(remaining) == len(change.property_changes):
+            kept.append(change)
+            continue
+        gated.append(change.component_name)
+        if remaining:
+            kept.append(replace(change, property_changes=remaining))
+    if gated and handle is not None:
+        handle.log(
+            f"Kept existing port mappings on {sorted(gated)}; use --remove-components with --update to clear them."
+        )
+    return kept
+
+
 def _count_actionable_component_changes(changes, remove_components):
     """Return the count of changes in *changes* that will issue an API call.
 
@@ -462,10 +529,8 @@ class NetBox:
         self.handle = handle
         self.netbox: Any = None
         self.ignore_ssl = config.ignore_ssl_errors
-        self.modules = False
-        self.new_filters = False
+        self.module_bay_types = False
         self.m2m_front_ports = False  # True for NetBox >= 4.5 (M2M port mappings)
-        self.rack_types = False
         self.force_resolve_conflicts = config.force_resolve_conflicts
         self.remove_unmanaged_types = config.remove_unmanaged_types
         self.verify_images = config.verify_images
@@ -495,6 +560,7 @@ class NetBox:
             self.ignore_ssl,
             handle=self.handle,
             page_size=config.graphql_page_size,
+            supports_module_bay_types=self.module_bay_types,
         )
         try:
             self.existing_manufacturers = self.get_manufacturers()
@@ -506,9 +572,9 @@ class NetBox:
                 self.handle,
                 self.counter,
                 self.ignore_ssl,
-                self.new_filters,
                 graphql=self.graphql,
                 m2m_front_ports=self.m2m_front_ports,
+                module_bay_types_supported=self.module_bay_types,
                 repo_path=config.repo_path,
                 max_threads=config.preload_threads,
             )
@@ -570,10 +636,10 @@ class NetBox:
             raise UnknownError("NetBox API Error", cause=e) from e
 
     def verify_compatibility(self):
-        """Check the connected NetBox version and configure feature flags accordingly.
+        """Refuse a server below the supported floor and set the feature flags above it.
 
-        Sets ``self.modules = True`` for NetBox >= 3.2 and ``self.new_filters = True``
-        for >= 4.1. Logs the detected version when the new-filter flag is enabled.
+        Only the flags that still vary across supported releases are set here: the 4.3
+        floor makes everything introduced at or below 4.1 unconditional.
         """
         # nb.version should be the version in the form '3.2'
         # Strip non-numeric suffixes (e.g. "4.1-beta") before converting to int.
@@ -601,26 +667,26 @@ class NetBox:
                 msg += f"\nResponse body (may be from an intermediate proxy):\n{body}"
             msg += f"\nHint: Verify that {self.url} is reachable and not blocked by a proxy."
             raise NetBoxError(msg) from e
-        _raw = [int(re.sub(r"\D.*", "", x.strip()) or "0") for x in nb_version.split(".")]
-        version_split = (_raw + [0, 0])[:2]  # pad to (major, minor) to guard against single-component strings
+        version_split = parse_netbox_version(nb_version)
 
-        # Later than 3.2
-        # Might want to check for the module-types entry as well?
-        if version_split[0] > 3 or (version_split[0] == 3 and version_split[1] >= 2):
-            self.modules = True
-
-        # check if version >= 4.1 in order to use new filter names (https://github.com/netbox-community/netbox/issues/15410)
-        if version_split[0] > 4 or (version_split[0] == 4 and version_split[1] >= 1):
-            self.new_filters = True
-            self.rack_types = True
-            self.handle.log(f"Netbox version {self.netbox.version} found. Using new filters.")
+        # Below the floor the run dies later naming a schema field, not the real cause.
+        if tuple(version_split) < MINIMUM_NETBOX_VERSION:
+            minimum = ".".join(str(part) for part in MINIMUM_NETBOX_VERSION)
+            raise NetBoxError(
+                f"NetBox {nb_version} is not supported: this importer requires NetBox {minimum} or later. "
+                f"Older releases fail part way through with a GraphQL schema error rather than here."
+            )
 
         # NetBox 4.5 replaced FrontPortTemplate.rear_port (FK) + rear_port_position (int)
         # with a ManyToMany through table (PortMapping).  The creation and read APIs differ.
         # https://github.com/netbox-community/netbox/issues/20564
         if version_split[0] > 4 or (version_split[0] == 4 and version_split[1] >= 5):
             self.m2m_front_ports = True
-            self.handle.log(f"Netbox version {self.netbox.version} found. Using M2M front/rear port mappings.")
+            self.handle.log(f"Netbox version {nb_version} found. Using M2M front/rear port mappings.")
+
+        if supports_module_bay_types(nb_version):
+            self.module_bay_types = True
+            self.handle.log(f"Netbox version {nb_version} found. Module bay types are supported.")
 
     def get_manufacturers(self):
         """Fetch all manufacturers from NetBox via GraphQL and return them indexed by name."""
@@ -733,7 +799,6 @@ class NetBox:
                 netbox=self.netbox,
                 device_type_id=dt.id,
                 device_type_yaml=device_type,
-                new_filters=self.new_filters,
             )
         except Exception as exc:  # defensive: classifier must never break the run
             self.handle.verbose_log(f"Failure classifier raised {type(exc).__name__}: {exc}")
@@ -1043,7 +1108,10 @@ class NetBox:
             # Apply component changes
             component_errors = []
             if dt_change.component_changes:
-                actionable_count = _count_actionable_component_changes(dt_change.component_changes, remove_components)
+                component_changes = _without_gated_mapping_clears(
+                    dt_change.component_changes, remove_components, self.handle
+                )
+                actionable_count = _count_actionable_component_changes(component_changes, remove_components)
                 before_components = (
                     self.counter["components_updated"],
                     self.counter["components_added"],
@@ -1053,11 +1121,11 @@ class NetBox:
                     self.device_types.update_components(
                         device_type,
                         dt.id,
-                        dt_change.component_changes,
+                        component_changes,
                         parent_type="device",
                     )
                     if remove_components:
-                        self.device_types.remove_components(dt.id, dt_change.component_changes, parent_type="device")
+                        self.device_types.remove_components(dt.id, component_changes, parent_type="device")
                 after_components = (
                     self.counter["components_updated"],
                     self.counter["components_added"],
@@ -1160,9 +1228,13 @@ class NetBox:
                 yaml_key = component.yaml_key
                 if yaml_key not in device_type:
                     continue
-                if yaml_key == "module-bays" and not self.modules:
-                    continue
-                self.device_types.create_components(yaml_key, device_type[yaml_key], dt_id, context=src_file)
+                self.device_types.create_components(
+                    yaml_key,
+                    device_type[yaml_key],
+                    dt_id,
+                    context=src_file,
+                    manufacturer=device_type.get("manufacturer"),
+                )
         if component_errors:
             # The type exists but not all of its components do.
             self.outcomes.record(
@@ -1522,6 +1594,8 @@ class NetBox:
                 if not values_equal(module_type[f], nb_val):
                     changed_fields_info.append((f, nb_val, module_type[f]))
 
+            changed_fields_info += self._type_relation_changes(module_type, existing_module)
+
             component_changes = detector._compare_components(module_type, existing_module.id, parent_type="module")
 
             if changed_fields_info or component_changes:
@@ -1574,6 +1648,58 @@ class NetBox:
         )
         return module_type_existing_images
 
+    def _type_relation_changes(self, module_type, existing_module):
+        """Return (field, current, wanted) for each of the type's own relations that differs.
+
+        A relation is a list, so the scalar comparison loop never sees it.  A field the
+        query did not return is skipped rather than read as empty, which would otherwise
+        report a change on every run.
+        """
+        changes: list[tuple[str, list[str], list[str]]] = []
+        if not self.module_bay_types:
+            return changes
+        for field in MODULE_TYPE_RELATIONS:
+            if field not in module_type:
+                continue
+            netbox_value = getattr(existing_module, field, _MISSING)
+            if netbox_value is _MISSING:
+                continue
+            related = netbox_value if isinstance(netbox_value, (list, tuple)) else []
+            declared = module_type[field]
+            if not isinstance(declared, list) or any(not isinstance(x, str) or not x.strip() for x in declared):
+                # Malformed or bare key: leave the relation unmanaged rather than clear it.
+                continue
+            wanted = sorted(set(declared))
+            current = sorted({name for name in (getattr(item, "name", None) for item in related) if name})
+            if _relation_identities_differ(
+                self.device_types.module_bay_type_catalog,
+                self.device_types._manufacturer_slug(module_type.get("manufacturer")),
+                declared,
+                related,
+                names_differ=wanted != current,
+            ):
+                changes.append((field, current, wanted))
+        return changes
+
+    def _resolve_type_relations(self, payload):
+        """Return *payload* with its own relation fields resolved from names to ids.
+
+        Raises ModuleBayTypeError if a name does not resolve, so the caller can report the
+        module type rather than write it with the restriction silently dropped.
+        """
+        names = {field: payload[field] for field in MODULE_TYPE_RELATIONS if field in payload}
+        if not names:
+            return payload
+        if not self.module_bay_types:
+            # The server predates ModuleBayType; sending the field would be rejected.
+            return {k: v for k, v in payload.items() if k not in names}
+        manufacturer = self.device_types._manufacturer_slug(payload.get("manufacturer"))
+        resolved = {
+            field: self.device_types.module_bay_type_catalog.ids_for(manufacturer, value)
+            for field, value in names.items()
+        }
+        return {**payload, **resolved}
+
     def _try_update_module_type(self, curr_mt, module_type_res, src_file):
         """Apply pending field updates to an existing module type in NetBox.
 
@@ -1590,6 +1716,18 @@ class NetBox:
                 continue
             if not values_equal(curr_mt[field], current_value):
                 updates[field] = curr_mt[field]
+        if self.module_bay_types:
+            from core.module_bay_types import ModuleBayTypeError
+
+            for field, _current, wanted in self._type_relation_changes(curr_mt, module_type_res):
+                try:
+                    updates[field] = self.device_types.module_bay_type_catalog.ids_for(
+                        self.device_types._manufacturer_slug(curr_mt.get("manufacturer")), wanted
+                    )
+                except ModuleBayTypeError as exc:
+                    # Not fatal to the run, but not a success either; the caller records it.
+                    self.handle.log(f"Skipped {field} on {curr_mt.get('model')}: {exc} (Context: {src_file})")
+                    return False, False
         if not updates:
             return True, False
         try:
@@ -1622,7 +1760,12 @@ class NetBox:
                 yaml_key = component.yaml_key
                 if yaml_key in curr_mt:
                     self.device_types.create_components(
-                        yaml_key, curr_mt[yaml_key], module_type_id, parent_type="module", context=src_file
+                        yaml_key,
+                        curr_mt[yaml_key],
+                        module_type_id,
+                        parent_type="module",
+                        context=src_file,
+                        manufacturer=curr_mt.get("manufacturer"),
                     )
         if component_errors:
             # The module type exists but not all of its components do.
@@ -1651,6 +1794,7 @@ class NetBox:
         self.device_types.ensure_components_ready(manufacturer_slug=curr_mt["manufacturer"]["slug"])
         identity = f"{module_type_res.manufacturer.name}/{module_type_res.model}"
         component_changes = self.change_detector._compare_components(curr_mt, module_type_res.id, parent_type="module")
+        component_changes = _without_gated_mapping_clears(component_changes, remove_components, self.handle)
         if component_changes:
             actionable_count = _count_actionable_component_changes(component_changes, remove_components)
             before_updated = self.counter["components_updated"]
@@ -1776,7 +1920,20 @@ class NetBox:
                     )
         else:
             try:
-                module_type_res = _retry_on_connection_error(self.netbox.dcim.module_types.create, curr_mt)
+                from core.module_bay_types import ModuleBayTypeError
+
+                try:
+                    payload = self._resolve_type_relations(curr_mt)
+                except ModuleBayTypeError as exc:
+                    self.handle.log(f"Error creating Module Type: {exc} (Context: {src_file})")
+                    self._record_failure(
+                        EntityKind.MODULE_TYPE,
+                        self._yaml_identity(curr_mt),
+                        str(exc),
+                        src_file,
+                    )
+                    return False
+                module_type_res = _retry_on_connection_error(self.netbox.dcim.module_types.create, payload)
                 self.counter["module_added"] += 1
                 is_new = True
                 manufacturer_slug = curr_mt["manufacturer"]["slug"]
@@ -2126,7 +2283,7 @@ class _FrontPortRecordWithMappings:
     All other attribute accesses are forwarded to the underlying record.
     """
 
-    __slots__ = ("_record", "_mappings_canonical")
+    __slots__ = ("_record", "_mappings_canonical", "_mappings_m2m")
 
     def __init__(self, record):
         """Wrap *record* and pre-compute a canonical mappings list for ChangeDetector compatibility.
@@ -2160,10 +2317,18 @@ class _FrontPortRecordWithMappings:
         else:
             # NetBox < 4.5: rear_port_position is a direct scalar field
             rp_pos = getattr(record, "rear_port_position", None)
+            # The pre-4.5 query asks for rear_port { id name }; keeping the name is what lets
+            # a move to a different rear port be seen at all.
+            legacy_rp = getattr(record, "rear_port", None)
+            legacy_name = (
+                (legacy_rp.get("name") if isinstance(legacy_rp, dict) else getattr(legacy_rp, "name", None))
+                if legacy_rp is not None
+                else None
+            )
             canonical = (
                 [
                     {
-                        "rear_port_name": None,
+                        "rear_port_name": legacy_name,
                         "front_port_position": 1,
                         "rear_port_position": rp_pos,
                     }
@@ -2172,6 +2337,10 @@ class _FrontPortRecordWithMappings:
                 else None  # Both mappings and rear_port_position absent; skip comparison.
             )
         object.__setattr__(self, "_mappings_canonical", canonical)
+        # Which model the record came from, recorded rather than inferred: an empty M2M list
+        # carries no names to infer from, and reading it as pre-4.5 drops the rear port name
+        # the patch needs.
+        object.__setattr__(self, "_mappings_m2m", mappings_raw is not None)
 
     def __getattr__(self, name):
         """Delegate attribute access to the wrapped record."""
@@ -2187,11 +2356,11 @@ class DeviceTypes:
         handle,
         counter,
         ignore_ssl,
-        new_filters,
         *,
         graphql,
         repo_path,
         m2m_front_ports=False,
+        module_bay_types_supported=False,
         max_threads=8,
     ):
         """Initialize empty DeviceTypes cache structures; no data is fetched at construction time.
@@ -2204,8 +2373,8 @@ class DeviceTypes:
             handle (LogHandler): Sink for creation and error messages.
             counter (Counter): Shared operation counter updated during creation.
             ignore_ssl (bool): Whether SSL certificate verification is disabled.
-            new_filters (bool): Whether to use updated filter parameter names (NetBox >= 4.1).
             graphql (NetBoxGraphQLClient): GraphQL client for read queries.
+            module_bay_types_supported (bool): True when NetBox supports ModuleBayType (>= 4.7).
             repo_path (str): Local library checkout, used to read the module-type schema.
             m2m_front_ports (bool): Whether NetBox uses the 4.5+ M2M port mapping model.
             max_threads (int): Maximum number of concurrent threads for component preloading.
@@ -2214,20 +2383,20 @@ class DeviceTypes:
         self.handle = handle
         self.counter = counter
         self.ignore_ssl = ignore_ssl
-        self.new_filters = new_filters
         self.graphql = graphql
         self.repo_path = repo_path
         self.m2m_front_ports = m2m_front_ports
+        self.module_bay_types_supported = module_bay_types_supported
         self.max_threads = max_threads
         self.components = ComponentCache(
             netbox,
             graphql,
             handle,
-            new_filters,
             max_threads,
             wrap_record=_FrontPortRecordWithMappings,
         )
         self._image_progress = None
+        self._module_bay_type_catalog = None
         # Component failures for the entity currently inside collect_component_errors().
         self._component_errors: list[str] = []
         self.existing_device_types = {}
@@ -2428,7 +2597,11 @@ class DeviceTypes:
                 update_data["rear_port"] = None
                 update_data["rear_port_position"] = None
                 return
-            first = next(iter(new_mappings))
+            if len(new_mappings) > 1:
+                self._log_component_error(
+                    f'Multiple mappings for front port "{comp_name}" on NetBox < 4.5: only first mapping applied'
+                )
+            first = sorted(new_mappings)[0]
             if len(first) != 3:
                 # Legacy NetBox (<4.5): ChangeDetector emits 2-tuples (fp_pos, rp_pos)
                 # because rear port names are unavailable via the GraphQL API.
@@ -2486,6 +2659,7 @@ class DeviceTypes:
             if change.component_name in existing:
                 comp = existing[change.component_name]
                 update_data = {"id": comp.id}
+                unresolved = False
                 for pc in change.property_changes:
                     if comp_type == "front-ports" and pc.property_name == "_mappings":
                         yaml_front_port = next(
@@ -2501,8 +2675,21 @@ class DeviceTypes:
                             parent_type,
                         )
                         continue
+                    if pc.property_name in component.relations:
+                        # The comparison works in names; NetBox wants ids.
+                        from core.module_bay_types import ModuleBayTypeError
+
+                        try:
+                            update_data[pc.property_name] = self.module_bay_type_catalog.ids_for(
+                                self._manufacturer_slug(yaml_data.get("manufacturer")), pc.new_value
+                            )
+                        except ModuleBayTypeError as exc:
+                            self._log_component_error(f"Skipped {component.label} '{change.component_name}': {exc}")
+                            unresolved = True
+                            break
+                        continue
                     update_data[pc.property_name] = pc.new_value
-                if len(update_data) > 1:  # has fields beyond just "id"
+                if not unresolved and len(update_data) > 1:  # has fields beyond just "id"
                     updates.append(update_data)
 
         success_count = 0
@@ -2547,7 +2734,13 @@ class DeviceTypes:
         if not components_to_add:
             return
 
-        self.create_components(comp_type, components_to_add, device_type_id, parent_type=parent_type)
+        self.create_components(
+            comp_type,
+            components_to_add,
+            device_type_id,
+            parent_type=parent_type,
+            manufacturer=yaml_data.get("manufacturer"),
+        )
 
     def update_components(self, yaml_data, device_type_id, component_changes, parent_type="device"):
         """Update existing components and add new components based on detected changes.
@@ -2778,7 +2971,7 @@ class DeviceTypes:
                 else:
                     if len(resolved) > 1:
                         ctx = f" (Context: {context})" if context else ""
-                        self.handle.log(
+                        self._log_component_error(
                             f'Multiple mappings for {label} "{port["name"]}" on NetBox < 4.5: '
                             f"only first mapping applied{ctx}"
                         )
@@ -2837,7 +3030,66 @@ class DeviceTypes:
                 f"Connection error bridging interfaces after {_MAX_RETRIES} retries: {e} (Context: {context})"
             )
 
-    def create_components(self, yaml_key, items, parent_id, parent_type="device", context=None):
+    @property
+    def module_bay_type_catalog(self):
+        """The module-bay-type catalog, built once per run from the library checkout."""
+        if self._module_bay_type_catalog is None:
+            from core.module_bay_types import ModuleBayTypeCatalog
+
+            self._module_bay_type_catalog = ModuleBayTypeCatalog(self.netbox, self.repo_path, self.handle)
+        return self._module_bay_type_catalog
+
+    @staticmethod
+    def _manufacturer_slug(manufacturer):
+        """Return the manufacturer slug, whatever shape the caller happens to hold.
+
+        ``core.repo`` rewrites every YAML ``manufacturer`` to ``{"slug": ...}`` before the
+        importer sees it, so that is the usual shape; a plain name is slugified here.
+        """
+        from core.module_bay_types import manufacturer_slug
+
+        if isinstance(manufacturer, dict):
+            return manufacturer.get("slug") or manufacturer_slug(manufacturer.get("name"))
+        return manufacturer_slug(getattr(manufacturer, "name", manufacturer))
+
+    def _resolve_relations(self, component, items, manufacturer):
+        """Turn each relation field's names into NetBox ids, dropping items that cannot resolve.
+
+        A component whose restriction cannot be resolved is skipped and logged rather than
+        created without it: creating the bay anyway would silently discard the restriction.
+        """
+        if not component.relations:
+            return items
+        if not self.module_bay_types_supported:
+            # The server predates ModuleBayType; drop the field rather than have it rejected.
+            return [{k: v for k, v in item.items() if k not in component.relations} for item in items]
+        from core.module_bay_types import ModuleBayTypeError
+
+        manufacturer = self._manufacturer_slug(manufacturer)
+        resolved = []
+        for item in items:
+            names = {field: item[field] for field in component.relations if field in item}
+            if not names:
+                resolved.append(item)
+                continue
+            if not manufacturer:
+                # No scope to resolve in, and NetBox wants ids: sending the names would fail.
+                self._log_component_error(
+                    f"Skipped {component.label} '{item.get('name', 'Unknown')}': no manufacturer to "
+                    f"resolve {', '.join(sorted(names))} in"
+                )
+                continue
+            try:
+                replacements = {
+                    field: self.module_bay_type_catalog.ids_for(manufacturer, value) for field, value in names.items()
+                }
+            except ModuleBayTypeError as exc:
+                self._log_component_error(f"Skipped {component.label} '{item.get('name', 'Unknown')}': {exc}")
+                continue
+            resolved.append({**item, **replacements})
+        return resolved
+
+    def create_components(self, yaml_key, items, parent_id, parent_type="device", context=None, manufacturer=None):
         """Create component templates of one kind for one parent, skipping those that exist.
 
         The registry row for *yaml_key* supplies the endpoint, the cache name, the log label
@@ -2850,6 +3102,8 @@ class DeviceTypes:
             parent_id (int): NetBox ID of the parent device or module type.
             parent_type (str): ``"device"`` or ``"module"``.
             context (str | None): Optional context string appended to log messages.
+            manufacturer (dict | str | None): Owning manufacturer, used to resolve any
+                relation fields the registry row declares.
         """
         component = BY_YAML_KEY[yaml_key]
         label = component.create_label(parent_type)
@@ -2869,7 +3123,7 @@ class DeviceTypes:
 
         self._create_generic(
             component,
-            items,
+            self._resolve_relations(component, items, manufacturer),
             parent_id,
             parent_type=parent_type,
             post_process=post_process,

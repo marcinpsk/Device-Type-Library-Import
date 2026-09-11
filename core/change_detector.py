@@ -10,8 +10,8 @@ from functools import lru_cache
 from typing import Any, List, Optional
 from enum import Enum
 
-from core.component_registry import COMPONENT_TYPES
-from core.normalization import normalize_values
+from core.component_registry import BY_YAML_KEY, COMPONENT_TYPES
+from core.normalization import is_explicit_list, normalize_values
 from core.formatting import log_property_diffs
 from core.schema_reader import load_properties_for_type
 
@@ -24,6 +24,114 @@ class ChangeType(Enum):
     COMPONENT_ADDED = "component_added"
     COMPONENT_CHANGED = "component_changed"
     COMPONENT_REMOVED = "component_removed"
+
+
+def _manufacturer_slug_of(yaml_data):
+    """Return the owning manufacturer's slug from a parsed definition.
+
+    ``core.repo`` rewrites every YAML manufacturer to ``{"slug": ...}`` before the importer
+    sees it, so that is the usual shape here.
+    """
+    manufacturer = (yaml_data or {}).get("manufacturer")
+    if isinstance(manufacturer, dict):
+        return manufacturer.get("slug") or ""
+    return manufacturer or ""
+
+
+def _relation_properties(comp_type):
+    """Return the relation field names the registry declares for *comp_type*."""
+    component = BY_YAML_KEY.get(comp_type)
+    return component.relations if component else ()
+
+
+def _is_relation_list(value):
+    """Return True when *value* is a list of non-empty strings, the only shape a reference takes.
+
+    Blank is checked after stripping, matching the catalog: accepting "   " here only defers
+    the rejection to the write path, where it skips the whole component's update.
+    """
+    return is_explicit_list(value) and all(isinstance(item, str) and item.strip() for item in value)
+
+
+def _relation_change(prop, yaml_comp, netbox_comp, catalog=None, manufacturer=None, handle=None):
+    """Return a PropertyChange when a relation differs, or None when there is nothing to do.
+
+    A relation is an unordered set of related objects.  Where the catalog is available the
+    comparison is between *identities*, ``(manufacturer slug, slug)``, because two
+    manufacturers may define the same class name and a bay holding the wrong one reads as
+    equal on names alone.  Without a catalog it falls back to comparing names, which is
+    what a caller that has not wired one can still do.
+
+    An omitted key leaves the relation unmanaged and an empty list clears it, but a bare
+    ``module_bay_types:`` parses as None and a malformed entry is not a name: those are left
+    unmanaged, because reading them as empty would clear a restriction nobody removed.  A
+    field the query did not return is skipped for the same reason.
+    """
+    if prop not in yaml_comp:
+        return None
+    declared = yaml_comp.get(prop)
+    if not _is_relation_list(declared):
+        if handle is not None:
+            handle.log(
+                f"Ignored {prop} on {yaml_comp.get('name', 'Unknown')!r}: expected a list of names, got {declared!r}"
+            )
+        return None
+    netbox_value = getattr(netbox_comp, prop, _MISSING)
+    if netbox_value is _MISSING:
+        return None
+
+    if catalog is not None and manufacturer:
+        from core.module_bay_types import ModuleBayTypeError
+
+        try:
+            wanted = catalog.identities_for(manufacturer, declared)
+        except ModuleBayTypeError:
+            # Reported as a change so the write path sees it; "no change" is silent.
+            return PropertyChange(
+                property_name=prop,
+                old_value=sorted(_relation_names(netbox_value)),
+                new_value=sorted(set(declared)),
+            )
+        current = _relation_identities(netbox_value)
+        if current is not None and wanted == current:
+            return None
+        if current is not None:
+            return PropertyChange(
+                property_name=prop, old_value=sorted(_relation_names(netbox_value)), new_value=sorted(set(declared))
+            )
+
+    yaml_names = frozenset(declared)
+    netbox_names = frozenset(_relation_names(netbox_value))
+    if yaml_names == netbox_names:
+        return None
+    return PropertyChange(property_name=prop, old_value=sorted(netbox_names), new_value=sorted(yaml_names))
+
+
+def _relation_identities(value):
+    """Return {(manufacturer slug, slug)} for a relation, or None if the shape lacks them.
+
+    A read path that returns only ``id`` and ``name`` cannot answer the scope question, so
+    the caller falls back to comparing names rather than inventing an identity.
+    """
+    identities = set()
+    for item in value or []:
+        slug = item.get("slug") if isinstance(item, dict) else getattr(item, "slug", None)
+        manufacturer = item.get("manufacturer") if isinstance(item, dict) else getattr(item, "manufacturer", None)
+        owner = manufacturer.get("slug") if isinstance(manufacturer, dict) else getattr(manufacturer, "slug", None)
+        if not slug or not owner:
+            return None
+        identities.add((owner, slug))
+    return frozenset(identities)
+
+
+def _relation_names(value):
+    """Return the ``name`` of each related object NetBox returned for a relation."""
+    names = []
+    for item in value or []:
+        name = item.get("name") if isinstance(item, dict) else getattr(item, "name", None)
+        if name is not None:
+            names.append(name)
+    return names
 
 
 @dataclass
@@ -339,7 +447,11 @@ class ChangeDetector:
                     # Check for property changes on existing component
                     existing = existing_components[comp_name]
                     prop_changes = self._compare_component_properties(
-                        yaml_comp, existing, component.compare_properties, comp_type=yaml_key
+                        yaml_comp,
+                        existing,
+                        component.compare_properties,
+                        comp_type=yaml_key,
+                        manufacturer=_manufacturer_slug_of(yaml_data),
                     )
                     if prop_changes:
                         changes.append(
@@ -353,14 +465,31 @@ class ChangeDetector:
 
         return changes
 
+    def _relation_catalog(self):
+        """Return the module bay type catalog, or None when this detector has no real one.
+
+        Tests build the detector around a stand-in for DeviceTypes, and a stand-in cannot
+        answer what a reference means.  Returning None there keeps the name comparison,
+        which is what those tests are asserting on.
+        """
+        from core.module_bay_types import ModuleBayTypeCatalog
+
+        catalog = getattr(self.device_types, "module_bay_type_catalog", None)
+        return catalog if isinstance(catalog, ModuleBayTypeCatalog) else None
+
     def _compare_component_properties(
         self,
         yaml_comp: dict,
         netbox_comp,
         properties: List[str],
         comp_type: str = "",
+        manufacturer: str = "",
     ) -> List[PropertyChange]:
-        """Compare properties between YAML and NetBox component."""
+        """Compare properties between YAML and NetBox component.
+
+        *manufacturer* is the owning manufacturer's slug, used to resolve a relation
+        reference to the object it means rather than the name it is written as.
+        """
         changes = []
 
         for prop in properties:
@@ -389,7 +518,11 @@ class ChangeDetector:
                     # GraphQL response lacked both mappings and rear_port_position;
                     # treat as unmanaged to avoid a false COMPONENT_CHANGED.
                     continue
-                has_names = any(m.get("rear_port_name") is not None for m in canonical)
+                # Compare by name whenever one is available: an empty M2M list has no name to
+                # infer from but still needs the named path, and the pre-4.5 query returns one.
+                has_names = bool(getattr(netbox_comp, "_mappings_m2m", False)) or any(
+                    m.get("rear_port_name") is not None for m in canonical
+                )
                 if has_names:
                     # NetBox >= 4.5: compare with rear port names
                     netbox_set: frozenset = frozenset(
@@ -424,6 +557,14 @@ class ChangeDetector:
                             new_value=yaml_set,
                         )
                     )
+                continue
+
+            if prop in _relation_properties(comp_type):
+                relation_change = _relation_change(
+                    prop, yaml_comp, netbox_comp, self._relation_catalog(), manufacturer, self.handle
+                )
+                if relation_change is not None:
+                    changes.append(relation_change)
                 continue
 
             # Only compare properties explicitly present in the YAML component;
