@@ -19,7 +19,7 @@ def parse_netbox_version(version) -> tuple[int, int]:
     suffixes NetBox ships ("4.7.0-beta2").
     """
     raw = [int(re.sub(r"\D.*", "", part.strip()) or "0") for part in str(version).split(".")]
-    return tuple((raw + [0, 0])[:2])  # type: ignore[return-value]
+    return tuple(([*raw, 0, 0])[:2])  # type: ignore[return-value]
 
 
 def supports_module_bay_types(version) -> bool:

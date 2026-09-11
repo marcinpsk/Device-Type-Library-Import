@@ -56,7 +56,8 @@ class DotDict(dict):
         try:
             value = self[key]
         except KeyError:
-            raise AttributeError(f"'DotDict' has no attribute '{key}'")
+            # The dict miss is an implementation detail of attribute lookup, not the error.
+            raise AttributeError(f"'DotDict' has no attribute '{key}'") from None
         if isinstance(value, dict) and not isinstance(value, DotDict):
             value = DotDict(value)
             self[key] = value
@@ -114,7 +115,7 @@ def _response_body_detail(response):
         return ""
     try:
         body = response.text.strip()
-    except Exception:  # pragma: no cover - a body that cannot be decoded is not worth failing on
+    except Exception:  # pragma: no cover - a body that cannot be decoded is not worth failing on  # noqa: BLE001
         return ""
     if not body:
         return ""
@@ -299,6 +300,7 @@ class NetBoxGraphQLClient:
                 raise GraphQLSchemaError(messages)
 
             return body.get("data", {})
+        return None
 
     def query_all(self, graphql_query, list_key, page_size=None, variables=None, on_page=None):
         """Auto-paginate a GraphQL list query using offset/limit.

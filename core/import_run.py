@@ -1,20 +1,24 @@
 """Import pipeline planning and execution."""
 
+import os
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-import os
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from core.change_detector import ChangeDetector, ChangeType, IMAGE_PROPERTIES
+from core.change_detector import IMAGE_PROPERTIES, ChangeDetector, ChangeType
 from core.component_cache import NullTaskDisplay, RichTaskDisplay
 from core.config import RunConfig
 from core.errors import VendorSelectionError
 from core.outcomes import EntityKind, Outcome
 
-
 _PROGRESS_DESC_WIDTH = 28
+
+
+def _as_aware(moment):
+    """Return *moment* with a timezone attached; a naive value means local time."""
+    return moment if moment.tzinfo is not None else moment.astimezone()
 
 
 @dataclass(frozen=True)
@@ -67,7 +71,7 @@ class RunSummary:
             outcome_counts=netbox.outcomes.summary_by_kind(),
             failure_lines=tuple(netbox.outcomes.render_failure_report()),
             duplicate_definitions=tuple(repo.duplicate_definitions),
-            elapsed=datetime.now() - started_at,
+            elapsed=datetime.now(UTC) - started_at,
         )
 
     def outcome_count(self, kind, outcome):
@@ -580,7 +584,7 @@ class ImportRun:
             netbox (NetBox): Connected NetBox interface.
             reporter (LogHandler): Run message sink.
             progress_factory: Context manager factory for the Rich progress display.
-            started_at (datetime | None): Start time used for elapsed-time reporting.
+            started_at (datetime | None): Start time for elapsed-time reporting; naive means local.
         """
         if not isinstance(config, RunConfig):
             raise TypeError("config must be a RunConfig")
@@ -589,7 +593,8 @@ class ImportRun:
         self.netbox = netbox
         self.reporter = reporter
         self.progress_factory = progress_factory
-        self.started_at = started_at or datetime.now()
+        # Normalize here: a naive value would otherwise survive the run and raise in capture().
+        self.started_at = _as_aware(started_at) if started_at is not None else datetime.now(UTC)
         self.progress: Any = None
         self.task_registry = None
         self.vendor_task_id = None

@@ -3,13 +3,15 @@
 Entry point: ``Exporter(config, handle, export_dir, force_overwrite, vendor_slugs).run()``
 """
 
+import contextlib
 import hashlib
 import os
 import re
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional, Sequence
+from typing import Any
 
 import requests
 import yaml
@@ -108,7 +110,7 @@ class ExportItem:
 
     kind: str  # "device-type" | "module-type" | "rack-type"
     nb_record: Any
-    repo_yaml: Optional[dict]  # None when absent from repo
+    repo_yaml: dict | None  # None when absent from repo
     serialized: dict  # What we will write
     reason: str  # "absent" | "differs" | "images-missing"
     mfr_name: str
@@ -248,7 +250,7 @@ def _is_subset(sub: Any, sup: Any) -> bool:
 class Exporter:
     """Exports NetBox device/module/rack types to a local directory in DTL format."""
 
-    def __init__(self, config, handle, export_dir: str, force_overwrite: bool, vendor_slugs: Optional[Sequence[str]]):
+    def __init__(self, config, handle, export_dir: str, force_overwrite: bool, vendor_slugs: Sequence[str] | None):
         """Initialize the Exporter from the resolved run configuration."""
         self.config = config
         self.handle = handle
@@ -270,7 +272,7 @@ class Exporter:
             handle=handle,
             page_size=config.graphql_page_size,
         )
-        self._module_image_details: Optional[dict] = None
+        self._module_image_details: dict | None = None
 
     def _get_module_image_details(self) -> dict:
         """Return module type image details, fetching from NetBox at most once per run."""
@@ -297,7 +299,7 @@ class Exporter:
         self.graphql.detect_module_bay_type_support()
 
         # ── Fetch all types from NetBox ──────────────────────────────────────
-        by_model, by_slug = self.graphql.get_device_types(manufacturer_slugs=self.vendor_slugs)
+        by_model, _by_slug = self.graphql.get_device_types(manufacturer_slugs=self.vendor_slugs)
         all_mt = self.graphql.get_module_types(manufacturer_slugs=self.vendor_slugs)
         all_rt = self.graphql.get_rack_types(manufacturer_slugs=self.vendor_slugs)
 
@@ -371,9 +373,9 @@ class Exporter:
         repo_dt_by_slug,
         repo_mt_by_key,
         progress,
-    ) -> tuple[List[ExportItem], int]:
+    ) -> tuple[list[ExportItem], int]:
         """Compare stale device/module types per vendor and return export items."""
-        items: List[ExportItem] = []
+        items: list[ExportItem] = []
         skipped_fresh = 0
         compare_task = (
             progress.add_task("Comparing vendors", total=len(all_vendor_slugs))
@@ -441,9 +443,9 @@ class Exporter:
 
         return items, skipped_fresh
 
-    def _compare_racks_to_items(self, all_rt, manifest, repo_rt_by_key, progress) -> tuple[List[ExportItem], int]:
+    def _compare_racks_to_items(self, all_rt, manifest, repo_rt_by_key, progress) -> tuple[list[ExportItem], int]:
         """Compare stale rack types and return export items."""
-        items: List[ExportItem] = []
+        items: list[ExportItem] = []
         skipped_fresh = 0
         rack_records = [record for models in all_rt.values() for record in models.values()]
         rack_task = (
@@ -698,10 +700,8 @@ class Exporter:
                 results = list(pool.map(_fetch_one, COMPONENT_ENDPOINT_NAMES))
         finally:
             for client in _clients:
-                try:
+                with contextlib.suppress(Exception):
                     client.close()
-                except Exception:
-                    pass
 
         for endpoint_name, records in results:
             for rec in records:
@@ -717,7 +717,7 @@ class Exporter:
 
     def _determine_export_set_for_device_types(
         self, nb_records: list, repo_dt_by_slug: dict, components_by_dt_id: dict
-    ) -> List[ExportItem]:
+    ) -> list[ExportItem]:
         """Build the list of device types that need exporting to the repo.
 
         Includes records absent from the repo, those whose serialized form
@@ -733,7 +733,7 @@ class Exporter:
             manifest_key = f"{mfr_name}/{rec.slug}"
 
             repo_yaml = repo_dt_by_slug.get((mfr_slug, rec.slug))
-            reason: Optional[str]
+            reason: str | None
             if repo_yaml is None:
                 reason = "absent"
             elif _repo_supersedes(repo_yaml, serialized):
@@ -759,7 +759,7 @@ class Exporter:
 
     def _determine_export_set_for_module_types(
         self, nb_records: list, repo_mt_by_key: dict, components_by_mt_id: dict
-    ) -> List[ExportItem]:
+    ) -> list[ExportItem]:
         """Build the list of module types that need exporting to the repo.
 
         Includes records absent from the repo and those whose serialized form
@@ -796,7 +796,7 @@ class Exporter:
             )
         return items
 
-    def _determine_export_set_for_rack_types(self, nb_records: list, repo_rt_by_key: dict) -> List[ExportItem]:
+    def _determine_export_set_for_rack_types(self, nb_records: list, repo_rt_by_key: dict) -> list[ExportItem]:
         """Build the list of rack types that need exporting to the repo.
 
         Includes records absent from the repo and those whose serialized form
@@ -833,7 +833,7 @@ class Exporter:
             )
         return items
 
-    def _check_missing_images(self, front_url, rear_url, mfr_name: str, slug: str) -> Optional[str]:
+    def _check_missing_images(self, front_url, rear_url, mfr_name: str, slug: str) -> str | None:
         """Return ``'images-missing'`` if any expected local image is absent; else None.
 
         DTL stores images under ``elevation-images/<Vendor>/<slug>.{front,rear}.{png,jpg,jpeg,gif}``
@@ -874,7 +874,7 @@ class Exporter:
         """Download images for *item*. Returns True if all downloads succeeded."""
         if item.kind == "device-type":
             return self._download_device_type_images(item)
-        elif item.kind == "module-type":
+        if item.kind == "module-type":
             return self._download_module_type_images(item)
         return True  # rack types have no images
 
@@ -975,7 +975,7 @@ class Exporter:
         return ok
 
     def _download_image(
-        self, url_path: str, dest: Path, content_type_out: "Optional[list]" = None
+        self, url_path: str, dest: Path, content_type_out: "list | None" = None
     ) -> "str | _SkipSentinel | None":
         """Download an image from NetBox and write to *dest*.
 

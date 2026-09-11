@@ -39,9 +39,12 @@ def _orphaned_docstrings(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for statement in node.body[1:]:
-            if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant):
-                if isinstance(statement.value.value, str):
-                    yield node.name, statement.lineno
+            if (
+                isinstance(statement, ast.Expr)
+                and isinstance(statement.value, ast.Constant)
+                and isinstance(statement.value.value, str)
+            ):
+                yield node.name, statement.lineno
 
 
 def test_the_scan_follows_pytest_discovery(tmp_path):

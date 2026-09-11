@@ -1,21 +1,23 @@
 """NetBox REST and GraphQL API client for importing device and module type libraries."""
 
-from collections import Counter
-from dataclasses import replace
-from contextlib import contextmanager
-from functools import lru_cache
+import glob
 import hashlib
 import json
+import os
 import tempfile
 import time
+from collections import Counter
+from contextlib import contextmanager, suppress
+from dataclasses import replace
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
+
 import pynetbox
 import requests
-import os
-import glob
-from pathlib import Path
-from typing import Any, Optional
 
 from core.change_detector import ChangeDetector, ChangeType
+from core.compat import parse_netbox_version, supports_module_bay_types
 from core.component_cache import ComponentCache
 from core.component_registry import (
     BY_YAML_KEY,
@@ -26,9 +28,8 @@ from core.component_registry import (
     MODULE_TYPE_COMPONENTS,
     MODULE_TYPE_RELATIONS,
 )
-from core.compat import parse_netbox_version, supports_module_bay_types
-from core.formatting import log_property_diffs
 from core.errors import FatalError, UnknownError
+from core.formatting import log_property_diffs
 from core.graphql_client import GraphQLError, NetBoxGraphQLClient
 from core.normalization import values_equal
 from core.outcomes import EntityKind, Outcome, OutcomeRegistry
@@ -247,7 +248,7 @@ def _is_image_hash_changed(local_path: str, hash_cache: dict, log_fn=None) -> bo
     return current != cached
 
 
-def _load_image_hash_cache(path: Optional[str], log_fn=None) -> dict:
+def _load_image_hash_cache(path: str | None, log_fn=None) -> dict:
     """Load the image-hash cache from *path* (JSON), returning an empty dict when it cannot be read.
 
     An absent file is the normal first run and stays quiet.  Anything else means the
@@ -298,10 +299,8 @@ def _save_image_hash_cache(path: str, cache: dict) -> bool:
         return True
     except OSError:
         if tmp_path is not None:
-            try:
+            with suppress(OSError):
                 os.unlink(tmp_path)
-            except OSError:
-                pass
         return False
 
 
@@ -360,6 +359,7 @@ def _retry_on_connection_error(func, *args, **kwargs):
                 raise
             wait = _RETRY_BACKOFF[attempt] if attempt < len(_RETRY_BACKOFF) else _RETRY_BACKOFF[-1]
             time.sleep(wait)
+    return None
 
 
 # Module type scalar properties that can be compared and updated.
@@ -430,9 +430,6 @@ def _image_dir_for_yaml(src_file: str, src_segment: str, dst_segment: str) -> "P
         return None
     parts[idx] = dst_segment
     return Path(*parts)
-
-
-# from pynetbox import RequestError as APIRequestError
 
 
 def _is_mapping_removal(prop_change):
@@ -542,7 +539,7 @@ class NetBox:
         _cache_dir = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "nb-dt-import"
         try:
             _cache_dir.mkdir(parents=True, exist_ok=True)
-            self._image_hash_cache_path: Optional[str] = str(_cache_dir / "image-hashes.json")
+            self._image_hash_cache_path: str | None = str(_cache_dir / "image-hashes.json")
         except OSError as exc:
             self.handle.log(
                 "[yellow]Warning: could not create image hash cache directory "
@@ -800,7 +797,7 @@ class NetBox:
                 device_type_id=dt.id,
                 device_type_yaml=device_type,
             )
-        except Exception as exc:  # defensive: classifier must never break the run
+        except Exception as exc:  # defensive: classifier must never break the run  # noqa: BLE001
             self.handle.verbose_log(f"Failure classifier raised {type(exc).__name__}: {exc}")
             return False, None
 
@@ -833,7 +830,7 @@ class NetBox:
         try:
             for step in resolution.remediation_steps:
                 step()
-        except Exception as exc:
+        except Exception as exc:  # a failed remediation is reported, not raised  # noqa: BLE001
             self.handle.log(f"Auto-resolve failed for {dt.model}: {exc}")
             return False, resolution
 
@@ -1476,11 +1473,11 @@ class NetBox:
         Returns:
             list[dict]: Module types not found in *all_module_types*.
         """
-        new_module_types = []
-        for module_type in module_types:
-            if NetBox._find_existing_module_type(module_type, all_module_types) is None:
-                new_module_types.append(module_type)
-        return new_module_types
+        return [
+            module_type
+            for module_type in module_types
+            if NetBox._find_existing_module_type(module_type, all_module_types) is None
+        ]
 
     def _log_module_property_diffs(self, mfr_slug, model, fields_info, component_changes=None):
         """Emit diff-u style lines for changed module type properties and component changes.
@@ -1900,7 +1897,7 @@ class NetBox:
         if module_type_res is not None:
             self.handle.verbose_log(
                 f"Module Type Cached: {module_type_res.manufacturer.name} - "
-                + f"{module_type_res.model} - {module_type_res.id}"
+                f"{module_type_res.model} - {module_type_res.id}"
             )
             # Upload images before the scalar PATCH so attachments are created
             # even if the property update later fails (module already exists in
@@ -1940,7 +1937,7 @@ class NetBox:
                 all_module_types.setdefault(manufacturer_slug, {})[curr_mt["model"]] = module_type_res
                 self.handle.verbose_log(
                     f"Module Type Created: {module_type_res.manufacturer.name} - "
-                    + f"{module_type_res.model} - {module_type_res.id}"
+                    f"{module_type_res.model} - {module_type_res.id}"
                 )
             except pynetbox.RequestError as excep:
                 self.handle.log(f"Error creating Module Type: {excep.error} (Context: {src_file})")
@@ -2283,7 +2280,7 @@ class _FrontPortRecordWithMappings:
     All other attribute accesses are forwarded to the underlying record.
     """
 
-    __slots__ = ("_record", "_mappings_canonical", "_mappings_m2m")
+    __slots__ = ("_mappings_canonical", "_mappings_m2m", "_record")
 
     def __init__(self, record):
         """Wrap *record* and pre-compute a canonical mappings list for ChangeDetector compatibility.
@@ -2294,7 +2291,7 @@ class _FrontPortRecordWithMappings:
         """
         object.__setattr__(self, "_record", record)
         mappings_raw = getattr(record, "mappings", None)
-        canonical: Optional[list]
+        canonical: list | None
         if mappings_raw is not None:
             # NetBox >= 4.5: mappings is a list of PortTemplateMapping objects
             canonical = []
@@ -2511,7 +2508,7 @@ class DeviceTypes:
                 payload = extract_error_payload(excep.error)
                 per_item = payload if isinstance(payload, list) and len(payload) == len(to_create) else []
                 reported = 0
-                for item, error in zip(to_create, per_item):
+                for item, error in zip(to_create, per_item, strict=False):
                     if error:
                         reported += 1
                         self._log_component_error(
@@ -3154,7 +3151,7 @@ class DeviceTypes:
         file_handles = {}
         try:
             for field, path in images.items():
-                file_handles[field] = (os.path.basename(path), open(path, "rb"))
+                file_handles[field] = (os.path.basename(path), open(path, "rb"))  # noqa: SIM115
             response = requests.patch(
                 url,
                 headers=headers,
@@ -3172,11 +3169,9 @@ class DeviceTypes:
         except OSError as e:
             self.handle.log(f"Error reading image file for device type {device_type}: {e}")
         finally:
-            for _, (_, fh) in file_handles.items():
-                try:
+            for _, fh in file_handles.values():
+                with suppress(Exception):
                     fh.close()
-                except Exception:
-                    pass
 
     def upload_image_attachment(self, baseurl, token, image_path, object_type, object_id):
         """Upload an image as an Image Attachment to a NetBox object.

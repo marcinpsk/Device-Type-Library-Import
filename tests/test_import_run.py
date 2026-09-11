@@ -2,12 +2,12 @@
 
 from collections import Counter
 from contextlib import contextmanager
-
-import pytest
-
-from core.errors import VendorSelectionError
 from types import SimpleNamespace
 
+import pytest
+from helpers import recording_handle as _recording_handle
+
+from core.errors import VendorSelectionError
 from core.import_run import (
     ImportRun,
     RunSummary,
@@ -20,7 +20,6 @@ from core.import_run import (
 from core.log_handler import LogHandler
 from core.outcomes import EntityKind, Outcome
 from core.repo import DTLRepo
-from helpers import recording_handle as _recording_handle
 
 
 class _ComponentCache:
@@ -118,7 +117,7 @@ class _RepositoryBoundary:
     @staticmethod
     def resolve_slug_files(_slugs):
         """Force the pipeline to use its full file scan."""
-        return None
+        return
 
     @staticmethod
     def get_devices(path, vendors):
@@ -435,31 +434,31 @@ class _OutcomeNetBox:
         from core.outcomes import OutcomeRegistry
 
         self.outcomes = OutcomeRegistry()
-        base = dict(
-            added=0,
-            properties_updated=0,
-            components_updated=0,
-            components_added=0,
-            components_removed=0,
-            images=0,
-            manufacturer=0,
-            module_added=0,
-            module_updated=0,
-            rack_type_added=0,
-            rack_type_updated=0,
-        )
+        base = {
+            "added": 0,
+            "properties_updated": 0,
+            "components_updated": 0,
+            "components_added": 0,
+            "components_removed": 0,
+            "images": 0,
+            "manufacturer": 0,
+            "module_added": 0,
+            "module_updated": 0,
+            "rack_type_added": 0,
+            "rack_type_updated": 0,
+        }
         base.update(counter or {})
         self.counter = Counter(base)
 
 
 def _summary_lines(netbox):
     """Render a run summary through the real LogHandler and return its lines."""
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     handle, console = _recording_handle()
     handle.verbose = True
     repo = SimpleNamespace(duplicate_definitions=[])
-    summary = RunSummary.capture(netbox, repo, datetime.now())
+    summary = RunSummary.capture(netbox, repo, datetime.now(UTC))
     _log_run_summary(handle, summary)
     return console.lines
 
@@ -534,3 +533,54 @@ def test_headline_partials_match_the_itemised_rows():
     assert "2 device types partially updated" in text
     assert "1 modules partially updated" in text
     assert "Partial updates: 3" in text
+
+
+class TestNaiveStartedAtIsNormalized:
+    """A naive started_at used to survive construction and fail much later, in the summary."""
+
+    def test_a_naive_started_at_is_stored_timezone_aware(self, make_config, tmp_path):
+        from datetime import datetime
+
+        run = ImportRun(
+            make_config(),
+            _RepositoryBoundary(tmp_path),
+            _NetBoxBoundary(),
+            LogHandler(False),
+            _ProgressFactory(),
+            started_at=datetime(2020, 1, 1, 12, 0, 0),  # noqa: DTZ001 - a naive value is the subject of this test
+        )
+
+        assert run.started_at.tzinfo is not None, "a naive value cannot be subtracted from an aware now()"
+
+    def test_a_run_started_naive_still_produces_a_summary(self, make_config, tmp_path):
+        """The real failure: RunSummary.capture subtracts started_at from an aware now()."""
+        from datetime import datetime
+
+        run = ImportRun(
+            make_config(),
+            _RepositoryBoundary(tmp_path),
+            _NetBoxBoundary(),
+            LogHandler(False),
+            _ProgressFactory(),
+            started_at=datetime(2020, 1, 1, 12, 0, 0),  # noqa: DTZ001 - a naive value is the subject of this test
+        )
+
+        summary = RunSummary.capture(_NetBoxBoundary(), SimpleNamespace(duplicate_definitions=[]), run.started_at)
+
+        assert summary.elapsed.total_seconds() > 0
+
+    def test_an_aware_started_at_is_left_alone(self, make_config, tmp_path):
+        from datetime import UTC, datetime
+
+        given = datetime(2020, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+        run = ImportRun(
+            make_config(),
+            _RepositoryBoundary(tmp_path),
+            _NetBoxBoundary(),
+            LogHandler(False),
+            _ProgressFactory(),
+            started_at=given,
+        )
+
+        assert run.started_at == given

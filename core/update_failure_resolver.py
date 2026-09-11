@@ -20,9 +20,10 @@ error logging.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, List, Optional
+from typing import Any
 
 
 class FailureKind(str, Enum):
@@ -57,10 +58,10 @@ class FailureResolution:
 
     kind: FailureKind
     description: str = ""
-    blocking_objects: List[str] = field(default_factory=list)
-    dependent_devices_count: Optional[int] = None
-    dependent_devices_sample: List[str] = field(default_factory=list)
-    remediation_steps: List[Callable[[], None]] = field(default_factory=list)
+    blocking_objects: list[str] = field(default_factory=list)
+    dependent_devices_count: int | None = None
+    dependent_devices_sample: list[str] = field(default_factory=list)
+    remediation_steps: list[Callable[[], None]] = field(default_factory=list)
     hint: str = ""
 
     @property
@@ -91,7 +92,7 @@ def extract_error_payload(error: Any) -> Any:
     if isinstance(error, (bytes, bytearray)):
         try:
             error = error.decode("utf-8", errors="replace")
-        except Exception:
+        except Exception:  # pynetbox raises many types; a probe failure is not fatal  # noqa: BLE001
             return error
     if isinstance(error, str):
         try:
@@ -120,7 +121,7 @@ def _matches_subdevice_role_constraint(payload: Any) -> bool:
     return False
 
 
-def _count_dependent_devices(netbox: Any, device_type_id: int) -> tuple[int, List[str]]:
+def _count_dependent_devices(netbox: Any, device_type_id: int) -> tuple[int, list[str]]:
     """Query NetBox for devices using *device_type_id*.
 
     Returns ``(count, sample_names)`` where ``sample_names`` is up to 5 names
@@ -135,7 +136,7 @@ def _count_dependent_devices(netbox: Any, device_type_id: int) -> tuple[int, Lis
     filter_kwargs = {"device_type_id": device_type_id}
     try:
         devices = list(netbox.dcim.devices.filter(**filter_kwargs, limit=5))
-    except Exception:
+    except Exception:  # pynetbox raises many types; a probe failure is not fatal  # noqa: BLE001
         return -1, []
     sample = [getattr(d, "name", None) or str(getattr(d, "id", "?")) for d in devices[:5]]
     if len(devices) < 5:
@@ -143,12 +144,12 @@ def _count_dependent_devices(netbox: Any, device_type_id: int) -> tuple[int, Lis
     # We capped at limit=5; query the real total separately.
     try:
         total = netbox.dcim.devices.count(**filter_kwargs)
-    except Exception:
+    except Exception:  # pynetbox raises many types; a probe failure is not fatal  # noqa: BLE001
         total = len(devices)
     return total, sample
 
 
-def _list_device_bay_templates(netbox: Any, device_type_id: int) -> Optional[List[Any]]:
+def _list_device_bay_templates(netbox: Any, device_type_id: int) -> list[Any] | None:
     """Return all ``DeviceBayTemplate`` records attached to *device_type_id*.
 
     Returns ``None`` when the NetBox query itself fails (network error, 5xx, etc.)
@@ -160,7 +161,7 @@ def _list_device_bay_templates(netbox: Any, device_type_id: int) -> Optional[Lis
     """
     try:
         return list(netbox.dcim.device_bay_templates.filter(device_type_id=device_type_id))
-    except Exception:
+    except Exception:  # pynetbox raises many types; a probe failure is not fatal  # noqa: BLE001
         return None
 
 
