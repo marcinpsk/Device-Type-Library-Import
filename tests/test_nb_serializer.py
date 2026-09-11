@@ -488,7 +488,7 @@ class TestFrontPortSerialization:
         components = {1: {"interface_templates": [iface_z, iface_a]}}
         result = serialize_device_type(record, components)
         names = [i["name"] for i in result["interfaces"]]
-        assert names == sorted(names)
+        assert names == ["eth0", "eth9"]
 
 
 class TestRelationSerialization:
@@ -634,6 +634,29 @@ class TestPortMappingsStanza:
             ("FP2", 2),
             ("FP3", 3),
         ]
+
+    def test_mappings_sort_by_numeric_positions_then_rear_port_name(self):
+        import yaml
+
+        fp = self._front_port(
+            "FP1",
+            [
+                self._mapping("RP2", "10.0", "2.0"),
+                self._mapping("RP2", 2, 2),
+                self._mapping("RP1", "2.0", 2),
+                self._mapping("RP1", None, None),
+            ],
+            positions=2,
+        )
+
+        result = serialize_device_type(self._device(), {1: {"front_port_templates": [fp]}})
+
+        assert result["port-mappings"] == yaml.safe_load("""
+- {front_port: FP1, front_port_position: 1, rear_port: RP1, rear_port_position: 1}
+- {front_port: FP1, front_port_position: 2, rear_port: RP1, rear_port_position: 2}
+- {front_port: FP1, front_port_position: 2, rear_port: RP2, rear_port_position: 2}
+- {front_port: FP1, front_port_position: 2, rear_port: RP2, rear_port_position: 10}
+""")
 
     def test_a_pre_45_server_still_exports_its_mappings(self):
         """Below 4.5 NetBox returns rear_port scalars; dropping them would lose the linkage."""

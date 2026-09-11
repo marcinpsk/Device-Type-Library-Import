@@ -11,7 +11,7 @@ from typing import Any, List, Optional
 from enum import Enum
 
 from core.component_registry import BY_YAML_KEY, COMPONENT_TYPES
-from core.normalization import normalize_values
+from core.normalization import is_explicit_list, normalize_values
 from core.formatting import log_property_diffs
 from core.schema_reader import load_properties_for_type
 
@@ -50,7 +50,7 @@ def _is_relation_list(value):
     Blank is checked after stripping, matching the catalog: accepting "   " here only defers
     the rejection to the write path, where it skips the whole component's update.
     """
-    return isinstance(value, list) and all(isinstance(item, str) and item.strip() for item in value)
+    return is_explicit_list(value) and all(isinstance(item, str) and item.strip() for item in value)
 
 
 def _relation_change(prop, yaml_comp, netbox_comp, catalog=None, manufacturer=None, handle=None):

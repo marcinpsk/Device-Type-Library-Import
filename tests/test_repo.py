@@ -1,6 +1,7 @@
 import os
 
 import pytest
+import yaml
 from unittest.mock import MagicMock, call, mock_open, patch
 from git import Actor, Repo as GitRepo, exc as git_exc
 from core.repo import (
@@ -1104,6 +1105,44 @@ class TestNormalizePortMappings:
         assert err is None
         assert "port-mappings" not in data
 
+    @pytest.mark.parametrize("stanza", ["", "port-mappings:", "port-mappings: []"])
+    def test_only_an_explicit_list_manages_front_port_mappings(self, stanza):
+        data = yaml.safe_load(f"""
+front-ports:
+  - name: FP1
+    type: 8p8c
+  - name: FP2
+    type: 8p8c
+{stanza}
+""")
+
+        assert normalize_port_mappings(data) is None
+        assert "port-mappings" not in data
+        for port in data["front-ports"]:
+            if stanza == "port-mappings: []":
+                assert port["_mappings"] == []
+            else:
+                assert "_mappings" not in port
+
+    @pytest.mark.parametrize(
+        ("stanza", "expected"),
+        [
+            ("RP1", "Error: port-mappings must be a list: 'RP1'"),
+            ("{FP1: RP1}", "Error: port-mappings must be a list: {'FP1': 'RP1'}"),
+            ("[RP1]", "Error: port-mappings entry must be a mapping: 'RP1'"),
+        ],
+    )
+    def test_malformed_stanza_returns_an_error(self, stanza, expected):
+        data = yaml.safe_load(f"""
+front-ports:
+  - {{name: FP1, type: 8p8c}}
+rear-ports:
+  - {{name: RP1, type: 8p8c}}
+port-mappings: {stanza}
+""")
+
+        assert normalize_port_mappings(data) == expected
+
     def test_empty_stanza_no_front_ports_still_deleted(self):
         """Empty port-mappings stanza with no front-ports is cleaned up (not silently skipped)."""
         data = {
@@ -1842,6 +1881,59 @@ class TestAnExplicitlyEmptyStanza:
 
 class TestAStanzaThatDoesNotListAFrontPort:
     """A stanza speaks for the whole file, so a port it omits has no mapping."""
+
+    def test_a_nonempty_stanza_clears_an_omitted_front_port_mapping(self):
+        from types import SimpleNamespace
+        from core.change_detector import ChangeDetector
+
+        data = yaml.safe_load("""
+front-ports:
+  - {name: FP1, type: 8p8c}
+  - {name: FP2, type: 8p8c}
+rear-ports:
+  - {name: RP1, type: 8p8c}
+  - {name: RP2, type: 8p8c}
+port-mappings:
+  - {front_port: FP1, rear_port: RP1}
+""")
+
+        assert normalize_port_mappings(data) is None
+        assert data["front-ports"][0]["_mappings"] == [
+            {"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 1}
+        ]
+        assert data["front-ports"][1]["_mappings"] == []
+
+        existing = SimpleNamespace(
+            name="FP2",
+            _mappings_canonical=[{"rear_port_name": "RP2", "front_port_position": 1, "rear_port_position": 1}],
+        )
+        detector = ChangeDetector(SimpleNamespace(), LogHandler(False))
+        changes = detector._compare_component_properties(
+            data["front-ports"][1], existing, ["_mappings"], comp_type="front-ports"
+        )
+        assert len(changes) == 1
+        assert changes[0].property_name == "_mappings"
+        assert changes[0].old_value == {("RP2", 1, 1)}
+        assert changes[0].new_value == set()
+
+    def test_a_half_migrated_file_errors_before_assigning_mappings(self):
+        data = yaml.safe_load("""
+front-ports:
+  - {name: FP1, type: 8p8c, rear_port: RP1}
+  - {name: FP2, type: 8p8c}
+rear-ports:
+  - {name: RP1, type: 8p8c}
+  - {name: RP2, type: 8p8c}
+port-mappings:
+  - {front_port: FP2, rear_port: RP2}
+""")
+
+        assert normalize_port_mappings(data) == (
+            "Error: front port 'FP1' declares an inline rear_port but the port-mappings "
+            "stanza does not list it; the stanza is authoritative, so add 'FP1' to it "
+            "or remove the inline rear_port keys"
+        )
+        assert all("_mappings" not in port for port in data["front-ports"])
 
     def test_an_inline_linkage_the_stanza_omits_names_the_stanza_as_authoritative(self):
         """The old wording blamed a conflict against a stanza that never mentioned the port."""

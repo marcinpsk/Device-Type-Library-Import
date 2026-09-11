@@ -169,11 +169,12 @@ def _port_mappings(records: list) -> list:
     stanza = []
     for record in sorted(records, key=lambda r: str(getattr(r, "name", "") or "")):
         name = getattr(record, "name", None)
+        mappings = []
         for mapping in getattr(record, "mappings", None) or []:
             rear_port = getattr(mapping, "rear_port", None)
             if not rear_port:
                 continue
-            stanza.append(
+            mappings.append(
                 {
                     "front_port": name,
                     "front_port_position": _coerce_numeric(getattr(mapping, "front_port_position", None)) or 1,
@@ -181,6 +182,9 @@ def _port_mappings(records: list) -> list:
                     "rear_port_position": _coerce_numeric(getattr(mapping, "rear_port_position", None)) or 1,
                 }
             )
+        stanza.extend(
+            sorted(mappings, key=lambda m: (m["front_port_position"], m["rear_port_position"], m["rear_port"] or ""))
+        )
         if getattr(record, "mappings", None):
             continue
         legacy = getattr(record, "rear_port", None)

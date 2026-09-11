@@ -13,6 +13,7 @@ import yaml
 
 from core.config import LOCAL_REPO_URL, is_local_repo_url
 from core.errors import FatalError, UnknownError
+from core.normalization import is_explicit_list
 
 # Top-level directories that make a checkout a device-type library.
 LIBRARY_TYPE_DIRS = ("device-types", "module-types", "rack-types")
@@ -362,9 +363,9 @@ def normalize_port_mappings(data):
     """
     front_ports = data.get("front-ports") or []
     port_mappings_stanza = data.get("port-mappings")
-
-    if not front_ports and "port-mappings" not in data:
-        return None
+    stanza_authoritative = is_explicit_list(port_mappings_stanza)
+    if port_mappings_stanza is not None and not stanza_authoritative:
+        return f"Error: port-mappings must be a list: {port_mappings_stanza!r}"
 
     front_by_name = {fp["name"]: fp for fp in front_ports if fp.get("name")}
     rear_ports_declared = "rear-ports" in data
@@ -379,9 +380,10 @@ def normalize_port_mappings(data):
 
     # --- New port-mappings stanza ---
     stanza_mappings: dict = {}  # {front_port_name: [mapping_dict, ...]}
-    stanza_present = "port-mappings" in data
-    if stanza_present:
+    if stanza_authoritative:
         for entry in port_mappings_stanza or []:
+            if not isinstance(entry, dict):
+                return f"Error: port-mappings entry must be a mapping: {entry!r}"
             fp_name = entry.get("front_port")
             rp_name = entry.get("rear_port")
             if not fp_name or not rp_name:
@@ -397,26 +399,23 @@ def normalize_port_mappings(data):
                     "rear_port_position": entry.get("rear_port_position", 1),
                 }
             )
-        del data["port-mappings"]
+    data.pop("port-mappings", None)
 
     conflict = _conflicting_mapping(inline_mappings, stanza_mappings)
     if conflict:
         return conflict
 
-    # An explicitly empty stanza states there are no mappings.  An absent key states nothing,
-    # so only the first may clear what NetBox already holds.
-    if stanza_present and not stanza_mappings:
-        if inline_mappings:
+    if stanza_authoritative:
+        if not stanza_mappings and inline_mappings:
             return (
                 "Error: port-mappings is empty but front port(s) "
                 f"{sorted(inline_mappings)} still declare an inline rear_port"
             )
         for fp in front_ports:
-            fp["_mappings"] = []
+            fp["_mappings"] = stanza_mappings.get(fp.get("name"), [])
         return None
 
-    effective = stanza_mappings if stanza_mappings else inline_mappings
-    for fp_name, mappings in effective.items():
+    for fp_name, mappings in inline_mappings.items():
         if fp_name in front_by_name:
             front_by_name[fp_name]["_mappings"] = mappings
 

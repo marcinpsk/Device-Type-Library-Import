@@ -206,8 +206,15 @@ def _repo_supersedes(repo_yaml: dict, nb_serialized: dict) -> bool:
         filled = [{"positions": 1, **p} if isinstance(p, dict) else p for p in ports]
         return {**d, "front-ports": filled}
 
-    nrepo = _normalize_for_compare(_default_positions(_norm_mfr(repo_yaml)))
-    nnb = _normalize_for_compare(_default_positions(_norm_mfr(nb_serialized)))
+    def _sort_port_mappings(d: dict) -> dict:
+        mappings = d.get("port-mappings")
+        if not isinstance(mappings, list) or not all(isinstance(mapping, dict) for mapping in mappings):
+            return d
+        fields = ("front_port", "front_port_position", "rear_port", "rear_port_position")
+        return {**d, "port-mappings": sorted(mappings, key=lambda m: tuple(str(m.get(field)) for field in fields))}
+
+    nrepo = _sort_port_mappings(_normalize_for_compare(_default_positions(_norm_mfr(repo_yaml))))
+    nnb = _sort_port_mappings(_normalize_for_compare(_default_positions(_norm_mfr(nb_serialized))))
     return _is_subset(nnb, nrepo)
 
 
