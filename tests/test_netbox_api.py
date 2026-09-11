@@ -1,8 +1,8 @@
 import os
 import threading
-from types import SimpleNamespace
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -7645,7 +7645,7 @@ class TestAMappingClearNeedsTheRemovalFlag:
                 sent += [pc for pc in change.property_changes if pc.property_name == "_mappings"]
         return sent
 
-    @pytest.mark.parametrize("remove_components, expected", [(False, 0), (True, 1)])
+    @pytest.mark.parametrize(("remove_components", "expected"), [(False, 0), (True, 1)])
     def test_the_flag_decides_whether_a_clear_reaches_netbox(
         self, mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle, remove_components, expected
     ):

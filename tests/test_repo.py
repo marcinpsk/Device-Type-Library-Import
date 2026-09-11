@@ -1884,6 +1884,7 @@ class TestAStanzaThatDoesNotListAFrontPort:
 
     def test_a_nonempty_stanza_clears_an_omitted_front_port_mapping(self):
         from types import SimpleNamespace
+
         from core.change_detector import ChangeDetector
 
         data = yaml.safe_load("""

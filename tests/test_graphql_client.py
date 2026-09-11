@@ -1159,8 +1159,9 @@ class TestGetComponentTemplates:
     @pytest.mark.real_http
     @pytest.mark.parametrize("caller", ["graphql_relation_fields", "get_module_types"])
     def test_relation_selections_use_the_shared_helper(self, caller):
-        from core.component_registry import BY_ENDPOINT
         from helpers import FakeNetBox
+
+        from core.component_registry import BY_ENDPOINT
 
         expected = "module_bay_types { id name slug manufacturer { slug } }"
         if caller == "graphql_relation_fields":
@@ -1177,8 +1178,9 @@ class TestGetComponentTemplates:
 
     @pytest.mark.real_http
     def test_module_type_query_contains_the_complete_relation_selection(self):
-        from core.component_registry import BY_ENDPOINT
         from helpers import FakeNetBox
+
+        from core.component_registry import BY_ENDPOINT
 
         server = FakeNetBox()
         try:
@@ -1190,8 +1192,7 @@ class TestGetComponentTemplates:
 
         selection = "module_bay_types { id name slug manufacturer { slug } }"
         assert BY_ENDPOINT["module_bay_templates"].graphql_relation_fields == [selection]
-        assert " ".join(query.split()) == " ".join(
-            """
+        expected_query = """
 query($pagination: OffsetPaginationInput) {
   module_type_list(pagination: $pagination) {
     id model part_number airflow description comments weight weight_unit last_updated
@@ -1199,8 +1200,8 @@ query($pagination: OffsetPaginationInput) {
     manufacturer { id name slug }
   }
 }
-""".split()
-        )
+"""
+        assert " ".join(query.split()) == " ".join(expected_query.split())
 
     def test_a_clone_still_selects_the_module_bay_type_relation(self, mock_post):
         """The prefetch runs on clones, not on the client it was cloned from.
