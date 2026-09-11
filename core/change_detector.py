@@ -474,7 +474,7 @@ class ChangeDetector:
         """
         from core.module_bay_types import ModuleBayTypeCatalog
 
-        catalog = getattr(self.device_types, "module_bay_types", None)
+        catalog = getattr(self.device_types, "module_bay_type_catalog", None)
         return catalog if isinstance(catalog, ModuleBayTypeCatalog) else None
 
     def _compare_component_properties(

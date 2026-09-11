@@ -569,8 +569,9 @@ class TestCatalogWiring:
     def test_the_catalog_is_built_from_the_repo_path_and_reused(self, make_device_types, catalog_root):
         device_types, _ = make_device_types()
 
-        catalog = device_types.module_bay_types
+        catalog = device_types.module_bay_type_catalog
 
         assert isinstance(catalog, ModuleBayTypeCatalog)
-        assert device_types.module_bay_types is catalog
+        assert device_types.module_bay_type_catalog is catalog
+        assert not hasattr(device_types, "module_bay_types")
         assert catalog.identities_for("juniper", ["MX304-RE"]) == frozenset({("juniper", "mx304-re")})

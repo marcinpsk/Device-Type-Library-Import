@@ -1156,6 +1156,52 @@ class TestGetComponentTemplates:
 
         return NetBoxGraphQLClient("http://netbox.local", "tok")
 
+    @pytest.mark.real_http
+    @pytest.mark.parametrize("caller", ["graphql_relation_fields", "get_module_types"])
+    def test_relation_selections_use_the_shared_helper(self, caller):
+        from core.component_registry import BY_ENDPOINT
+        from helpers import FakeNetBox
+
+        expected = "module_bay_types { id name slug manufacturer { slug } }"
+        if caller == "graphql_relation_fields":
+            assert BY_ENDPOINT["module_bay_templates"].graphql_relation_fields == [expected]
+        else:
+            server = FakeNetBox()
+            try:
+                client = NetBoxGraphQLClient(server.url, "test-token", supports_module_bay_types=True)
+                assert client.get_module_types() == {}
+                query = server.sent("POST", "graphql")[0]["query"]
+                assert expected in " ".join(query.split())
+            finally:
+                server.close()
+
+    @pytest.mark.real_http
+    def test_module_type_query_contains_the_complete_relation_selection(self):
+        from core.component_registry import BY_ENDPOINT
+        from helpers import FakeNetBox
+
+        server = FakeNetBox()
+        try:
+            client = NetBoxGraphQLClient(server.url, "test-token", supports_module_bay_types=True)
+            assert client.get_module_types() == {}
+            query = server.sent("POST", "graphql")[0]["query"]
+        finally:
+            server.close()
+
+        selection = "module_bay_types { id name slug manufacturer { slug } }"
+        assert BY_ENDPOINT["module_bay_templates"].graphql_relation_fields == [selection]
+        assert " ".join(query.split()) == " ".join(
+            """
+query($pagination: OffsetPaginationInput) {
+  module_type_list(pagination: $pagination) {
+    id model part_number airflow description comments weight weight_unit last_updated
+    module_bay_types { id name slug manufacturer { slug } }
+    manufacturer { id name slug }
+  }
+}
+""".split()
+        )
+
     def test_a_clone_still_selects_the_module_bay_type_relation(self, mock_post):
         """The prefetch runs on clones, not on the client it was cloned from.
 

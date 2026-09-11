@@ -1632,7 +1632,7 @@ class NetBox:
             wanted = sorted(set(declared))
             current = sorted({name for name in (getattr(item, "name", None) for item in related) if name})
             if _relation_identities_differ(
-                self.device_types.module_bay_types,
+                self.device_types.module_bay_type_catalog,
                 self.device_types._manufacturer_slug(module_type.get("manufacturer")),
                 declared,
                 related,
@@ -1655,7 +1655,8 @@ class NetBox:
             return {k: v for k, v in payload.items() if k not in names}
         manufacturer = self.device_types._manufacturer_slug(payload.get("manufacturer"))
         resolved = {
-            field: self.device_types.module_bay_types.ids_for(manufacturer, value) for field, value in names.items()
+            field: self.device_types.module_bay_type_catalog.ids_for(manufacturer, value)
+            for field, value in names.items()
         }
         return {**payload, **resolved}
 
@@ -1680,7 +1681,7 @@ class NetBox:
 
             for field, _current, wanted in self._type_relation_changes(curr_mt, module_type_res):
                 try:
-                    updates[field] = self.device_types.module_bay_types.ids_for(
+                    updates[field] = self.device_types.module_bay_type_catalog.ids_for(
                         self.device_types._manufacturer_slug(curr_mt.get("manufacturer")), wanted
                     )
                 except ModuleBayTypeError as exc:
@@ -2354,7 +2355,7 @@ class DeviceTypes:
             wrap_record=_FrontPortRecordWithMappings,
         )
         self._image_progress = None
-        self._module_bay_types = None
+        self._module_bay_type_catalog = None
         # Component failures for the entity currently inside collect_component_errors().
         self._component_errors: list[str] = []
         self.existing_device_types = {}
@@ -2638,7 +2639,7 @@ class DeviceTypes:
                         from core.module_bay_types import ModuleBayTypeError
 
                         try:
-                            update_data[pc.property_name] = self.module_bay_types.ids_for(
+                            update_data[pc.property_name] = self.module_bay_type_catalog.ids_for(
                                 self._manufacturer_slug(yaml_data.get("manufacturer")), pc.new_value
                             )
                         except ModuleBayTypeError as exc:
@@ -2989,13 +2990,13 @@ class DeviceTypes:
             )
 
     @property
-    def module_bay_types(self):
+    def module_bay_type_catalog(self):
         """The module-bay-type catalog, built once per run from the library checkout."""
-        if self._module_bay_types is None:
+        if self._module_bay_type_catalog is None:
             from core.module_bay_types import ModuleBayTypeCatalog
 
-            self._module_bay_types = ModuleBayTypeCatalog(self.netbox, self.repo_path, self.handle)
-        return self._module_bay_types
+            self._module_bay_type_catalog = ModuleBayTypeCatalog(self.netbox, self.repo_path, self.handle)
+        return self._module_bay_type_catalog
 
     @staticmethod
     def _manufacturer_slug(manufacturer):
@@ -3039,7 +3040,7 @@ class DeviceTypes:
                 continue
             try:
                 replacements = {
-                    field: self.module_bay_types.ids_for(manufacturer, value) for field, value in names.items()
+                    field: self.module_bay_type_catalog.ids_for(manufacturer, value) for field, value in names.items()
                 }
             except ModuleBayTypeError as exc:
                 self._log_component_error(f"Skipped {component.label} '{item.get('name', 'Unknown')}': {exc}")

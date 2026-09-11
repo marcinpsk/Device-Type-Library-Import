@@ -60,7 +60,7 @@ def two_scope_catalog(tmp_path):
 
 def _detector(catalog, handle=None):
     """Build a detector whose device_types exposes the catalog, as the real one does."""
-    device_types = type("DeviceTypes", (), {"module_bay_types": catalog, "module_bay_types_supported": True})()
+    device_types = type("DeviceTypes", (), {"module_bay_type_catalog": catalog, "module_bay_types_supported": True})()
     return ChangeDetector(device_types, handle or Handle())
 
 

@@ -24,6 +24,11 @@ RELATION_MODULE_BAY_TYPES = "module_bay_types"
 MODULE_TYPE_RELATIONS = (RELATION_MODULE_BAY_TYPES,)
 
 
+def relation_selection(name):
+    """Return the GraphQL fields that identify a related object."""
+    return f"{name} {{ id name slug manufacturer {{ slug }} }}"
+
+
 @dataclass(frozen=True)
 class ComponentType:
     """One kind of component template, described once."""
@@ -50,8 +55,7 @@ class ComponentType:
     @property
     def graphql_relation_fields(self):
         """GraphQL selections for this row's relations, one nested block per relation."""
-        # slug plus owning manufacturer is the identity; the name alone is ambiguous.
-        return [f"{name} {{ id name slug manufacturer {{ slug }} }}" for name in self.relations]
+        return [relation_selection(name) for name in self.relations]
 
     @property
     def compare_properties(self):

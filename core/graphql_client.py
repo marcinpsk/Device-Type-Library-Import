@@ -13,7 +13,7 @@ from collections.abc import Sequence
 import requests
 
 from core.compat import supports_module_bay_types
-from core.component_registry import BY_ENDPOINT
+from core.component_registry import BY_ENDPOINT, MODULE_TYPE_RELATIONS, relation_selection
 
 # Module-level dedup: tracks (url, requested_page_size) pairs that have already
 # emitted the page-size clamping warning so the message appears at most once
@@ -523,8 +523,7 @@ class NetBoxGraphQLClient:
         """
         var_decl, filter_fragment, extra_vars = self._build_manufacturer_filter(manufacturer_slugs)
         module_bay_type_selection = (
-            "module_bay_types {\n              id\n              name\n              slug\n"
-            "              manufacturer {\n                slug\n              }\n            }\n            "
+            "".join(f"{relation_selection(name)}\n            " for name in MODULE_TYPE_RELATIONS)
             if self.supports_module_bay_types
             else ""
         )
