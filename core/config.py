@@ -1,9 +1,11 @@
 """Resolution of one run's configuration from the command line and the environment."""
 
+import ipaddress
 import os
 import re
 from argparse import ArgumentParser
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -20,6 +22,27 @@ DEFAULT_PRELOAD_THREADS = 8
 REQUIRED_ENV_VARS = ("NETBOX_URL", "NETBOX_TOKEN")
 
 _DEFAULT_REPO_PATH = f"{os.path.dirname(os.path.dirname(os.path.realpath(__file__)))}/repo"
+
+
+def _sends_token_in_cleartext(url):
+    """Return True when *url* would send the API token over plain HTTP off this host."""
+    # requests treats a backslash in the authority as a delimiter and urlparse does not, so
+    # "http://10.0.0.1\\@localhost" would otherwise look like loopback and skip the notice.
+    try:
+        parsed = urlparse(str(url or "").strip().replace("\\", "/"))
+    except ValueError:
+        # urlparse rejects some authorities outright. An authority this tool cannot read is
+        # also one it cannot clear as loopback, and a notice must never abort the run.
+        return True
+    if parsed.scheme != "http":
+        return False
+    host = (parsed.hostname or "").casefold()
+    if host in {"", "localhost"}:
+        return False
+    try:
+        return not ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return True
 
 
 def is_local_repo_url(url):
@@ -271,6 +294,12 @@ def resolve_run_config(argv=None, env=None) -> RunConfig:
         # Only the environment can reach here: an explicit --slugs is rejected above.
         notices.append("Ignoring SLUGS from the environment: --export-diff does not filter by slug.")
         slugs = ()
+    netbox_url = _text(env, "NETBOX_URL")
+    if _sends_token_in_cleartext(netbox_url):
+        notices.append(
+            "NETBOX_URL uses http:// on a remote host, so the API token is sent in cleartext. "
+            "Use https:// unless NetBox is on this machine."
+        )
     if is_local_repo_url(args.url) and args.branch != DEFAULT_REPO_BRANCH:
         notices.append(
             f"Ignoring REPO_BRANCH={args.branch}: REPO_URL={LOCAL_REPO_URL} reads REPO_PATH as it stands "
@@ -278,7 +307,7 @@ def resolve_run_config(argv=None, env=None) -> RunConfig:
         )
 
     return RunConfig(
-        netbox_url=_text(env, "NETBOX_URL"),
+        netbox_url=netbox_url,
         netbox_token=_text(env, "NETBOX_TOKEN"),
         ignore_ssl_errors=(_text(env, "IGNORE_SSL_ERRORS", "False") or "False").casefold() in {"true", "1", "yes"},
         graphql_page_size=_positive_int(env, "GRAPHQL_PAGE_SIZE", DEFAULT_GRAPHQL_PAGE_SIZE),
