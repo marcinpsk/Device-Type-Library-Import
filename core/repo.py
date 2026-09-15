@@ -4,12 +4,13 @@ import concurrent.futures
 import json
 import os
 import pickle
+from collections.abc import Sequence
 from glob import glob
 from re import sub as re_sub
-from typing import Optional, Sequence
 from urllib.parse import urlparse
-from git import Repo, exc
+
 import yaml
+from git import Repo, exc
 
 from core.config import LOCAL_REPO_URL, is_local_repo_url
 from core.errors import FatalError, UnknownError
@@ -79,7 +80,7 @@ class _RestrictedUnpickler(pickle.Unpickler):
 _INDEX_MAX_BYTES = 10 * 1024 * 1024  # 10 MiB — DTL index files are typically <1 MiB
 
 
-def _resolve_index_path(base_dir: str, stem: str) -> "Optional[str]":
+def _resolve_index_path(base_dir: str, stem: str) -> "str | None":
     """Return the path to a DTL index file, preferring the JSON form over the legacy pickle.
 
     Upstream DTL replaced ``tests/known-*.pickle`` with ``tests/known-*.json`` (GHSA-492p-5wp7-2w7c).
@@ -96,8 +97,8 @@ def _resolve_index_path(base_dir: str, stem: str) -> "Optional[str]":
 
 
 def _vendor_slugs_from_index(
-    index_path: "Optional[str]", slugs_lower: list, slug_format, subdir_filter: "Optional[str]" = None
-) -> "Optional[set]":
+    index_path: "str | None", slugs_lower: list, slug_format, subdir_filter: "str | None" = None
+) -> "set | None":
     """Load a (model_name, vendor_dir) index and return the set of vendor slugs matching *slugs_lower*.
 
     *index_path* may point at a ``.json`` (current) or ``.pickle`` (legacy) file; the loader is
@@ -109,7 +110,7 @@ def _vendor_slugs_from_index(
         return None
     try:
         entries = _safe_index_load(index_path)
-    except Exception:
+    except Exception:  # an unreadable index or definition is skipped, not fatal  # noqa: BLE001
         return None
     result = set()
     for model_name, vendor_dir in entries:
@@ -122,7 +123,7 @@ def _vendor_slugs_from_index(
     return result
 
 
-def _safe_abs_path(repo_root: str, relpath: str) -> "Optional[str]":
+def _safe_abs_path(repo_root: str, relpath: str) -> "str | None":
     """Return the absolute path for *relpath* inside *repo_root*, or None if it escapes the root."""
     abs_path = os.path.normpath(os.path.join(repo_root, *relpath.replace("\\", "/").split("/")))
     return abs_path if abs_path.startswith(os.path.normpath(repo_root) + os.sep) else None
@@ -215,9 +216,7 @@ def validate_git_url(url):
     if url.startswith("https://"):
         parsed = urlparse(url)
         if parsed.scheme == "https" and parsed.hostname:
-            # Optional: enforce an allowlist if desired
-            # if parsed.hostname not in ("github.com", "gitlab.com"):
-            #     return False, f"Host not allowed: {parsed.hostname}"
+            # Any HTTPS host is accepted: the library is forked and self-hosted widely.
             return True, None
         return False, "Invalid HTTPS URL"
 
@@ -434,7 +433,7 @@ def parse_single_file(file):
             `src` set to the file path.
         str: Error string beginning with "Error:" describing YAML parsing or other failure.
     """
-    with open(file, "r") as stream:
+    with open(file) as stream:
         try:
             data = yaml.safe_load(stream)
             manufacturer = data["manufacturer"]
@@ -450,7 +449,7 @@ def parse_single_file(file):
             return data
         except yaml.YAMLError as excep:
             return f"Error: {excep}"
-        except Exception as e:
+        except Exception as e:  # an unreadable index or definition is skipped, not fatal  # noqa: BLE001
             return f"Error: {e}"
 
 
@@ -625,7 +624,7 @@ class DTLRepo:
         except Exception as git_error:
             raise UnknownError("Git Repository Error", cause=git_error) from git_error
 
-    def get_devices(self, base_path, vendors: Optional[Sequence[str]] = None):
+    def get_devices(self, base_path, vendors: Sequence[str] | None = None):
         """Discover device YAML files and vendor directories under a base path.
 
         Args:
@@ -702,7 +701,7 @@ class DTLRepo:
         device_files: dict = {}  # vendor_slug -> [abs_path]
         try:
             known_slugs = _safe_index_load(device_index)
-        except Exception:
+        except Exception:  # an unreadable index or definition is skipped, not fatal  # noqa: BLE001
             return None
 
         for entry_slug, relpath in known_slugs:
@@ -769,7 +768,7 @@ class DTLRepo:
         # Return sorted list by slug
         return sorted(vendors_dict.values(), key=lambda v: v["slug"])
 
-    def parse_files(self, files: list, slugs: Optional[Sequence[str]] = None, progress=None):
+    def parse_files(self, files: list, slugs: Sequence[str] | None = None, progress=None):
         """Parse YAML device files into device type dicts, optionally filtering and tracking progress.
 
         Args:

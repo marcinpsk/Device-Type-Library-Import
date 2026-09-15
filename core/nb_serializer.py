@@ -4,7 +4,8 @@ Direction: NetBox record → Python dict suitable for ``yaml.dump()`` and
 comparison against existing repo YAML files.
 """
 
-from typing import Any, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 from core.component_registry import BY_ENDPOINT, COMPONENT_TYPES, MODULE_TYPE_RELATIONS
 
@@ -107,9 +108,7 @@ def _should_include(field: str, val: Any) -> bool:
         return False
     if isinstance(val, str) and val == "":
         return False
-    if field in _OMIT_IF_EQUAL and val == _OMIT_IF_EQUAL[field]:
-        return False
-    return True
+    return not (field in _OMIT_IF_EQUAL and val == _OMIT_IF_EQUAL[field])
 
 
 def _serialize_component(record: Any, fields: Sequence[str]) -> dict:

@@ -1,9 +1,9 @@
-from types import SimpleNamespace
 from inspect import signature
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from core.log_handler import LogHandler
 from core.graphql_client import NetBoxGraphQLClient
+from core.log_handler import LogHandler
 from core.netbox_api import DeviceTypes, NetBox
 from core.repo import DTLRepo
 
@@ -166,3 +166,34 @@ def test_progress_group_supports_nested_blocks():
         handle.end_progress_group()
 
     print_mock.assert_called_once_with("[12:00:00] Nested message")
+
+
+class TestTimestampStaysOnLocalWallClock:
+    """The timestamp is timezone-aware now, which must not move what the operator reads to UTC."""
+
+    def test_the_timestamp_reads_local_time_not_utc(self, monkeypatch):
+        """A UTC-based fix for DTZ005 would silently shift every logged line by the local offset."""
+        import time
+        from datetime import UTC, datetime
+
+        monkeypatch.setenv("TZ", "Asia/Tokyo")
+        time.tzset()
+        try:
+            # One absolute instant: 18:04:05 UTC is 03:04:05 the next day in Tokyo.
+            instant = datetime(2026, 1, 1, 18, 4, 5, tzinfo=UTC)
+
+            class _FrozenClock:
+                """Models a real clock: naive now() is local, now(tz) converts the same instant."""
+
+                @staticmethod
+                def now(tz=None):
+                    if tz is not None:
+                        return instant.astimezone(tz)
+                    return instant.astimezone().replace(tzinfo=None)
+
+            monkeypatch.setattr("core.log_handler.datetime", _FrozenClock)
+
+            assert LogHandler(False)._timestamp() == "03:04:05", "local wall-clock, not the 18:04:05 UTC reading"
+        finally:
+            monkeypatch.undo()
+            time.tzset()

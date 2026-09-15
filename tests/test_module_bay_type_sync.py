@@ -12,6 +12,7 @@ wire.  Only the version handshake is stood in for, to fix the server release und
 
 import pynetbox
 import pytest
+from helpers import FakeNetBox, recording_handle, write_module_bay_type
 
 from core.change_detector import ChangeType, ComponentChange, PropertyChange
 from core.component_registry import BY_YAML_KEY
@@ -19,7 +20,6 @@ from core.graphql_client import NetBoxGraphQLClient
 from core.module_bay_types import ModuleBayTypeCatalog
 from core.netbox_api import DeviceTypes, NetBox
 from core.outcomes import EntityKind, Outcome
-from helpers import FakeNetBox, recording_handle, write_module_bay_type
 
 # The suite patches requests.Session by default, which would stop every request below.
 pytestmark = pytest.mark.real_http
@@ -484,7 +484,8 @@ class TestComponentCreateWiring:
         )
 
         posted = server.sent("POST", "module_bay_templates")
-        assert posted and "module_bay_types" not in posted[0]
+        assert posted
+        assert "module_bay_types" not in posted[0]
 
     def test_an_unresolvable_bay_is_never_posted(self, make_device_types, server):
         device_types, _ = make_device_types()

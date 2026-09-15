@@ -312,14 +312,14 @@ _LIBRARY_ROOT = None
 
 
 @pytest.fixture(scope="session", autouse=True)
-def _real_library_root(tmp_path_factory):
+def real_library_root(tmp_path_factory):
     """Point the repo mocks at a real library tree: the pipeline stats these paths before reading them."""
     global _LIBRARY_ROOT
     root = tmp_path_factory.mktemp("library")
     for name in ("device-types", "module-types", "rack-types"):
         (root / name).mkdir()
     _LIBRARY_ROOT = root
-    yield root
+    return root
 
 
 def _make_mock_repo(device_types=None):
@@ -479,7 +479,7 @@ class TestGetProgressWrapper:
 
 
 # ---------------------------------------------------------------------------
-# filter_device_types_by_change_keys – empty-keys branch
+# filter_device_types_by_change_keys - empty-keys branch
 # ---------------------------------------------------------------------------
 
 
@@ -494,7 +494,7 @@ class TestFilterDeviceTypesByChangeKeys:
 
 
 # ---------------------------------------------------------------------------
-# select_device_types_* – None report branches
+# select_device_types_* - None report branches
 # ---------------------------------------------------------------------------
 
 
@@ -558,15 +558,17 @@ class TestImageProgressScope:
         mock_progress.add_task.return_value = 1
         mock_dt = MagicMock()
 
-        with pytest.raises(ValueError):
-            with import_run_module._image_progress_scope(mock_progress, mock_dt, total=3):
-                raise ValueError("boom")
+        with (
+            pytest.raises(ValueError, match="boom"),
+            import_run_module._image_progress_scope(mock_progress, mock_dt, total=3),
+        ):
+            raise ValueError("boom")
 
         assert mock_dt._image_progress is None
 
 
 # ---------------------------------------------------------------------------
-# main() – comprehensive branch coverage
+# main() - comprehensive branch coverage
 # ---------------------------------------------------------------------------
 
 
@@ -826,9 +828,9 @@ class TestMain:
             patch("nb_dt_import.NetBox"),
             patch.dict(os.environ, {}, clear=True),
             patch("core.config.load_dotenv"),
+            pytest.raises(SystemExit),
         ):
-            with pytest.raises(SystemExit):
-                nb_dt_import.main()
+            nb_dt_import.main()
 
     def test_vendors_and_slugs_flags_log_lines(self, nb_dt_import, capsys):
         """--vendors and --slugs args cause their respective log lines to execute."""
@@ -1088,9 +1090,8 @@ class TestEntryPoint:
         with patch("core.repo.DTLRepo") as MockDTLRepo, patch("core.netbox_api.NetBox"):
             MockDTLRepo.side_effect = _requests.exceptions.ConnectionError("Remote end closed")
 
-            with patch.object(sys, "argv", ["nb-dt-import.py", "--only-new"]):
-                with pytest.raises(SystemExit):
-                    runpy.run_path(_NB_DT_IMPORT_PATH, run_name="__main__")
+            with patch.object(sys, "argv", ["nb-dt-import.py", "--only-new"]), pytest.raises(SystemExit):
+                runpy.run_path(_NB_DT_IMPORT_PATH, run_name="__main__")
 
         captured = capsys.readouterr()
         assert "connection" in captured.err.lower() or "netbox" in captured.err.lower()
@@ -1352,7 +1353,7 @@ class TestLogRunSummary:
 
     def test_rack_types_counters_are_logged(self, nb_dt_import):
         """When netbox.rack_types is True, rack_type_added/updated counters are logged."""
-        from datetime import datetime
+        from datetime import UTC, datetime
 
         handle = MagicMock()
         mock_nb = MagicMock()
@@ -1373,7 +1374,7 @@ class TestLogRunSummary:
         )
         mock_nb.outcomes.render_failure_report.return_value = []
         mock_repo = SimpleNamespace(duplicate_definitions=[])
-        summary = import_run_module.RunSummary.capture(mock_nb, mock_repo, datetime.now())
+        summary = import_run_module.RunSummary.capture(mock_nb, mock_repo, datetime.now(UTC))
 
         import_run_module._log_run_summary(handle, summary)
 
@@ -1383,7 +1384,7 @@ class TestLogRunSummary:
 
     def test_duplicate_definitions_are_logged(self, nb_dt_import):
         """When dtl_repo has duplicate_definitions, each entry is logged with kept/ignored."""
-        from datetime import datetime
+        from datetime import UTC, datetime
 
         handle = MagicMock()
         mock_nb = MagicMock()
@@ -1411,7 +1412,7 @@ class TestLogRunSummary:
             }
         ]
         mock_nb.outcomes.render_failure_report.return_value = []
-        summary = import_run_module.RunSummary.capture(mock_nb, mock_repo, datetime.now())
+        summary = import_run_module.RunSummary.capture(mock_nb, mock_repo, datetime.now(UTC))
 
         import_run_module._log_run_summary(handle, summary)
 
@@ -1481,9 +1482,9 @@ class TestFatalErrorPolicy:
         with (
             patch.object(nb_dt_import, "resolve_run_config", return_value=make_config(verbose=False)),
             patch.object(nb_dt_import, "_run", side_effect=error),
+            pytest.raises(SystemExit) as exc_info,
         ):
-            with pytest.raises(SystemExit) as exc_info:
-                nb_dt_import.main()
+            nb_dt_import.main()
 
         assert str(exc_info.value) == 'An unknown error occurred: "Git Repository Error"'
         assert capsys.readouterr().out == ""
@@ -1498,9 +1499,9 @@ class TestFatalErrorPolicy:
         with (
             patch.object(nb_dt_import, "resolve_run_config", return_value=make_config(verbose=True)),
             patch.object(nb_dt_import, "_run", side_effect=error),
+            pytest.raises(SystemExit),
         ):
-            with pytest.raises(SystemExit):
-                nb_dt_import.main()
+            nb_dt_import.main()
 
         output = capsys.readouterr().out
         assert "Traceback (most recent call last)" in output
@@ -1895,9 +1896,9 @@ class TestMainAdditionalCoverage:
             patch("nb_dt_import.NetBox", return_value=mock_nb),
             patch("core.import_run._process_device_types", side_effect=RuntimeError("boom")),
             patch("nb_dt_import.get_progress_panel", return_value=_Ctx()),
+            pytest.raises(RuntimeError, match="boom"),
         ):
-            with pytest.raises(RuntimeError, match="boom"):
-                nb_dt_import.main()
+            nb_dt_import.main()
 
         mock_nb.device_types.components.close.assert_called()
 
@@ -2032,19 +2033,19 @@ class TestMainAdditionalCoverage:
         )
         netbox = _make_mock_netbox()
 
-        with (
+        with (  # noqa: PT012
             patch("core.import_run._process_device_types", side_effect=RuntimeError("boom")),
             patch("core.import_run._finalize_task_registry") as mock_finalize,
+            pytest.raises(RuntimeError, match="boom"),
         ):
-            with pytest.raises(RuntimeError, match="boom"):
-                run = import_run_module.ImportRun(
-                    config,
-                    dtl_repo,
-                    netbox,
-                    handle,
-                    lambda _show_remaining_time: nullcontext(progress),
-                )
-                run.execute()
+            run = import_run_module.ImportRun(
+                config,
+                dtl_repo,
+                netbox,
+                handle,
+                lambda _show_remaining_time: nullcontext(progress),
+            )
+            run.execute()
 
         netbox.device_types.components.close.assert_called()
         mock_finalize.assert_called_once_with(progress, {})
@@ -2125,9 +2126,9 @@ class TestExportDiffVendorFilterEndToEnd:
     """
 
     def test_single_vendor_reaches_the_graphql_request(
-        self, nb_dt_import, monkeypatch, tmp_path, capsys, mock_post, _real_library_root
+        self, nb_dt_import, monkeypatch, tmp_path, capsys, mock_post, real_library_root
     ):
-        _run_export_diff_cli(nb_dt_import, monkeypatch, tmp_path, _real_library_root, "Cisco")
+        _run_export_diff_cli(nb_dt_import, monkeypatch, tmp_path, real_library_root, "Cisco")
 
         payloads = [call.kwargs["json"] for call in mock_post.call_args_list]
         filters = _filters_by_list_field(payloads)
@@ -2138,10 +2139,10 @@ class TestExportDiffVendorFilterEndToEnd:
         assert "Nothing to export" in capsys.readouterr().out
 
     def test_multiple_vendors_are_sent_as_a_json_list(
-        self, nb_dt_import, monkeypatch, tmp_path, capsys, mock_post, _real_library_root
+        self, nb_dt_import, monkeypatch, tmp_path, capsys, mock_post, real_library_root
     ):
         """A tuple would not compare equal here, and NetBox would not accept it as a list variable."""
-        _run_export_diff_cli(nb_dt_import, monkeypatch, tmp_path, _real_library_root, "Cisco,Juniper")
+        _run_export_diff_cli(nb_dt_import, monkeypatch, tmp_path, real_library_root, "Cisco,Juniper")
 
         payloads = [call.kwargs["json"] for call in mock_post.call_args_list]
         filters = _filters_by_list_field(payloads)
@@ -2152,10 +2153,10 @@ class TestExportDiffVendorFilterEndToEnd:
         assert "Nothing to export" in capsys.readouterr().out
 
     def test_no_vendors_queries_every_manufacturer(
-        self, nb_dt_import, monkeypatch, tmp_path, capsys, mock_post, _real_library_root
+        self, nb_dt_import, monkeypatch, tmp_path, capsys, mock_post, real_library_root
     ):
         """Without --vendors, config.vendors is (), which the GraphQL layer rejects if it reaches it."""
-        _run_export_diff_cli(nb_dt_import, monkeypatch, tmp_path, _real_library_root)
+        _run_export_diff_cli(nb_dt_import, monkeypatch, tmp_path, real_library_root)
 
         payloads = [call.kwargs["json"] for call in mock_post.call_args_list]
         filters = _filters_by_list_field(payloads)
@@ -2203,11 +2204,11 @@ class TestExportDiffVendorFilterOverRealHTTP:
         threading.Thread(target=server.serve_forever, daemon=True).start()
         return f"http://127.0.0.1:{server.server_port}", server, bodies
 
-    def test_vendor_filter_is_serialized_as_a_json_list(self, nb_dt_import, monkeypatch, tmp_path, _real_library_root):
+    def test_vendor_filter_is_serialized_as_a_json_list(self, nb_dt_import, monkeypatch, tmp_path, real_library_root):
         url, server, bodies = self._serve()
         monkeypatch.setenv("NETBOX_URL", url)
         try:
-            _run_export_diff_cli(nb_dt_import, monkeypatch, tmp_path, _real_library_root, "Cisco,Juniper")
+            _run_export_diff_cli(nb_dt_import, monkeypatch, tmp_path, real_library_root, "Cisco,Juniper")
         finally:
             server.shutdown()
             server.server_close()
@@ -2229,20 +2230,21 @@ class TestExportDiffVendorFilterOverRealHTTP:
         return [payload["query"] for payload in bodies]
 
     def test_a_47_server_is_asked_for_the_module_bay_type_relation(
-        self, nb_dt_import, monkeypatch, tmp_path, _real_library_root
+        self, nb_dt_import, monkeypatch, tmp_path, real_library_root
     ):
         """Not selecting it exports every bay without its restriction, silently.
 
         Asserted on the module-type query, which this run always issues; the component
         queries only run once there is something to export.
         """
-        queries = self._queries_for_version(nb_dt_import, monkeypatch, tmp_path, _real_library_root, "4.7.0")
+        queries = self._queries_for_version(nb_dt_import, monkeypatch, tmp_path, real_library_root, "4.7.0")
 
         module_types = [q for q in queries if "module_type_list(" in q]
-        assert module_types and all("module_bay_types" in q for q in module_types)
+        assert module_types
+        assert all("module_bay_types" in q for q in module_types)
 
-    def test_an_older_server_is_never_asked_for_it(self, nb_dt_import, monkeypatch, tmp_path, _real_library_root):
+    def test_an_older_server_is_never_asked_for_it(self, nb_dt_import, monkeypatch, tmp_path, real_library_root):
         """Selecting a field the schema lacks fails the whole query."""
-        queries = self._queries_for_version(nb_dt_import, monkeypatch, tmp_path, _real_library_root, "4.6.9")
+        queries = self._queries_for_version(nb_dt_import, monkeypatch, tmp_path, real_library_root, "4.6.9")
 
         assert not [q for q in queries if "module_bay_types" in q]

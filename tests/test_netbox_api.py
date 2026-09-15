@@ -1,24 +1,24 @@
 import os
 import threading
-from types import SimpleNamespace
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
 import pytest
+from helpers import paginate_dispatch, recording_handle
 from requests.exceptions import ConnectionError as RequestsConnectionError
-from unittest.mock import MagicMock, patch
+
 from core.component_registry import BY_YAML_KEY, COMPONENT_TYPES
-from core.outcomes import EntityKind, Outcome
 from core.netbox_api import (
+    DeviceTypes,
     NetBox,
     NetBoxError,
-    DeviceTypes,
     SSLVerificationError,
     _delete_image_attachment,
     _FrontPortRecordWithMappings,
 )
-from helpers import paginate_dispatch, recording_handle
-
+from core.outcomes import EntityKind, Outcome
 
 # All component list keys used by the GraphQL client for empty-response fallback.
 _ALL_COMPONENT_KEYS = [component.list_key for component in COMPONENT_TYPES]
@@ -806,8 +806,10 @@ class TestCreateGenericError:
 
         messages = [call.args[0] for call in mock_handle.log.call_args_list]
         assert len(messages) == 2
-        assert "eth0" in messages[0] and "This field must be unique." in messages[0]
-        assert "eth2" in messages[1] and "Invalid choice." in messages[1]
+        assert "eth0" in messages[0]
+        assert "This field must be unique." in messages[0]
+        assert "eth2" in messages[1]
+        assert "Invalid choice." in messages[1]
 
     def test_non_list_error_logs_failed_items(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
@@ -1053,7 +1055,7 @@ class TestImageDirForYaml:
         assert _image_dir_for_yaml("", "device-types", "elevation-images") is None
 
     def test_unknown_src_returns_none(self):
-        from core.netbox_api import _image_dir_for_yaml, _UNKNOWN_SRC
+        from core.netbox_api import _UNKNOWN_SRC, _image_dir_for_yaml
 
         assert _image_dir_for_yaml(_UNKNOWN_SRC, "device-types", "elevation-images") is None
 
@@ -1921,6 +1923,7 @@ class TestCreateDeviceTypesUpdatePath:
         "Device Type Updated" log MUST NOT be emitted.
         """
         import pynetbox as real_pynb2
+
         from core.change_detector import ChangeReport, DeviceTypeChange, PropertyChange
 
         mock_pynetbox.RequestError = real_pynb2.RequestError
@@ -1991,6 +1994,7 @@ class TestCreateDeviceTypesUpdatePath:
         report zero dependent devices and one blocking device-bay template.
         """
         import pynetbox as real_pynb2
+
         from core.change_detector import ChangeReport, DeviceTypeChange, PropertyChange
 
         mock_pynetbox.RequestError = real_pynb2.RequestError
@@ -2024,8 +2028,10 @@ class TestCreateDeviceTypesUpdatePath:
         # Force the .error property to return the parsed dict (pynetbox usually does this).
         err.error = {
             "subdevice_role": [
-                "Must delete all device bay templates associated with this device "
-                "before declassifying it as a parent device."
+                (
+                    "Must delete all device bay templates associated with this device "
+                    "before declassifying it as a parent device."
+                )
             ]
         }
 
@@ -2049,7 +2055,7 @@ class TestCreateDeviceTypesUpdatePath:
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
     ):
         """Without --force-resolve-conflicts, classifier hint is logged but no auto-resolve runs."""
-        nb, dt, mock_nb_api, report, device_type, blocking_template, err = self._build_subdevice_role_flip_setup(
+        nb, _dt, mock_nb_api, report, device_type, blocking_template, err = self._build_subdevice_role_flip_setup(
             mock_settings, mock_handle, mock_pynetbox, make_device_types, force=False
         )
         mock_nb_api.dcim.device_types.update.side_effect = err
@@ -2076,13 +2082,14 @@ class TestCreateDeviceTypesUpdatePath:
         assert failures[0].outcome == Outcome.FAILED
         assert "SuperServer" in failures[0].identity
         assert "module-bay-1" in failures[0].blocking_objects
-        assert failures[0].hint and "--force-resolve-conflicts" in failures[0].hint
+        assert failures[0].hint
+        assert "--force-resolve-conflicts" in failures[0].hint
 
     def test_constraint_failure_auto_resolves_when_flag_on_and_safe(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
     ):
         """With flag on + zero dependents, blocking templates are deleted and PATCH retried."""
-        nb, dt, mock_nb_api, report, device_type, blocking_template, err = self._build_subdevice_role_flip_setup(
+        nb, _dt, mock_nb_api, report, device_type, blocking_template, err = self._build_subdevice_role_flip_setup(
             mock_settings, mock_handle, mock_pynetbox, make_device_types, force=True
         )
         # First update call fails; second (after auto-resolve) succeeds.
@@ -2103,7 +2110,7 @@ class TestCreateDeviceTypesUpdatePath:
         """If the retried PATCH after auto-resolve still fails, count it as a failure exactly once."""
         import pynetbox as real_pynb2
 
-        nb, dt, mock_nb_api, report, device_type, blocking_template, err = self._build_subdevice_role_flip_setup(
+        nb, _dt, mock_nb_api, report, device_type, blocking_template, err = self._build_subdevice_role_flip_setup(
             mock_settings, mock_handle, mock_pynetbox, make_device_types, force=True
         )
         err2 = real_pynb2.RequestError(MagicMock(status_code=500, content=b'{"detail":"still bad"}'))
@@ -2124,7 +2131,7 @@ class TestCreateDeviceTypesUpdatePath:
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
     ):
         """With flag on but live devices reference the type, no remediation runs (safety gate)."""
-        nb, dt, mock_nb_api, report, device_type, blocking_template, err = self._build_subdevice_role_flip_setup(
+        nb, _dt, mock_nb_api, report, device_type, blocking_template, err = self._build_subdevice_role_flip_setup(
             mock_settings, mock_handle, mock_pynetbox, make_device_types, force=True
         )
         live_device = MagicMock()
@@ -2694,14 +2701,14 @@ class TestFilterActionableModuleTypesEdge:
         }
 
         # existing images are empty → the image is "new" → actionable
-        with patch.object(nb, "_fetch_module_type_existing_images", return_value={42: set()}):
-            with patch(
+        with (
+            patch.object(nb, "_fetch_module_type_existing_images", return_value={42: set()}),
+            patch(
                 "core.netbox_api.NetBox._discover_module_image_files",
                 return_value=[str(img)],
-            ):
-                result, existing_images_map, _ = nb.filter_actionable_module_types(
-                    [module_type], all_mts, only_new=False
-                )
+            ),
+        ):
+            result, existing_images_map, _ = nb.filter_actionable_module_types([module_type], all_mts, only_new=False)
         assert result == [module_type]
         # Verify the upload worklist is propagated so create_module_types can upload the image.
         assert existing_images_map == {42: set()}
@@ -3534,6 +3541,7 @@ class TestUpdateComponentsMiscBranches:
     ):
         """Successful property update increments components_updated counter."""
         from collections import Counter as _Counter
+
         from core.change_detector import ChangeType, ComponentChange, PropertyChange
 
         mock_nb_api = mock_pynetbox.api.return_value
@@ -3562,6 +3570,7 @@ class TestUpdateComponentsMiscBranches:
     ):
         """RequestError during property update is caught and logged."""
         import pynetbox as real_pynb2
+
         from core.change_detector import ChangeType, ComponentChange, PropertyChange
 
         mock_pynetbox.RequestError = real_pynb2.RequestError
@@ -3695,6 +3704,7 @@ class TestRemoveComponentsBranches:
     ):
         """RequestError during component deletion is caught and logged."""
         import pynetbox as real_pynb2
+
         from core.change_detector import ChangeType, ComponentChange
 
         mock_pynetbox.RequestError = real_pynb2.RequestError
@@ -4100,12 +4110,11 @@ class TestUploadImagesErrors:
         fake_fh = MagicMock()
         fake_fh.close.side_effect = OSError("cannot close")
 
-        with patch("builtins.open", return_value=fake_fh):
-            with patch("core.netbox_api.requests") as mock_req:
-                mock_req.RequestException = _req2.RequestException
-                mock_req.patch.side_effect = _req2.RequestException("server error")
-                # Should NOT raise despite close() raising
-                dt.upload_images("http://nb", "token", {"front_image": str(img)}, 1)
+        with patch("builtins.open", return_value=fake_fh), patch("core.netbox_api.requests") as mock_req:
+            mock_req.RequestException = _req2.RequestException
+            mock_req.patch.side_effect = _req2.RequestException("server error")
+            # Should NOT raise despite close() raising
+            dt.upload_images("http://nb", "token", {"front_image": str(img)}, 1)
 
         # The RequestException log should still have been called
         assert mock_handle.log.called
@@ -4556,6 +4565,7 @@ class TestCreateRackTypes:
     def test_request_error_on_update_logged_no_crash(self, mock_settings, mock_pynetbox, mock_handle):
         """RequestError during update is logged; processing continues."""
         import pynetbox
+
         from core.graphql_client import DotDict
 
         mock_pynetbox.api.return_value.version = "4.3"
@@ -4618,7 +4628,7 @@ class TestVerifyCompatibility:
     """Tests for NetBox.verify_compatibility() version thresholds."""
 
     @pytest.mark.parametrize(
-        "version_str, expected_m2m, expected_module_bay_types",
+        ("version_str", "expected_m2m", "expected_module_bay_types"),
         [
             ("4.3", False, False),
             ("4.4", False, False),
@@ -5023,6 +5033,7 @@ class TestLoadForVendor:
     ):
         """load_for_vendor populates existing_device_types and existing_device_types_by_slug."""
         from unittest.mock import patch as _patch
+
         from core.graphql_client import DotDict
 
         mock_nb_api = mock_pynetbox.api.return_value
@@ -5055,6 +5066,7 @@ class TestLoadForVendor:
     ):
         """A second call to load_for_vendor replaces data from the first call."""
         from unittest.mock import patch as _patch
+
         from core.graphql_client import DotDict
 
         mock_nb_api = mock_pynetbox.api.return_value
@@ -5086,6 +5098,7 @@ class TestLoadForVendor:
     ):
         """State is reset before the fetch so a raised exception leaves a clean slate."""
         from unittest.mock import patch as _patch
+
         import pytest
 
         mock_nb_api = mock_pynetbox.api.return_value
@@ -5307,6 +5320,7 @@ class TestIsImageHashChanged:
 
     def test_returns_false_when_hash_matches(self, tmp_path):
         import hashlib
+
         from core.netbox_api import _is_image_hash_changed
 
         data = b"unchanged_content"
@@ -5317,6 +5331,7 @@ class TestIsImageHashChanged:
 
     def test_returns_true_when_hash_differs(self, tmp_path):
         import hashlib
+
         from core.netbox_api import _is_image_hash_changed
 
         img = tmp_path / "front.png"
@@ -5326,6 +5341,7 @@ class TestIsImageHashChanged:
 
     def test_returns_false_on_file_read_error(self, tmp_path):
         import hashlib
+
         from core.netbox_api import _is_image_hash_changed
 
         path = str(tmp_path / "missing.png")
@@ -5381,9 +5397,8 @@ class TestVerifyImagesDeviceType:
 
         mock_resp = MagicMock()
         mock_resp.ok = False  # image missing on server → "missing"
-        with patch("glob.glob", return_value=[str(img)]):
-            with patch("requests.get", return_value=mock_resp):
-                nb.create_device_types([device_type])
+        with patch("glob.glob", return_value=[str(img)]), patch("requests.get", return_value=mock_resp):
+            nb.create_device_types([device_type])
 
         nb.device_types.upload_images.assert_called_once()
 
@@ -5466,9 +5481,8 @@ class TestVerifyImagesDeviceType:
         mock_resp = MagicMock()
         mock_resp.ok = True  # image accessible on server
         mock_resp.headers = {"Content-Type": "image/png"}
-        with patch("glob.glob", return_value=[str(img)]):
-            with patch("requests.get", return_value=mock_resp):
-                nb.create_device_types([device_type])
+        with patch("glob.glob", return_value=[str(img)]), patch("requests.get", return_value=mock_resp):
+            nb.create_device_types([device_type])
 
         nb.device_types.upload_images.assert_not_called()
 
@@ -5503,9 +5517,8 @@ class TestVerifyImagesDeviceType:
             "src": str(dev_types_dir / "ap.yaml"),
         }
 
-        with patch("glob.glob", return_value=[str(img)]):
-            with patch("requests.get") as mock_get:
-                nb.create_device_types([device_type])
+        with patch("glob.glob", return_value=[str(img)]), patch("requests.get") as mock_get:
+            nb.create_device_types([device_type])
 
         mock_get.assert_not_called()
         nb.device_types.upload_images.assert_not_called()
@@ -5549,10 +5562,9 @@ class TestVerifyImagesDeviceType:
         mock_resp = MagicMock()
         mock_resp.ok = True
         mock_resp.headers = {"Content-Type": "image/png"}
-        with patch("glob.glob", return_value=[str(img)]):
-            with patch("requests.get", return_value=mock_resp):
-                with patch("core.netbox_api._save_image_hash_cache") as mock_save:
-                    nb.create_device_types([device_type])
+        with patch("glob.glob", return_value=[str(img)]), patch("requests.get", return_value=mock_resp):
+            with patch("core.netbox_api._save_image_hash_cache") as mock_save:
+                nb.create_device_types([device_type])
 
         # Hash cache must have been seeded with the local file's hash
         assert str(img) in nb._image_hash_cache
@@ -5598,6 +5610,7 @@ class TestNetBoxImageHelperFunctions:
 
     def test_delete_image_attachment_logs_request_errors(self, mock_settings, mock_handle):
         import requests
+
         from core.netbox_api import _delete_image_attachment
 
         with patch("core.netbox_api.requests.delete", side_effect=requests.RequestException("boom")):
@@ -5616,6 +5629,7 @@ class TestNetBoxImageHelperFunctions:
     def test_fmt_connection_error_contains_url_and_hint(self):
         """_fmt_connection_error returns a message with the URL and a reachability hint."""
         import requests as _requests
+
         from core.netbox_api import _fmt_connection_error
 
         url = "http://netbox.example.com"
@@ -5627,8 +5641,9 @@ class TestNetBoxImageHelperFunctions:
 
     def test_fmt_connection_error_verify_compatibility_uses_it(self, mock_settings, mock_pynetbox, mock_handle):
         """verify_compatibility uses _fmt_connection_error for ConnectionError."""
-        import requests as _requests
         from unittest.mock import PropertyMock
+
+        import requests as _requests
 
         type(mock_pynetbox.api.return_value).version = PropertyMock(
             side_effect=_requests.exceptions.ConnectionError("drop")
@@ -5638,7 +5653,8 @@ class TestNetBoxImageHelperFunctions:
             NetBox(mock_settings, mock_handle)
 
         exc_msg = str(exc_info.value.args[0]) if exc_info.value.args else ""
-        assert mock_settings.netbox_url in exc_msg and "Connection" in exc_msg
+        assert mock_settings.netbox_url in exc_msg
+        assert "Connection" in exc_msg
 
     def test_check_image_url_reports_the_transport_error_when_log_fn_provided(self):
         """The wire detail goes to log_fn; the verdict goes to the return value."""
@@ -5702,7 +5718,8 @@ class TestTheImageHashCacheReportsWhatItLoses:
 
         assert nb._image_hash_cache == {}
         logged = " ".join(str(call) for call in mock_handle.log.call_args_list)
-        assert str(path) in logged and "unreadable image hash cache" in logged
+        assert str(path) in logged
+        assert "unreadable image hash cache" in logged
 
     def test_a_cache_file_holding_the_wrong_shape_is_reported(
         self, mock_settings, mock_pynetbox, mock_handle, tmp_path
@@ -6050,6 +6067,7 @@ class TestAdditionalNetBoxCoverage:
 
     def test_try_resolve_update_truncates_blocker_list(self, mock_settings, mock_pynetbox, mock_handle):
         from types import SimpleNamespace
+
         from core.update_failure_resolver import FailureKind
 
         mock_pynetbox.api.return_value.version = "4.3"
@@ -6073,6 +6091,7 @@ class TestAdditionalNetBoxCoverage:
 
     def test_try_resolve_update_logs_auto_resolve_failure(self, mock_settings, mock_pynetbox, mock_handle):
         from types import SimpleNamespace
+
         from core.update_failure_resolver import FailureKind
 
         mock_pynetbox.api.return_value.version = "4.3"
@@ -6102,9 +6121,11 @@ class TestAdditionalNetBoxCoverage:
     def test_try_resolve_update_logs_retryable_exception_after_auto_resolve(
         self, mock_settings, mock_pynetbox, mock_handle
     ):
+        from types import SimpleNamespace
+
         import pynetbox as real_pynb
         import requests
-        from types import SimpleNamespace
+
         from core.update_failure_resolver import FailureKind
 
         mock_pynetbox.RequestError = real_pynb.RequestError
@@ -6194,6 +6215,7 @@ class TestAdditionalNetBoxCoverage:
     ):
         import pynetbox as real_pynb
         import requests
+
         from core.change_detector import PropertyChange
 
         mock_pynetbox.RequestError = real_pynb.RequestError
@@ -6434,6 +6456,7 @@ class TestAdditionalDeviceTypesCoverage:
     ):
         import pynetbox as real_pynb
         import requests
+
         from core.change_detector import ChangeType, ComponentChange, PropertyChange
 
         mock_pynetbox.RequestError = real_pynb.RequestError
@@ -6460,6 +6483,7 @@ class TestAdditionalDeviceTypesCoverage:
     ):
         import pynetbox as real_pynb
         import requests
+
         from core.change_detector import ChangeType, ComponentChange
 
         mock_pynetbox.RequestError = real_pynb.RequestError
@@ -6510,6 +6534,7 @@ class TestRemainingCoverageBranches:
     def test_create_rack_types_logs_retryable_update_error(self, mock_settings, mock_pynetbox, mock_handle):
         import pynetbox as real_pynb
         import requests
+
         from core.graphql_client import DotDict
 
         mock_pynetbox.RequestError = real_pynb.RequestError
@@ -7174,13 +7199,13 @@ class TestSummaryWordingMatchesTheFailedOperation:
 
     def _summary_text(self, nb):
         """Render the real end-of-run summary for *nb* and return it as one string."""
-        from datetime import datetime
+        from datetime import UTC, datetime
         from types import SimpleNamespace
 
         from core.import_run import RunSummary, _log_run_summary
 
         handle, console = recording_handle()
-        summary = RunSummary.capture(nb, SimpleNamespace(duplicate_definitions=[]), datetime.now())
+        summary = RunSummary.capture(nb, SimpleNamespace(duplicate_definitions=[]), datetime.now(UTC))
         _log_run_summary(handle, summary)
         return "\n".join(console.lines)
 
@@ -7249,14 +7274,14 @@ class TestSkippedComponentReasonReachesTheReport:
     def _dt(self, mock_pynetbox, make_device_types, parent_id=1):
         mock_nb_api = mock_pynetbox.api.return_value
         mock_nb_api.version = "4.3"
-        dt = make_device_types(nb_api=mock_nb_api)
-        return dt
+        return make_device_types(nb_api=mock_nb_api)
 
     def test_unresolvable_power_port_reaches_the_report(
         self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
     ):
         """The Powerman case: an outlet dropped for a bad power_port must name the reason."""
         import pynetbox as real_pynb
+
         from core.change_detector import ChangeReport, ChangeType, ComponentChange, DeviceTypeChange
 
         mock_pynetbox.RequestError = real_pynb.RequestError
@@ -7342,6 +7367,7 @@ class TestComponentFailureReasonReachesTheReport:
         """A retry-exhausted update must name the transport error, not the generic label."""
         import pynetbox as real_pynb
         import requests
+
         from core.change_detector import (
             ChangeReport,
             ChangeType,
@@ -7407,6 +7433,7 @@ class TestComponentFailureReasonReachesTheReport:
         """A retry-exhausted removal must name the transport error too."""
         import pynetbox as real_pynb
         import requests
+
         from core.change_detector import ChangeType, ComponentChange
 
         mock_pynetbox.RequestError = real_pynb.RequestError
@@ -7436,6 +7463,7 @@ class TestComponentFailureReasonReachesTheReport:
     ):
         """The report must name the constraint, not the generic failure label."""
         import pynetbox as real_pynb
+
         from core.change_detector import ChangeReport, ChangeType, ComponentChange, DeviceTypeChange
 
         mock_pynetbox.RequestError = real_pynb.RequestError
@@ -7617,7 +7645,7 @@ class TestAMappingClearNeedsTheRemovalFlag:
                 sent += [pc for pc in change.property_changes if pc.property_name == "_mappings"]
         return sent
 
-    @pytest.mark.parametrize("remove_components, expected", [(False, 0), (True, 1)])
+    @pytest.mark.parametrize(("remove_components", "expected"), [(False, 0), (True, 1)])
     def test_the_flag_decides_whether_a_clear_reaches_netbox(
         self, mock_settings, mock_pynetbox, mock_graphql_requests, mock_handle, remove_components, expected
     ):

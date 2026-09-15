@@ -10,7 +10,6 @@ This module holds the row.  Consumers read it; they do not restate it.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 # What a create call must resolve from a name to a NetBox id before it can POST.
 LINK_BRIDGE = "bridge"
@@ -41,7 +40,7 @@ class ComponentType:
     relations: tuple[str, ...] = field(default_factory=tuple)
     graphql_extra: tuple[str, ...] = field(default_factory=tuple)
     compare_extra: tuple[str, ...] = field(default_factory=tuple)
-    link: Optional[str] = None
+    link: str | None = None
 
     @property
     def graphql_fields(self):

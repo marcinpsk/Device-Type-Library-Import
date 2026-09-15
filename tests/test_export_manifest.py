@@ -1,7 +1,8 @@
 """Tests for core/export_manifest.py."""
 
 import json
-from core.export_manifest import load_manifest, save_manifest, is_entry_fresh, update_entry
+
+from core.export_manifest import is_entry_fresh, load_manifest, save_manifest, update_entry
 
 
 class TestLoadManifest:

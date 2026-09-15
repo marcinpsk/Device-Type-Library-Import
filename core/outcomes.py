@@ -16,7 +16,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, List, Optional
 
 
 class EntityKind(str, Enum):
@@ -48,9 +47,9 @@ class OutcomeRecord:
     kind: EntityKind
     identity: str  # human-readable identifier (e.g. "Supermicro/SuperServer-6028TR-HTR")
     outcome: Outcome
-    reason: Optional[str] = None
-    blocking_objects: List[str] = field(default_factory=list)
-    hint: Optional[str] = None
+    reason: str | None = None
+    blocking_objects: list[str] = field(default_factory=list)
+    hint: str | None = None
 
 
 class OutcomeRegistry:
@@ -62,7 +61,7 @@ class OutcomeRegistry:
 
     def __init__(self) -> None:
         """Initialise an empty registry."""
-        self._records: List[OutcomeRecord] = []
+        self._records: list[OutcomeRecord] = []
 
     def record(
         self,
@@ -70,9 +69,9 @@ class OutcomeRegistry:
         identity: str,
         outcome: Outcome,
         *,
-        reason: Optional[str] = None,
-        blocking_objects: Optional[List[str]] = None,
-        hint: Optional[str] = None,
+        reason: str | None = None,
+        blocking_objects: list[str] | None = None,
+        hint: str | None = None,
     ) -> None:
         """Append a new outcome record."""
         self._records.append(
@@ -87,27 +86,27 @@ class OutcomeRegistry:
         )
 
     @property
-    def records(self) -> List[OutcomeRecord]:
+    def records(self) -> list[OutcomeRecord]:
         """All recorded outcomes (read-only view)."""
         return list(self._records)
 
-    def failures(self) -> List[OutcomeRecord]:
+    def failures(self) -> list[OutcomeRecord]:
         """Return only the FAILED records."""
         return [r for r in self._records if r.outcome == Outcome.FAILED]
 
-    def partials(self) -> List[OutcomeRecord]:
+    def partials(self) -> list[OutcomeRecord]:
         """Return only the PARTIAL records (some but not all changes applied)."""
         return [r for r in self._records if r.outcome == Outcome.PARTIAL]
 
-    def summary_by_kind(self) -> Dict[EntityKind, Dict[Outcome, int]]:
+    def summary_by_kind(self) -> dict[EntityKind, dict[Outcome, int]]:
         """Aggregate counts grouped by ``(kind, outcome)``."""
-        agg: Dict[EntityKind, Dict[Outcome, int]] = {}
+        agg: dict[EntityKind, dict[Outcome, int]] = {}
         for r in self._records:
             agg.setdefault(r.kind, {}).setdefault(r.outcome, 0)
             agg[r.kind][r.outcome] += 1
         return agg
 
-    def render_failure_report(self) -> List[str]:
+    def render_failure_report(self) -> list[str]:
         """Render a multi-line operator-facing failure report.
 
         Returns an empty list when no failures or partials were recorded.
@@ -118,7 +117,7 @@ class OutcomeRegistry:
         if not failures and not partials:
             return []
 
-        lines: List[str] = []
+        lines: list[str] = []
         lines.append("=" * 60)
         lines.append("FAILED / PARTIAL UPDATE REPORT")
         lines.append("=" * 60)

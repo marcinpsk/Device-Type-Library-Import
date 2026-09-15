@@ -3,9 +3,9 @@
 import ast
 import pathlib
 import textwrap
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 import requests
 
 from core.graphql_client import DotDict, NetBoxGraphQLClient
@@ -161,8 +161,9 @@ class TestNetBoxGraphQLClient:
     @pytest.mark.real_http
     def test_an_unreachable_server_fails_the_probe_as_a_graphql_error(self):
         """It is the export's first request, so a raw transport error escapes as a traceback."""
-        from core.graphql_client import GraphQLError
         from helpers import FakeNetBox
+
+        from core.graphql_client import GraphQLError
 
         server = FakeNetBox()
         url = server.url
@@ -606,8 +607,7 @@ class TestGetManufacturers:
     def _make_client(self):
         from core.graphql_client import NetBoxGraphQLClient
 
-        client = NetBoxGraphQLClient("http://netbox.local", "tok")
-        return client
+        return NetBoxGraphQLClient("http://netbox.local", "tok")
 
     def test_returns_dict_keyed_by_name(self, mock_post):
         data = {
@@ -1159,8 +1159,9 @@ class TestGetComponentTemplates:
     @pytest.mark.real_http
     @pytest.mark.parametrize("caller", ["graphql_relation_fields", "get_module_types"])
     def test_relation_selections_use_the_shared_helper(self, caller):
-        from core.component_registry import BY_ENDPOINT
         from helpers import FakeNetBox
+
+        from core.component_registry import BY_ENDPOINT
 
         expected = "module_bay_types { id name slug manufacturer { slug } }"
         if caller == "graphql_relation_fields":
@@ -1177,8 +1178,9 @@ class TestGetComponentTemplates:
 
     @pytest.mark.real_http
     def test_module_type_query_contains_the_complete_relation_selection(self):
-        from core.component_registry import BY_ENDPOINT
         from helpers import FakeNetBox
+
+        from core.component_registry import BY_ENDPOINT
 
         server = FakeNetBox()
         try:
@@ -1190,8 +1192,7 @@ class TestGetComponentTemplates:
 
         selection = "module_bay_types { id name slug manufacturer { slug } }"
         assert BY_ENDPOINT["module_bay_templates"].graphql_relation_fields == [selection]
-        assert " ".join(query.split()) == " ".join(
-            """
+        expected_query = """
 query($pagination: OffsetPaginationInput) {
   module_type_list(pagination: $pagination) {
     id model part_number airflow description comments weight weight_unit last_updated
@@ -1199,8 +1200,8 @@ query($pagination: OffsetPaginationInput) {
     manufacturer { id name slug }
   }
 }
-""".split()
-        )
+"""
+        assert " ".join(query.split()) == " ".join(expected_query.split())
 
     def test_a_clone_still_selects_the_module_bay_type_relation(self, mock_post):
         """The prefetch runs on clones, not on the client it was cloned from.
@@ -1216,7 +1217,8 @@ query($pagination: OffsetPaginationInput) {
         client.clone().get_component_templates("module_bay_templates")
 
         queries = [call.kwargs["json"]["query"] for call in mock_post.call_args_list]
-        assert queries and all("module_bay_types" in q for q in queries)
+        assert queries
+        assert all("module_bay_types" in q for q in queries)
 
     def test_the_module_type_query_selects_the_relation_only_when_supported(self, mock_post):
         """The selection has to track the server, in both directions.
@@ -1772,11 +1774,11 @@ class TestGetComponentTemplatesFrontPortFallback:
         selection — meaning there is no older tier left to fall back to.
         """
         from dataclasses import replace
+        from unittest.mock import patch
 
+        import core.graphql_client as gc_module
         from core.component_registry import BY_ENDPOINT
         from core.graphql_client import GraphQLError
-        from unittest.mock import patch
-        import core.graphql_client as gc_module
 
         # A NetBox whose schema dropped the mappings block entirely.
         stripped = {"front_port_templates": replace(BY_ENDPOINT["front_port_templates"], graphql_extra=())}
@@ -1889,9 +1891,8 @@ class TestGraphQLQueryErrorPaths:
         mock_post.side_effect = requests.exceptions.ConnectionError("connection refused")
 
         client = self._make_client()
-        with patch("core.graphql_client.time.sleep"):
-            with pytest.raises(GraphQLError, match="connection refused"):
-                client.query("{ test }", _retries=1)
+        with patch("core.graphql_client.time.sleep"), pytest.raises(GraphQLError, match="connection refused"):
+            client.query("{ test }", _retries=1)
 
     def test_request_exception_retries_before_exhausting(self, mock_post):
         """A RequestException on the first attempt stores last_exc and retries."""
@@ -1903,9 +1904,8 @@ class TestGraphQLQueryErrorPaths:
         mock_post.side_effect = requests.exceptions.Timeout("timed out")
 
         client = self._make_client()
-        with patch("core.graphql_client.time.sleep"):
-            with pytest.raises(GraphQLError, match="timed out"):
-                client.query("{ test }", _retries=1)
+        with patch("core.graphql_client.time.sleep"), pytest.raises(GraphQLError, match="timed out"):
+            client.query("{ test }", _retries=1)
 
 
 # ── Vendor-scoped filtering tests ─────────────────────────────────────────
@@ -2012,7 +2012,7 @@ class TestVendorScopedDeviceTypes:
         mock_post.side_effect = _make_paged_responses(data, "device_type_list")
 
         client = self._make_client()
-        by_model, by_slug = client.get_device_types(manufacturer_slugs=slugs)
+        by_model, _by_slug = client.get_device_types(manufacturer_slugs=slugs)
 
         assert ("cisco", "Catalyst 3850") in by_model
         assert by_model[("cisco", "Catalyst 3850")].model == "Catalyst 3850"
@@ -2068,7 +2068,7 @@ class TestVendorScopedDeviceTypes:
         mock_post.side_effect = _make_paged_responses(data, "device_type_list")
 
         client = self._make_client()
-        by_model, by_slug = client.get_device_types(manufacturer_slugs=slugs)
+        by_model, _by_slug = client.get_device_types(manufacturer_slugs=slugs)
 
         assert ("cisco", "Catalyst 3850") in by_model
         assert ("juniper", "EX4300") in by_model
@@ -2106,7 +2106,7 @@ class TestVendorScopedDeviceTypes:
         mock_post.side_effect = _make_paged_responses(data, "device_type_list")
 
         client = self._make_client()
-        by_model, by_slug = client.get_device_types(manufacturer_slugs=None)
+        _by_model, _by_slug = client.get_device_types(manufacturer_slugs=None)
 
         # Verify no filter in the query and no manufacturer variable sent
         call_payload = mock_post.call_args_list[0][1]["json"]
@@ -2477,12 +2477,12 @@ class TestVendorScopedComponentTemplates:
 
         # Verify both filters were applied via GraphQL variables (not string interpolation)
         calls = mock_post.call_args_list
-        # calls[0]: device_type filter query – data page
+        # calls[0]: device_type filter query - data page
         device_payload = calls[0][1]["json"]
         device_query = device_payload["query"]
         device_vars = device_payload["variables"]
-        # calls[1]: device_type filter query – empty terminator (pagination ends)
-        # calls[2]: module_type filter query – data page
+        # calls[1]: device_type filter query - empty terminator (pagination ends)
+        # calls[2]: module_type filter query - data page
         module_payload = calls[2][1]["json"]
         module_query = module_payload["query"]
         module_vars = module_payload["variables"]
@@ -2650,7 +2650,7 @@ class TestLastUpdatedInQueries:
             }
         ]
         client = self._mock_graphql(mocker, items)
-        by_model, by_slug = client.get_device_types()
+        by_model, _by_slug = client.get_device_types()
         record = by_model[("acme", "M")]
         assert record.last_updated == "2024-01-15T10:00:00Z"
 
@@ -2922,7 +2922,8 @@ class TestComponentFallbackClassification:
             server.shutdown()
 
         assert result == []
-        assert "T1" in attempts and "T2" in attempts
+        assert "T1" in attempts
+        assert "T2" in attempts
 
 
 @pytest.mark.real_http
@@ -2992,7 +2993,8 @@ class TestImageAttachmentFallbackClassification:
         finally:
             server.shutdown()
 
-        assert "filtered" in attempts and "unfiltered" in attempts
+        assert "filtered" in attempts
+        assert "unfiltered" in attempts
 
 
 class TestErrorHandlingStandards:

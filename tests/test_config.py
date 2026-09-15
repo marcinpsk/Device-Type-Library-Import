@@ -2,6 +2,7 @@
 
 import os
 import pathlib
+import re
 import subprocess
 import sys
 
@@ -92,7 +93,9 @@ class TestRequiredVariables:
     """Required environment values fail with a typed configuration error."""
 
     def test_one_missing_variable_uses_the_catalogue_error(self):
-        with pytest.raises(EnvironmentVariableError, match='Environment variable "NETBOX_TOKEN" is not set.'):
+        with pytest.raises(
+            EnvironmentVariableError, match=re.escape('Environment variable "NETBOX_TOKEN" is not set.')
+        ):
             resolve_run_config(argv=[], env={"NETBOX_URL": "http://netbox.local"})
 
     def test_all_missing_variables_use_one_typed_error(self):

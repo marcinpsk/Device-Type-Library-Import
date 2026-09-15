@@ -1,15 +1,16 @@
 """Tests for core/export.py — Exporter class."""
 
 from dataclasses import replace
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 import yaml
 
 from core.config import RunConfig
 from core.export import (
-    ExportItem,
+    _SKIP,
     Exporter,
+    ExportItem,
     _canon_mfr_slug,
     _is_subset,
     _make_filename,
@@ -17,10 +18,8 @@ from core.export import (
     _repo_supersedes,
     _sanitize_attachment_filename,
     _yaml_equal,
-    _SKIP,
 )
 from core.log_handler import LogHandler
-
 
 # ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -286,6 +285,7 @@ module-bays:
         against an entry that omits it would report every such definition as differing.
         """
         from types import SimpleNamespace
+
         from core.nb_serializer import _serialize_front_port
 
         legacy = SimpleNamespace(name="FP1", type="8p8c", label="", description="", color="")

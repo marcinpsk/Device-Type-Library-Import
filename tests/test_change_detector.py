@@ -1,8 +1,6 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from core.component_cache import ComponentCache
-from core.graphql_client import DotDict
 from core.change_detector import (
     ChangeDetector,
     ChangeReport,
@@ -11,6 +9,8 @@ from core.change_detector import (
     DeviceTypeChange,
     PropertyChange,
 )
+from core.component_cache import ComponentCache
+from core.graphql_client import DotDict
 
 
 def _cache(**records):
@@ -651,12 +651,14 @@ class TestLoadDeviceTypeProperties:
 
         from core.change_detector import _load_device_type_properties
 
-        with patch(
-            "core.change_detector.load_properties_for_type",
-            side_effect=RuntimeError("schema unavailable"),
+        with (
+            patch(
+                "core.change_detector.load_properties_for_type",
+                side_effect=RuntimeError("schema unavailable"),
+            ),
+            pytest.raises(RuntimeError, match="schema unavailable"),
         ):
-            with pytest.raises(RuntimeError, match="schema unavailable"):
-                _load_device_type_properties("/nonexistent")
+            _load_device_type_properties("/nonexistent")
 
 
 # ---------------------------------------------------------------------------
