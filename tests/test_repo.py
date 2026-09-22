@@ -1,8 +1,15 @@
 import os
+import re
+from unittest.mock import MagicMock, call, mock_open, patch
 
 import pytest
-from unittest.mock import MagicMock, call, mock_open, patch
-from git import Actor, Repo as GitRepo, exc as git_exc
+import yaml
+from git import Actor
+from git import Repo as GitRepo
+from git import exc as git_exc
+
+from core.errors import UnknownError
+from core.log_handler import LogHandler
 from core.repo import (
     DTLRepo,
     GitBranchNotFoundError,
@@ -14,11 +21,9 @@ from core.repo import (
     _safe_index_load,
     _safe_json_load,
     _safe_pickle_load,
-    validate_git_url,
     normalize_port_mappings,
+    validate_git_url,
 )
-from core.errors import UnknownError
-from core.log_handler import LogHandler
 
 
 def _dtl_repo(config, repo_path, handle):
@@ -45,31 +50,31 @@ class TestValidateGitUrl:
         assert err is None
 
     def test_https_no_hostname_invalid(self):
-        ok, err = validate_git_url("https://")
+        ok, _err = validate_git_url("https://")
         assert ok is False
 
     def test_git_at_scp_valid(self):
-        ok, err = validate_git_url("git@github.com:org/repo.git")
+        ok, _err = validate_git_url("git@github.com:org/repo.git")
         assert ok is True
 
     def test_git_at_no_colon_invalid(self):
-        ok, err = validate_git_url("git@github.com/org/repo.git")
+        ok, _err = validate_git_url("git@github.com/org/repo.git")
         assert ok is False
 
     def test_ssh_valid(self):
-        ok, err = validate_git_url("ssh://git@github.com/org/repo.git")
+        ok, _err = validate_git_url("ssh://git@github.com/org/repo.git")
         assert ok is True
 
     def test_ssh_no_hostname_invalid(self):
-        ok, err = validate_git_url("ssh://")
+        ok, _err = validate_git_url("ssh://")
         assert ok is False
 
     def test_file_valid(self):
-        ok, err = validate_git_url("file:///tmp/repo")
+        ok, _err = validate_git_url("file:///tmp/repo")
         assert ok is True
 
     def test_file_empty_path_invalid(self):
-        ok, err = validate_git_url("file://")
+        ok, _err = validate_git_url("file://")
         assert ok is False
 
     def test_empty_url_invalid(self):
@@ -78,11 +83,11 @@ class TestValidateGitUrl:
         assert "Empty" in err
 
     def test_ftp_invalid(self):
-        ok, err = validate_git_url("ftp://example.com/repo.git")
+        ok, _err = validate_git_url("ftp://example.com/repo.git")
         assert ok is False
 
     def test_none_invalid(self):
-        ok, err = validate_git_url(None)
+        ok, _err = validate_git_url(None)
         assert ok is False
 
 
@@ -142,7 +147,7 @@ class TestDTLRepoInit:
         mock_args.repo_url = "ftp://bad.url"
         mock_args.repo_branch = "master"
         with _clone_present(False), patch("core.repo.Repo"):
-            with pytest.raises(InvalidGitURLError, match="Invalid Git URL: ftp://bad.url"):
+            with pytest.raises(InvalidGitURLError, match=re.escape("Invalid Git URL: ftp://bad.url")):
                 _dtl_repo(mock_args, "/tmp/repo", LogHandler(False))
 
     def test_invalid_path_raises_before_repository_access(self, tmp_path):
@@ -254,7 +259,7 @@ class TestDTLRepoRealGit:
     @pytest.fixture(autouse=True)
     def mock_git_repo(self):
         """Override the global autouse git mock so these tests exercise real git."""
-        yield None
+        return
 
     @pytest.fixture(autouse=True)
     def clear_ambient_git_env(self, monkeypatch):
@@ -357,8 +362,7 @@ class TestDTLRepoPathMethods:
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            repo = _dtl_repo(mock_args, "/tmp/repo", mock_handle)
-        return repo
+            return _dtl_repo(mock_args, "/tmp/repo", mock_handle)
 
     def test_get_relative_path(self):
         repo = self._make_repo()
@@ -472,7 +476,7 @@ class TestPullRepo:
         failure = git_exc.GitCommandError("status", 1)
 
         with _clone_present(), patch("core.repo.Repo", side_effect=failure):
-            with pytest.raises(GitCommandError, match="https://example.invalid/repo.git") as exc_info:
+            with pytest.raises(GitCommandError, match=re.escape("https://example.invalid/repo.git")) as exc_info:
                 _dtl_repo(mock_args, "/tmp/repo", LogHandler(False))
 
         assert "cmdline: status" in exc_info.value.formatted_traceback
@@ -498,7 +502,9 @@ class TestPullRepo:
         invalid = git_exc.InvalidGitRepositoryError("/tmp/repo")
 
         with _clone_present(), patch("core.repo.Repo", side_effect=invalid):
-            with pytest.raises(GitInvalidRepositoryError, match='The repo "/tmp/repo" is not a valid git repo.'):
+            with pytest.raises(
+                GitInvalidRepositoryError, match=re.escape('The repo "/tmp/repo" is not a valid git repo.')
+            ):
                 _dtl_repo(mock_args, "/tmp/repo", LogHandler(False))
 
 
@@ -546,8 +552,7 @@ class TestGetDevices:
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            repo = _dtl_repo(mock_args, str(tmp_path / "repo"), mock_handle)
-        return repo
+            return _dtl_repo(mock_args, str(tmp_path / "repo"), mock_handle)
 
     def test_get_devices_all_vendors(self, tmp_path):
         repo = self._make_repo(tmp_path)
@@ -555,7 +560,7 @@ class TestGetDevices:
         devices.mkdir()
         (devices / "Cisco").mkdir()
         (devices / "Juniper").mkdir()
-        files, vendors = repo.get_devices(str(devices))
+        _files, vendors = repo.get_devices(str(devices))
         assert len(vendors) == 2
         assert any(v["name"] == "Cisco" for v in vendors)
 
@@ -565,7 +570,7 @@ class TestGetDevices:
         devices.mkdir()
         (devices / "Cisco").mkdir()
         (devices / "Juniper").mkdir()
-        files, vendors = repo.get_devices(str(devices), vendors=["cisco"])
+        _files, vendors = repo.get_devices(str(devices), vendors=["cisco"])
         assert len(vendors) == 1
         assert vendors[0]["name"] == "Cisco"
 
@@ -575,7 +580,7 @@ class TestGetDevices:
         devices.mkdir()
         (devices / "Cisco").mkdir()
         (devices / "testing").mkdir()
-        files, vendors = repo.get_devices(str(devices))
+        _files, vendors = repo.get_devices(str(devices))
         assert not any(v["name"] == "testing" for v in vendors)
 
 
@@ -595,8 +600,7 @@ class TestDiscoverVendors:
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            repo = _dtl_repo(mock_args, str(tmp_path / "repo"), mock_handle)
-        return repo
+            return _dtl_repo(mock_args, str(tmp_path / "repo"), mock_handle)
 
     def test_discovers_vendors_from_single_path(self, tmp_path):
         """Test discovery from a single existing path."""
@@ -676,7 +680,7 @@ class TestDiscoverVendors:
         def mock_listdir(path):
             if "devices" in path:
                 raise OSError("Permission denied")
-            elif "modules" in path:
+            if "modules" in path:
                 return ["Cisco"]
             return []
 
@@ -1104,6 +1108,44 @@ class TestNormalizePortMappings:
         assert err is None
         assert "port-mappings" not in data
 
+    @pytest.mark.parametrize("stanza", ["", "port-mappings:", "port-mappings: []"])
+    def test_only_an_explicit_list_manages_front_port_mappings(self, stanza):
+        data = yaml.safe_load(f"""
+front-ports:
+  - name: FP1
+    type: 8p8c
+  - name: FP2
+    type: 8p8c
+{stanza}
+""")
+
+        assert normalize_port_mappings(data) is None
+        assert "port-mappings" not in data
+        for port in data["front-ports"]:
+            if stanza == "port-mappings: []":
+                assert port["_mappings"] == []
+            else:
+                assert "_mappings" not in port
+
+    @pytest.mark.parametrize(
+        ("stanza", "expected"),
+        [
+            ("RP1", "Error: port-mappings must be a list: 'RP1'"),
+            ("{FP1: RP1}", "Error: port-mappings must be a list: {'FP1': 'RP1'}"),
+            ("[RP1]", "Error: port-mappings entry must be a mapping: 'RP1'"),
+        ],
+    )
+    def test_malformed_stanza_returns_an_error(self, stanza, expected):
+        data = yaml.safe_load(f"""
+front-ports:
+  - {{name: FP1, type: 8p8c}}
+rear-ports:
+  - {{name: RP1, type: 8p8c}}
+port-mappings: {stanza}
+""")
+
+        assert normalize_port_mappings(data) == expected
+
     def test_empty_stanza_no_front_ports_still_deleted(self):
         """Empty port-mappings stanza with no front-ports is cleaned up (not silently skipped)."""
         data = {
@@ -1214,7 +1256,7 @@ class TestValidateRepoPath:
         """Existing writable directory returns True."""
         from core.repo import validate_repo_path
 
-        ok, msg = validate_repo_path(str(tmp_path))
+        ok, _msg = validate_repo_path(str(tmp_path))
         assert ok is True
 
 
@@ -1229,6 +1271,7 @@ def test_parse_device_type_returns_error_when_normalize_fails(tmp_path):
     Covers repo.py lines 225-226: 'if err: return err'.
     """
     from unittest.mock import patch
+
     from core.repo import parse_single_file
 
     yaml_file = tmp_path / "test.yaml"
@@ -1306,8 +1349,7 @@ class TestGetRacksPath:
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            repo = _dtl_repo(mock_args, "/tmp/repo", mock_handle)
-        return repo
+            return _dtl_repo(mock_args, "/tmp/repo", mock_handle)
 
     def test_get_racks_path_ends_with_rack_types(self):
         repo = self._make_repo()
@@ -1359,8 +1401,7 @@ class TestParseFilesKeyboardInterrupt:
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            repo = _dtl_repo(mock_args, "/tmp/repo", mock_handle)
-        return repo
+            return _dtl_repo(mock_args, "/tmp/repo", mock_handle)
 
     def test_keyboard_interrupt_is_reraised(self):
         import pytest
@@ -1395,8 +1436,7 @@ class TestParseFilesKeyErrorDedup:
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            repo = _dtl_repo(mock_args, "/tmp/repo", mock_handle)
-        return repo
+            return _dtl_repo(mock_args, "/tmp/repo", mock_handle)
 
     def test_item_without_manufacturer_is_included_without_dedup(self):
         """Item missing 'manufacturer' key skips dedup and is appended as-is."""
@@ -1497,8 +1537,7 @@ class TestResolveSlugFiles:
             ref.name = "origin/master"
             mock_git_repo.remotes.origin.refs = [ref]
             MockRepo.return_value = mock_git_repo
-            repo = _dtl_repo(mock_args, "/tmp/repo", mock_handle)
-        return repo
+            return _dtl_repo(mock_args, "/tmp/repo", mock_handle)
 
     def test_returns_none_when_pickle_missing(self, tmp_path):
         """Returns None gracefully when the device pickle doesn't exist."""
@@ -1796,3 +1835,171 @@ class TestResolveSlugFilesJson:
         repo.cwd = ""
 
         assert repo.resolve_slug_files(["nokia"]) is None
+
+
+class TestAnExplicitlyEmptyStanza:
+    """`port-mappings: []` is an author saying "none", which is not the same as saying nothing."""
+
+    def test_an_empty_stanza_clears_every_front_port_mapping(self):
+        """Without _mappings: [] the change detector cannot express removing a mapping."""
+        from core.repo import normalize_port_mappings
+
+        data = {
+            "front-ports": [{"name": "FP1", "type": "8p8c"}, {"name": "FP2", "type": "8p8c"}],
+            "rear-ports": [{"name": "RP1", "type": "8p8c", "positions": 2}],
+            "port-mappings": [],
+        }
+
+        assert normalize_port_mappings(data) is None
+        assert data["front-ports"][0]["_mappings"] == []
+        assert data["front-ports"][1]["_mappings"] == []
+
+    def test_an_empty_stanza_beside_an_inline_linkage_is_a_conflict(self):
+        """Silently preferring the inline linkage ignores the newer, explicit statement."""
+        from core.repo import normalize_port_mappings
+
+        data = {
+            "front-ports": [{"name": "FP1", "type": "8p8c", "rear_port": "RP1"}],
+            "rear-ports": [{"name": "RP1", "type": "8p8c", "positions": 1}],
+            "port-mappings": [],
+        }
+
+        result = normalize_port_mappings(data)
+
+        assert result is not None, "an empty stanza beside an inline linkage must not pass silently"
+        assert result.startswith("Error:"), result
+
+    def test_no_stanza_at_all_still_leaves_mappings_unmanaged(self):
+        """An absent key must keep meaning "no opinion", or every file would clear its mappings."""
+        from core.repo import normalize_port_mappings
+
+        data = {"front-ports": [{"name": "FP1", "type": "8p8c"}], "rear-ports": []}
+
+        assert normalize_port_mappings(data) is None
+        assert "_mappings" not in data["front-ports"][0]
+
+
+class TestAStanzaThatDoesNotListAFrontPort:
+    """A stanza speaks for the whole file, so a port it omits has no mapping."""
+
+    def test_a_nonempty_stanza_clears_an_omitted_front_port_mapping(self):
+        from types import SimpleNamespace
+
+        from core.change_detector import ChangeDetector
+
+        data = yaml.safe_load("""
+front-ports:
+  - {name: FP1, type: 8p8c}
+  - {name: FP2, type: 8p8c}
+rear-ports:
+  - {name: RP1, type: 8p8c}
+  - {name: RP2, type: 8p8c}
+port-mappings:
+  - {front_port: FP1, rear_port: RP1}
+""")
+
+        assert normalize_port_mappings(data) is None
+        assert data["front-ports"][0]["_mappings"] == [
+            {"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 1}
+        ]
+        assert data["front-ports"][1]["_mappings"] == []
+
+        existing = SimpleNamespace(
+            name="FP2",
+            _mappings_canonical=[{"rear_port_name": "RP2", "front_port_position": 1, "rear_port_position": 1}],
+        )
+        detector = ChangeDetector(SimpleNamespace(), LogHandler(False))
+        changes = detector._compare_component_properties(
+            data["front-ports"][1], existing, ["_mappings"], comp_type="front-ports"
+        )
+        assert len(changes) == 1
+        assert changes[0].property_name == "_mappings"
+        assert changes[0].old_value == {("RP2", 1, 1)}
+        assert changes[0].new_value == set()
+
+    def test_a_half_migrated_file_errors_before_assigning_mappings(self):
+        data = yaml.safe_load("""
+front-ports:
+  - {name: FP1, type: 8p8c, rear_port: RP1}
+  - {name: FP2, type: 8p8c}
+rear-ports:
+  - {name: RP1, type: 8p8c}
+  - {name: RP2, type: 8p8c}
+port-mappings:
+  - {front_port: FP2, rear_port: RP2}
+""")
+
+        assert normalize_port_mappings(data) == (
+            "Error: front port 'FP1' declares an inline rear_port but the port-mappings "
+            "stanza does not list it; the stanza is authoritative, so add 'FP1' to it "
+            "or remove the inline rear_port keys"
+        )
+        assert all("_mappings" not in port for port in data["front-ports"])
+
+    def test_an_inline_linkage_the_stanza_omits_names_the_stanza_as_authoritative(self):
+        """The old wording blamed a conflict against a stanza that never mentioned the port."""
+        from core.repo import normalize_port_mappings
+
+        data = {
+            "front-ports": [
+                {"name": "FP1", "type": "8p8c", "rear_port": "RP1"},
+                {"name": "FP2", "type": "8p8c"},
+            ],
+            "rear-ports": [
+                {"name": "RP1", "type": "8p8c", "positions": 1},
+                {"name": "RP2", "type": "8p8c", "positions": 1},
+            ],
+            "port-mappings": [{"front_port": "FP2", "rear_port": "RP2"}],
+        }
+
+        result = normalize_port_mappings(data)
+
+        assert result is not None, "an inline linkage the stanza omits must not pass silently"
+        assert "conflicting mapping definitions" not in result, result
+        assert "FP1" in result, result
+        assert "does not list it" in result, result
+
+    def test_a_disagreement_on_a_shared_front_port_still_reads_as_a_conflict(self):
+        """Both formats naming one port differently is a real conflict, not an omission."""
+        from core.repo import normalize_port_mappings
+
+        data = {
+            "front-ports": [{"name": "FP1", "type": "8p8c", "rear_port": "RP1"}],
+            "rear-ports": [
+                {"name": "RP1", "type": "8p8c", "positions": 1},
+                {"name": "RP2", "type": "8p8c", "positions": 1},
+            ],
+            "port-mappings": [{"front_port": "FP1", "rear_port": "RP2"}],
+        }
+
+        result = normalize_port_mappings(data)
+
+        assert result is not None
+        assert "conflicting mapping definitions" in result, result
+
+    def test_a_stanza_may_add_a_port_the_inline_format_never_linked(self):
+        """The half-finished migration the two formats exist to allow: both are kept."""
+        from core.repo import normalize_port_mappings
+
+        data = {
+            "front-ports": [
+                {"name": "FP1", "type": "8p8c", "rear_port": "RP1"},
+                {"name": "FP2", "type": "8p8c"},
+            ],
+            "rear-ports": [
+                {"name": "RP1", "type": "8p8c", "positions": 1},
+                {"name": "RP2", "type": "8p8c", "positions": 1},
+            ],
+            "port-mappings": [
+                {"front_port": "FP1", "rear_port": "RP1"},
+                {"front_port": "FP2", "rear_port": "RP2"},
+            ],
+        }
+
+        assert normalize_port_mappings(data) is None
+        assert data["front-ports"][0]["_mappings"] == [
+            {"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 1}
+        ]
+        assert data["front-ports"][1]["_mappings"] == [
+            {"rear_port": "RP2", "front_port_position": 1, "rear_port_position": 1}
+        ]

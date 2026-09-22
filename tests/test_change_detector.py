@@ -1,8 +1,6 @@
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from core.component_cache import ComponentCache
-from core.graphql_client import DotDict
 from core.change_detector import (
     ChangeDetector,
     ChangeReport,
@@ -11,6 +9,8 @@ from core.change_detector import (
     DeviceTypeChange,
     PropertyChange,
 )
+from core.component_cache import ComponentCache
+from core.graphql_client import DotDict
 
 
 def _cache(**records):
@@ -19,7 +19,7 @@ def _cache(**records):
     Populating through the real object means these tests read the same index the
     importer builds, rather than a dict that merely looks like it.
     """
-    cache = ComponentCache(MagicMock(), MagicMock(), MagicMock(), new_filters=True, max_threads=1)
+    cache = ComponentCache(MagicMock(), MagicMock(), MagicMock(), max_threads=1)
     for endpoint_name, items in records.items():
         cache.populate(endpoint_name, items)
     return cache
@@ -428,6 +428,54 @@ class TestCompareComponentPropertiesMappings:
         """Build a netbox component with _mappings_canonical and explicit attributes."""
         return SimpleNamespace(_mappings_canonical=canonical, **attrs)
 
+    def test_adding_a_mapping_to_an_unmapped_45_port_keeps_the_rear_port_name(self):
+        """mappings=[] is 4.5+ saying "none", not a pre-4.5 record without the field.
+
+        Inferring the model from the data cannot tell those apart when the list is empty, and
+        a positions-only tuple makes _build_mappings_patch return None, so the mapping is
+        never added and nothing is logged.
+        """
+        from core.netbox_api import _FrontPortRecordWithMappings
+
+        netbox_comp = _FrontPortRecordWithMappings(SimpleNamespace(name="FP1", type="8p8c", mappings=[]))
+        yaml_comp = {
+            "name": "FP1",
+            "type": "8p8c",
+            "_mappings": [{"rear_port": "RP1", "front_port_position": 1, "rear_port_position": 1}],
+        }
+
+        changes = self._cd()._compare_component_properties(
+            yaml_comp, netbox_comp, ["name", "type", "_mappings"], comp_type="front-ports"
+        )
+
+        assert len(changes) == 1, "adding a mapping is a change"
+        tup = next(iter(changes[0].new_value))
+        assert len(tup) == 3, "a positions-only tuple cannot rebuild the M2M mapping"
+        assert tup[0] == "RP1"
+
+    def test_a_legacy_rear_port_change_is_detected_by_name(self):
+        """The pre-4.5 query asks for rear_port { id name }, so the name is available.
+
+        Discarding it left only positions to compare, and RP1/1 -> RP2/1 produced no change,
+        no PATCH and no warning: the definition silently never synced.
+        """
+        from core.netbox_api import _FrontPortRecordWithMappings
+
+        legacy = SimpleNamespace(name="FP1", type="8p8c", rear_port=SimpleNamespace(name="RP1"), rear_port_position=1)
+        netbox_comp = _FrontPortRecordWithMappings(legacy)
+        yaml_comp = {
+            "name": "FP1",
+            "type": "8p8c",
+            "_mappings": [{"rear_port": "RP2", "front_port_position": 1, "rear_port_position": 1}],
+        }
+
+        changes = self._cd()._compare_component_properties(
+            yaml_comp, netbox_comp, ["name", "type", "_mappings"], comp_type="front-ports"
+        )
+
+        assert len(changes) == 1, "moving the front port to a different rear port is a change"
+        assert next(iter(changes[0].new_value))[0] == "RP2"
+
     def test_identical_mappings_no_change(self):
         """Same mapping on both sides → no property change."""
         yaml_comp = {
@@ -603,12 +651,14 @@ class TestLoadDeviceTypeProperties:
 
         from core.change_detector import _load_device_type_properties
 
-        with patch(
-            "core.change_detector.load_properties_for_type",
-            side_effect=RuntimeError("schema unavailable"),
+        with (
+            patch(
+                "core.change_detector.load_properties_for_type",
+                side_effect=RuntimeError("schema unavailable"),
+            ),
+            pytest.raises(RuntimeError, match="schema unavailable"),
         ):
-            with pytest.raises(RuntimeError, match="schema unavailable"):
-                _load_device_type_properties("/nonexistent")
+            _load_device_type_properties("/nonexistent")
 
 
 # ---------------------------------------------------------------------------

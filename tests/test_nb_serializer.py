@@ -441,195 +441,7 @@ class TestManufacturerSerialization:
 
 
 class TestFrontPortSerialization:
-    """Tests for front port rear_port extraction."""
-
-    def test_front_port_rear_port_extracted_from_mapping(self):
-        from types import SimpleNamespace
-
-        mapping = SimpleNamespace(rear_port=SimpleNamespace(name="RP1"), rear_port_position=1)
-        fp = SimpleNamespace(name="FP1", type="8p8c", label="", description="", color="", mappings=[mapping])
-        record = _dotdict(
-            id=1,
-            model="X",
-            slug="acme-x",
-            manufacturer=_make_mfr(),
-            u_height=1,
-            is_full_depth=True,
-            part_number=None,
-            airflow=None,
-            weight=None,
-            weight_unit=None,
-            description="",
-            comments="",
-            subdevice_role=None,
-            front_image=None,
-            rear_image=None,
-        )
-        components = {1: {"front_port_templates": [fp]}}
-        result = serialize_device_type(record, components)
-        assert result["front-ports"][0]["rear_port"] == "RP1"
-        assert "rear_port_position" not in result["front-ports"][0]
-
-    def test_front_port_rear_port_position_included_when_gt_1(self):
-        from types import SimpleNamespace
-
-        mapping = SimpleNamespace(rear_port=SimpleNamespace(name="RP1"), rear_port_position=3)
-        fp = SimpleNamespace(name="FP1", type="8p8c", label="", description="", color="", mappings=[mapping])
-        record = _dotdict(
-            id=1,
-            model="X",
-            slug="acme-x",
-            manufacturer=_make_mfr(),
-            u_height=1,
-            is_full_depth=True,
-            part_number=None,
-            airflow=None,
-            weight=None,
-            weight_unit=None,
-            description="",
-            comments="",
-            subdevice_role=None,
-            front_image=None,
-            rear_image=None,
-        )
-        components = {1: {"front_port_templates": [fp]}}
-        result = serialize_device_type(record, components)
-        assert result["front-ports"][0]["rear_port_position"] == 3
-
-    def test_front_port_rear_port_position_zero_omitted(self):
-        """Position 0 is not a valid DTL value and should be omitted."""
-        from types import SimpleNamespace
-
-        mapping = SimpleNamespace(rear_port=SimpleNamespace(name="RP1"), rear_port_position=0)
-        fp = SimpleNamespace(name="FP1", type="8p8c", label="", description="", color="", mappings=[mapping])
-        record = _dotdict(
-            id=1,
-            model="X",
-            slug="acme-x",
-            manufacturer=_make_mfr(),
-            u_height=1,
-            is_full_depth=True,
-            part_number=None,
-            airflow=None,
-            weight=None,
-            weight_unit=None,
-            description="",
-            comments="",
-            subdevice_role=None,
-            front_image=None,
-            rear_image=None,
-        )
-        components = {1: {"front_port_templates": [fp]}}
-        result = serialize_device_type(record, components)
-        assert "rear_port_position" not in result["front-ports"][0]
-
-    def test_front_port_multiple_mappings_warns_and_uses_first(self):
-        """When a front port has >1 mappings a UserWarning is raised and only the first is used."""
-        import warnings
-        from types import SimpleNamespace
-
-        m1 = SimpleNamespace(rear_port=SimpleNamespace(name="RP1"), rear_port_position=1)
-        m2 = SimpleNamespace(rear_port=SimpleNamespace(name="RP2"), rear_port_position=1)
-        fp = SimpleNamespace(name="FP1", type="8p8c", label="", description="", color="", mappings=[m1, m2])
-        record = _dotdict(
-            id=1,
-            model="X",
-            slug="acme-x",
-            manufacturer=_make_mfr(),
-            u_height=1,
-            is_full_depth=True,
-            part_number=None,
-            airflow=None,
-            weight=None,
-            weight_unit=None,
-            description="",
-            comments="",
-            subdevice_role=None,
-            front_image=None,
-            rear_image=None,
-        )
-        components = {1: {"front_port_templates": [fp]}}
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            result = serialize_device_type(record, components)
-        assert result["front-ports"][0]["rear_port"] == "RP1"
-        assert len(caught) == 1
-        assert issubclass(caught[0].category, UserWarning)
-        assert "FP1" in str(caught[0].message)
-        assert "2 mappings" in str(caught[0].message)
-        assert "issue #78" in str(caught[0].message)
-
-    def test_front_port_legacy_rear_port_scalars(self):
-        """pre-4.5 NetBox: record has rear_port/rear_port_position as direct attrs (no mappings)."""
-        from types import SimpleNamespace
-
-        fp = SimpleNamespace(
-            name="FP1",
-            type="8p8c",
-            label="",
-            description="",
-            color="",
-            mappings=None,
-            rear_port=SimpleNamespace(name="RP1"),
-            rear_port_position=3,
-        )
-        record = _dotdict(
-            id=1,
-            model="X",
-            slug="acme-x",
-            manufacturer=_make_mfr(),
-            u_height=1,
-            is_full_depth=True,
-            part_number=None,
-            airflow=None,
-            weight=None,
-            weight_unit=None,
-            description="",
-            comments="",
-            subdevice_role=None,
-            front_image=None,
-            rear_image=None,
-        )
-        components = {1: {"front_port_templates": [fp]}}
-        result = serialize_device_type(record, components)
-        assert result["front-ports"][0]["rear_port"] == "RP1"
-        assert result["front-ports"][0]["rear_port_position"] == 3
-
-    def test_front_port_legacy_rear_port_position_1_omitted(self):
-        """pre-4.5: rear_port_position == 1 should be omitted (same as mappings path)."""
-        from types import SimpleNamespace
-
-        fp = SimpleNamespace(
-            name="FP1",
-            type="8p8c",
-            label="",
-            description="",
-            color="",
-            mappings=None,
-            rear_port=SimpleNamespace(name="RP1"),
-            rear_port_position=1,
-        )
-        record = _dotdict(
-            id=1,
-            model="X",
-            slug="acme-x",
-            manufacturer=_make_mfr(),
-            u_height=1,
-            is_full_depth=True,
-            part_number=None,
-            airflow=None,
-            weight=None,
-            weight_unit=None,
-            description="",
-            comments="",
-            subdevice_role=None,
-            front_image=None,
-            rear_image=None,
-        )
-        components = {1: {"front_port_templates": [fp]}}
-        result = serialize_device_type(record, components)
-        assert result["front-ports"][0]["rear_port"] == "RP1"
-        assert "rear_port_position" not in result["front-ports"][0]
+    """Front port scalars. The rear-port linkage lives in TestPortMappingsStanza."""
 
     def test_components_sorted_by_name(self):
         from types import SimpleNamespace
@@ -676,4 +488,228 @@ class TestFrontPortSerialization:
         components = {1: {"interface_templates": [iface_z, iface_a]}}
         result = serialize_device_type(record, components)
         names = [i["name"] for i in result["interfaces"]]
-        assert names == sorted(names)
+        assert names == ["eth0", "eth9"]
+
+
+class TestRelationSerialization:
+    """A module bay's restriction has to survive the trip back out to YAML."""
+
+    @staticmethod
+    def _bay(name, module_bay_types=None, **extra):
+        """Build a module bay template as the GraphQL query returns it."""
+        return _dotdict(
+            name=name,
+            position=None,
+            label="",
+            description="",
+            module_bay_types=module_bay_types,
+            **extra,
+        )
+
+    def test_a_bay_exports_the_names_of_its_classes(self):
+        record = _dotdict(id=1, model="MX304", manufacturer=_make_mfr(), part_number=None)
+        bay = self._bay("FPC 0", [_dotdict(id=9, name="MX304-LMIC"), _dotdict(id=8, name="QSFP-DD")])
+
+        result = serialize_module_type(record, {1: {"module_bay_templates": [bay]}})
+
+        assert result["module-bays"] == [{"name": "FPC 0", "module_bay_types": ["MX304-LMIC", "QSFP-DD"]}]
+
+    def test_a_bay_with_no_classes_writes_no_key(self):
+        """An empty list here would add the key to every bay in the library.
+
+        See test_an_empty_relation_does_not_make_every_definition_differ for the effect
+        that has on the export diff.
+        """
+        record = _dotdict(id=1, model="MX304", manufacturer=_make_mfr(), part_number=None)
+
+        result = serialize_module_type(record, {1: {"module_bay_templates": [self._bay("FPC 0", [])]}})
+
+        assert result["module-bays"] == [{"name": "FPC 0"}]
+
+    def test_a_server_that_never_returned_the_field_omits_the_key(self):
+        """Below 4.7 the relation is not selected, and absent must not become empty."""
+        record = _dotdict(id=1, model="MX304", manufacturer=_make_mfr(), part_number=None)
+        bay = _dotdict(name="FPC 0", position=None, label="", description="")
+
+        result = serialize_module_type(record, {1: {"module_bay_templates": [bay]}})
+
+        assert result["module-bays"] == [{"name": "FPC 0"}]
+
+    def test_a_module_type_exports_the_classes_it_belongs_to(self):
+        record = _dotdict(
+            id=5,
+            model="JNP304-RE",
+            manufacturer=_make_mfr(name="Juniper", slug="juniper"),
+            part_number=None,
+            module_bay_types=[_dotdict(id=9, name="MX304-RE")],
+        )
+
+        assert serialize_module_type(record, {})["module_bay_types"] == ["MX304-RE"]
+
+    def test_a_device_type_bay_exports_its_classes_too(self):
+        record = _dotdict(
+            id=2, model="MX304", slug="mx304", manufacturer=_make_mfr(), u_height=None, is_full_depth=None
+        )
+        bay = self._bay("RE0", [_dotdict(id=9, name="MX304-RE")])
+
+        result = serialize_device_type(record, {2: {"module_bay_templates": [bay]}})
+
+        assert result["module-bays"] == [{"name": "RE0", "module_bay_types": ["MX304-RE"]}]
+
+
+class TestPortMappingsStanza:
+    """Export writes the NetBox 4.5 port-mappings stanza the DTL schema now requires."""
+
+    @staticmethod
+    def _mapping(rear_port, rear_position=1, front_position=1):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            rear_port=SimpleNamespace(name=rear_port),
+            rear_port_position=rear_position,
+            front_port_position=front_position,
+        )
+
+    @staticmethod
+    def _front_port(name, mappings=None, positions=1, **extra):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            name=name,
+            type="lc-upc",
+            label="",
+            description="",
+            color="",
+            positions=positions,
+            mappings=mappings or [],
+            **extra,
+        )
+
+    def _device(self):
+        return _dotdict(
+            id=1,
+            model="X",
+            slug="acme-x",
+            manufacturer=_make_mfr(),
+            u_height=1,
+            is_full_depth=True,
+            part_number=None,
+            airflow=None,
+            weight=None,
+            weight_unit=None,
+            description="",
+            comments="",
+            subdevice_role=None,
+            front_image=None,
+            rear_image=None,
+        )
+
+    def test_a_front_port_carries_positions_and_no_inline_rear_port(self):
+        """The schema dropped rear_port from front-port entries and made positions required."""
+        fp = self._front_port("FP1", [self._mapping("RP1")], positions=1)
+
+        result = serialize_device_type(self._device(), {1: {"front_port_templates": [fp]}})
+
+        assert result["front-ports"] == [{"name": "FP1", "type": "lc-upc", "positions": 1}]
+
+    def test_every_mapping_reaches_the_stanza_not_just_the_first(self):
+        """The issue: a crossover front port mapped to two rear ports lost the second."""
+        fp = self._front_port("FP1", [self._mapping("RP1", 1), self._mapping("RP2", 3, front_position=2)], positions=2)
+
+        result = serialize_device_type(self._device(), {1: {"front_port_templates": [fp]}})
+
+        assert result["port-mappings"] == [
+            {"front_port": "FP1", "front_port_position": 1, "rear_port": "RP1", "rear_port_position": 1},
+            {"front_port": "FP1", "front_port_position": 2, "rear_port": "RP2", "rear_port_position": 3},
+        ]
+
+    def test_an_mpo_cassette_maps_every_front_port_to_its_rear_position(self):
+        """The shape the library actually carries: many front ports onto one MPO rear port."""
+        ports = [self._front_port(f"FP{i}", [self._mapping("MPO1", i)]) for i in (1, 2, 3)]
+
+        result = serialize_device_type(self._device(), {1: {"front_port_templates": ports}})
+
+        assert [(m["front_port"], m["rear_port_position"]) for m in result["port-mappings"]] == [
+            ("FP1", 1),
+            ("FP2", 2),
+            ("FP3", 3),
+        ]
+
+    def test_mappings_sort_by_numeric_positions_then_rear_port_name(self):
+        import yaml
+
+        fp = self._front_port(
+            "FP1",
+            [
+                self._mapping("RP2", "10.0", "2.0"),
+                self._mapping("RP2", 2, 2),
+                self._mapping("RP1", "2.0", 2),
+                self._mapping("RP1", None, None),
+            ],
+            positions=2,
+        )
+
+        result = serialize_device_type(self._device(), {1: {"front_port_templates": [fp]}})
+
+        assert result["port-mappings"] == yaml.safe_load("""
+- {front_port: FP1, front_port_position: 1, rear_port: RP1, rear_port_position: 1}
+- {front_port: FP1, front_port_position: 2, rear_port: RP1, rear_port_position: 2}
+- {front_port: FP1, front_port_position: 2, rear_port: RP2, rear_port_position: 2}
+- {front_port: FP1, front_port_position: 2, rear_port: RP2, rear_port_position: 10}
+""")
+
+    def test_a_pre_45_server_still_exports_its_mappings(self):
+        """Below 4.5 NetBox returns rear_port scalars; dropping them would lose the linkage."""
+        from types import SimpleNamespace
+
+        fp = SimpleNamespace(
+            name="FP1",
+            type="8p8c",
+            label="",
+            description="",
+            color="",
+            rear_port=SimpleNamespace(name="RP1"),
+            rear_port_position=4,
+        )
+
+        result = serialize_device_type(self._device(), {1: {"front_port_templates": [fp]}})
+
+        assert result["port-mappings"] == [
+            {"front_port": "FP1", "front_port_position": 1, "rear_port": "RP1", "rear_port_position": 4}
+        ]
+        assert result["front-ports"] == [{"name": "FP1", "type": "8p8c", "positions": 1}]
+
+    def test_a_legacy_front_port_carries_the_schema_required_positions(self):
+        """The schema requires positions, but it arrived in 4.5, so a pre-4.5 record needs the default."""
+        from types import SimpleNamespace
+
+        fp = SimpleNamespace(name="FP1", type="8p8c", label="", description="", color="")
+
+        result = serialize_device_type(self._device(), {1: {"front_port_templates": [fp]}})
+
+        assert result["front-ports"] == [{"name": "FP1", "type": "8p8c", "positions": 1}]
+
+    def test_a_front_port_with_no_mapping_adds_no_stanza(self):
+        result = serialize_device_type(self._device(), {1: {"front_port_templates": [self._front_port("FP1")]}})
+
+        assert "port-mappings" not in result
+
+    def test_a_type_without_front_ports_adds_no_stanza(self):
+        assert "port-mappings" not in serialize_device_type(self._device(), {1: {}})
+
+    def test_the_importer_reads_back_what_the_export_wrote(self):
+        """Serializer to normalizer, both real: the stanza is the seam between them."""
+        from core.repo import normalize_port_mappings
+
+        ports = [
+            self._front_port("1", [self._mapping("MPO1", 1)]),
+            self._front_port("2", [self._mapping("MPO1", 2)]),
+        ]
+        exported = serialize_device_type(self._device(), {1: {"front_port_templates": ports}})
+
+        assert normalize_port_mappings(exported) is None
+        assert [fp["_mappings"] for fp in exported["front-ports"]] == [
+            [{"rear_port": "MPO1", "front_port_position": 1, "rear_port_position": 1}],
+            [{"rear_port": "MPO1", "front_port_position": 1, "rear_port_position": 2}],
+        ]
+        assert "port-mappings" not in exported, "the normalizer consumes the stanza"

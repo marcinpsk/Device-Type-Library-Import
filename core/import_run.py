@@ -1,20 +1,24 @@
 """Import pipeline planning and execution."""
 
+import os
 from collections import Counter
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime, timedelta
-import os
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from core.change_detector import ChangeDetector, ChangeType, IMAGE_PROPERTIES
+from core.change_detector import IMAGE_PROPERTIES, ChangeDetector, ChangeType
 from core.component_cache import NullTaskDisplay, RichTaskDisplay
 from core.config import RunConfig
 from core.errors import VendorSelectionError
 from core.outcomes import EntityKind, Outcome
 
-
 _PROGRESS_DESC_WIDTH = 28
+
+
+def _as_aware(moment):
+    """Return *moment* with a timezone attached; a naive value means local time."""
+    return moment if moment.tzinfo is not None else moment.astimezone()
 
 
 @dataclass(frozen=True)
@@ -49,8 +53,6 @@ class RunSummary:
     """Snapshot of the result of one completed import run."""
 
     counter: Counter
-    modules: bool
-    rack_types: bool
     outcome_counts: dict
     failure_lines: tuple
     duplicate_definitions: tuple
@@ -66,12 +68,10 @@ class RunSummary:
         """
         return cls(
             counter=Counter(netbox.counter),
-            modules=netbox.modules,
-            rack_types=netbox.rack_types,
             outcome_counts=netbox.outcomes.summary_by_kind(),
             failure_lines=tuple(netbox.outcomes.render_failure_report()),
             duplicate_definitions=tuple(repo.duplicate_definitions),
-            elapsed=datetime.now() - started_at,
+            elapsed=datetime.now(UTC) - started_at,
         )
 
     def outcome_count(self, kind, outcome):
@@ -455,10 +455,6 @@ def _process_rack_types(config, netbox, handle, progress, rack_types, vendor_nam
     if not rack_types:
         return
 
-    if not netbox.rack_types:
-        handle.log("Rack types require NetBox >= 4.1. Skipping rack type import.")
-        return
-
     handle.verbose_log(f"{len(rack_types)} Rack-Types Found")
 
     all_rack_types = netbox.get_existing_rack_types()
@@ -521,21 +517,19 @@ def _log_run_summary(handle, summary):
     handle.log(f"{counter['components_removed']} components removed")
     handle.verbose_log(f"{counter['images']} images uploaded")
     handle.log(f"{counter['manufacturer']} manufacturers created")
-    if summary.modules:
-        handle.log(f"{counter['module_added']} modules created")
-        handle.log(f"{counter['module_updated']} modules updated")
-        module_failed = summary.outcome_count(EntityKind.MODULE_TYPE, Outcome.FAILED)
-        if module_failed:
-            handle.log(f"{module_failed} modules failed to create or update")
-        module_partial = summary.outcome_count(EntityKind.MODULE_TYPE, Outcome.PARTIAL)
-        if module_partial:
-            handle.log(f"{module_partial} modules partially updated")
-    if summary.rack_types:
-        handle.log(f"{counter['rack_type_added']} rack types created")
-        handle.log(f"{counter['rack_type_updated']} rack types updated")
-        rack_failed = summary.outcome_count(EntityKind.RACK_TYPE, Outcome.FAILED)
-        if rack_failed:
-            handle.log(f"{rack_failed} rack types failed")
+    handle.log(f"{counter['module_added']} modules created")
+    handle.log(f"{counter['module_updated']} modules updated")
+    module_failed = summary.outcome_count(EntityKind.MODULE_TYPE, Outcome.FAILED)
+    if module_failed:
+        handle.log(f"{module_failed} modules failed to create or update")
+    module_partial = summary.outcome_count(EntityKind.MODULE_TYPE, Outcome.PARTIAL)
+    if module_partial:
+        handle.log(f"{module_partial} modules partially updated")
+    handle.log(f"{counter['rack_type_added']} rack types created")
+    handle.log(f"{counter['rack_type_updated']} rack types updated")
+    rack_failed = summary.outcome_count(EntityKind.RACK_TYPE, Outcome.FAILED)
+    if rack_failed:
+        handle.log(f"{rack_failed} rack types failed")
 
     for line in summary.failure_lines:
         handle.log(line)
@@ -590,7 +584,7 @@ class ImportRun:
             netbox (NetBox): Connected NetBox interface.
             reporter (LogHandler): Run message sink.
             progress_factory: Context manager factory for the Rich progress display.
-            started_at (datetime | None): Start time used for elapsed-time reporting.
+            started_at (datetime | None): Start time for elapsed-time reporting; naive means local.
         """
         if not isinstance(config, RunConfig):
             raise TypeError("config must be a RunConfig")
@@ -599,7 +593,8 @@ class ImportRun:
         self.netbox = netbox
         self.reporter = reporter
         self.progress_factory = progress_factory
-        self.started_at = started_at or datetime.now()
+        # Normalize here: a naive value would otherwise survive the run and raise in capture().
+        self.started_at = _as_aware(started_at) if started_at is not None else datetime.now(UTC)
         self.progress: Any = None
         self.task_registry = None
         self.vendor_task_id = None
@@ -673,30 +668,24 @@ class ImportRun:
                 self.repo, selection.devices_path, vendor["name"], self.config.slugs or []
             )
 
-        if self.netbox.modules:
-            module_hint = slug_resolved["module_vendors"] if slug_resolved is not None else None
-            if module_hint is not None and vendor["slug"] not in module_hint:
-                module_types = []
-            else:
-                module_types = _parse_vendor_files(
-                    self.repo, selection.modules_path, vendor["name"], self.config.slugs or []
-                )
-        else:
+        module_hint = slug_resolved["module_vendors"] if slug_resolved is not None else None
+        if module_hint is not None and vendor["slug"] not in module_hint:
             module_types = []
-
-        if self.netbox.rack_types:
-            rack_hint = slug_resolved["rack_vendors"] if slug_resolved is not None else None
-            if rack_hint is not None and vendor["slug"] not in rack_hint:
-                rack_types = []
-            else:
-                rack_types = _parse_vendor_files(
-                    self.repo,
-                    selection.racks_path,
-                    vendor["name"],
-                    self.config.slugs or [],
-                )
         else:
+            module_types = _parse_vendor_files(
+                self.repo, selection.modules_path, vendor["name"], self.config.slugs or []
+            )
+
+        rack_hint = slug_resolved["rack_vendors"] if slug_resolved is not None else None
+        if rack_hint is not None and vendor["slug"] not in rack_hint:
             rack_types = []
+        else:
+            rack_types = _parse_vendor_files(
+                self.repo,
+                selection.racks_path,
+                vendor["name"],
+                self.config.slugs or [],
+            )
 
         return VendorPlan(
             vendor=vendor,
@@ -738,17 +727,16 @@ class ImportRun:
         )
         cache.pump()
 
-        if self.netbox.modules:
-            _process_module_types(
-                self.config,
-                self.netbox,
-                self.reporter,
-                self.progress,
-                plan.module_types,
-                vendor_name=plan.vendor["name"],
-                task_registry=self.task_registry,
-            )
-            cache.pump()
+        _process_module_types(
+            self.config,
+            self.netbox,
+            self.reporter,
+            self.progress,
+            plan.module_types,
+            vendor_name=plan.vendor["name"],
+            task_registry=self.task_registry,
+        )
+        cache.pump()
 
         _process_rack_types(
             self.config,
