@@ -31,8 +31,25 @@ dev = [
 line-length = 120
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "D", "C901"]
+select = [
+    "E", "F", "W", "D", "C901",
+    "I",                          # isort
+    "UP",                         # pyupgrade; safe at the 3.12 floor
+    "B",                          # bugbear
+    "DTZ",                        # datetimes must carry a timezone
+    "BLE",                        # no bare `except Exception`
+    "S",                          # bandit
+    "ERA",                        # no commented-out code
+    "SIM", "RET", "PERF", "C4", "RUF", "ISC",
+    "PIE", "FLY", "RSE", "PGH", "TID", "INP", "A", "LOG", "G",
+    "PT",                         # pytest style
+]
 ignore = [
+    # Conflicts with the formatter, which owns implicit string concatenation.
+    "ISC001",
+    # StrEnum.__str__ returns the bare value where (str, Enum) returns ClassName.MEMBER,
+    # so the rewrite would change logged and serialized output.
+    "UP042",
     # Docstring style choices (pick D211+D212 convention)
     "D203",  # no-blank-line-before-class (incompatible with D211)
     "D213",  # multi-line-summary-second-line (incompatible with D212)
@@ -52,7 +69,16 @@ ignore = [
 max-complexity = 15
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["D102", "D103"]  # test functions don't need docstrings
+"tests/**" = [
+    "D102", "D103",              # test functions don't need docstrings
+    "S101",                      # asserting is what a test does
+    "S105", "S106", "S107",      # fixture credentials are not secrets
+    "S108", "S603", "S607",      # tmp paths and subprocess calls are the test's subject
+    "INP001",                    # tests/ is not an importable package
+    "ERA001",                    # commented sample payloads document the case under test
+    "SIM117",                    # nested `with` keeps one patch per line and reads better here
+    "A002",                      # `id` mirrors the NetBox field name the stub stands in for
+]
 
 [tool.mypy]
 python_version = "3.12"

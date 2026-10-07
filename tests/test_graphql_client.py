@@ -3,9 +3,9 @@
 import ast
 import pathlib
 import textwrap
+from unittest.mock import MagicMock, patch
 
 import pytest
-from unittest.mock import MagicMock, patch
 import requests
 
 from core.graphql_client import DotDict, NetBoxGraphQLClient
@@ -118,22 +118,154 @@ class TestNetBoxGraphQLClient:
             client.handle = LogHandler(True)
 
     def test_clone_uses_an_independent_session_with_the_same_settings(self):
+        """Every stored setting is compared, so a new one cannot be dropped unnoticed.
+
+        clone() re-lists constructor arguments by hand. Listing the settings here by hand
+        too let supports_module_bay_types default back to False in every cloned worker.
+        """
         handle = MagicMock()
         sessions = [MagicMock(), MagicMock()]
 
         with patch("core.graphql_client.requests.Session", side_effect=sessions):
-            client = NetBoxGraphQLClient("http://netbox.local", "token", True, handle, 250)
+            client = NetBoxGraphQLClient(
+                "http://netbox.local", "token", True, handle, 250, supports_module_bay_types=True
+            )
             clone = client.clone()
 
         assert clone is not client
         assert clone._session is sessions[1]
-        assert (clone.url, clone.token, clone.ignore_ssl, clone.handle, clone.DEFAULT_PAGE_SIZE) == (
-            client.url,
-            client.token,
-            client.ignore_ssl,
-            client.handle,
-            client.DEFAULT_PAGE_SIZE,
-        )
+        settings = lambda c: {k: v for k, v in vars(c).items() if k != "_session"}  # noqa: E731
+        assert settings(clone) == settings(client)
+
+    @pytest.mark.real_http
+    def test_the_cloned_session_is_configured_not_merely_new(self):
+        """A bare requests.Session() would be independent and completely unauthenticated.
+
+        Marked real_http only to get real Session objects; nothing here sends a request.
+        """
+        client = NetBoxGraphQLClient("http://netbox.local", "nbt_key.secret", ignore_ssl=True)
+
+        clone = client.clone()
+
+        assert clone._session is not client._session
+        assert clone._session.headers["Authorization"] == "Bearer nbt_key.secret"
+        assert clone._session.headers["Content-Type"] == "application/json"
+        assert clone._session.verify is False
+
+    @pytest.mark.real_http
+    def test_a_v1_token_clone_keeps_the_legacy_auth_scheme(self):
+        client = NetBoxGraphQLClient("http://netbox.local", "0123456789abcdef")
+
+        assert client.clone()._session.headers["Authorization"] == "Token 0123456789abcdef"
+
+    @pytest.mark.real_http
+    def test_an_unreachable_server_fails_the_probe_as_a_graphql_error(self):
+        """It is the export's first request, so a raw transport error escapes as a traceback."""
+        from helpers import FakeNetBox
+
+        from core.graphql_client import GraphQLError
+
+        server = FakeNetBox()
+        url = server.url
+        server.close()  # nothing is listening on that port any more
+
+        with pytest.raises(GraphQLError):
+            NetBoxGraphQLClient(url, "tok").detect_module_bay_type_support()
+
+    @pytest.mark.real_http
+    def test_a_non_json_status_body_fails_the_probe_as_a_graphql_error(self):
+        """A proxy error page answers 200 with HTML; json() then raises ValueError."""
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        from core.graphql_client import GraphQLError
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b"<html>gateway</html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                """Silence the default stderr access log."""
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            client = NetBoxGraphQLClient(f"http://127.0.0.1:{server.server_port}", "tok")
+            with pytest.raises(GraphQLError):
+                client.detect_module_bay_type_support()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @pytest.mark.real_http
+    @pytest.mark.parametrize(
+        ("body", "why"),
+        [
+            (b"[]", "a JSON list has no .get, so the probe raised a bare AttributeError"),
+            (b"{}", "no netbox-version read as '' and silently disabled the relation"),
+            (b'{"netbox-version": ""}', "an empty version is not a version"),
+            (b'{"netbox-version": null}', "a null version is not a version"),
+        ],
+    )
+    def test_a_wrong_shaped_status_body_fails_the_probe(self, body, why):
+        """Silently deciding 'unsupported' on a 4.7 server exports without the relation."""
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        from core.graphql_client import GraphQLError
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *args):
+                """Silence the default stderr access log."""
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            client = NetBoxGraphQLClient(f"http://127.0.0.1:{server.server_port}", "tok")
+            with pytest.raises(GraphQLError):
+                client.detect_module_bay_type_support()
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    @pytest.mark.real_http
+    def test_the_version_probe_decides_whether_the_relation_may_be_selected(self):
+        """Export has no pynetbox client, so it asks NetBox here and both sides use compat."""
+        from helpers import FakeNetBox
+
+        for version, expected in (("4.7.0", True), ("4.7.0-beta2", True), ("4.6.9", False), ("4.3.7", False)):
+            server = FakeNetBox(netbox_version=version)
+            try:
+                client = NetBoxGraphQLClient(server.url, "tok")
+                assert client.detect_module_bay_type_support() is expected, version
+                assert client.supports_module_bay_types is expected
+            finally:
+                server.close()
+
+    def test_clone_carries_a_setting_it_does_not_name(self):
+        """clone() must not enumerate settings: the one it forgets is the one that breaks.
+
+        supports_module_bay_types was lost exactly that way, and adding it to the argument
+        list only fixes the setting that was already missed.
+        """
+        with patch("core.graphql_client.requests.Session"):
+            client = NetBoxGraphQLClient("http://netbox.local", "token")
+            client.added_after_this_test_was_written = "carried"
+            clone = client.clone()
+
+        assert clone.added_after_this_test_was_written == "carried"
 
     def test_init_stores_config(self):
         from core.graphql_client import NetBoxGraphQLClient
@@ -475,8 +607,7 @@ class TestGetManufacturers:
     def _make_client(self):
         from core.graphql_client import NetBoxGraphQLClient
 
-        client = NetBoxGraphQLClient("http://netbox.local", "tok")
-        return client
+        return NetBoxGraphQLClient("http://netbox.local", "tok")
 
     def test_returns_dict_keyed_by_name(self, mock_post):
         data = {
@@ -1025,6 +1156,106 @@ class TestGetComponentTemplates:
 
         return NetBoxGraphQLClient("http://netbox.local", "tok")
 
+    @pytest.mark.real_http
+    @pytest.mark.parametrize("caller", ["graphql_relation_fields", "get_module_types"])
+    def test_relation_selections_use_the_shared_helper(self, caller):
+        from helpers import FakeNetBox
+
+        from core.component_registry import BY_ENDPOINT
+
+        expected = "module_bay_types { id name slug manufacturer { slug } }"
+        if caller == "graphql_relation_fields":
+            assert BY_ENDPOINT["module_bay_templates"].graphql_relation_fields == [expected]
+        else:
+            server = FakeNetBox()
+            try:
+                client = NetBoxGraphQLClient(server.url, "test-token", supports_module_bay_types=True)
+                assert client.get_module_types() == {}
+                query = server.sent("POST", "graphql")[0]["query"]
+                assert expected in " ".join(query.split())
+            finally:
+                server.close()
+
+    @pytest.mark.real_http
+    def test_module_type_query_contains_the_complete_relation_selection(self):
+        from helpers import FakeNetBox
+
+        from core.component_registry import BY_ENDPOINT
+
+        server = FakeNetBox()
+        try:
+            client = NetBoxGraphQLClient(server.url, "test-token", supports_module_bay_types=True)
+            assert client.get_module_types() == {}
+            query = server.sent("POST", "graphql")[0]["query"]
+        finally:
+            server.close()
+
+        selection = "module_bay_types { id name slug manufacturer { slug } }"
+        assert BY_ENDPOINT["module_bay_templates"].graphql_relation_fields == [selection]
+        expected_query = """
+query($pagination: OffsetPaginationInput) {
+  module_type_list(pagination: $pagination) {
+    id model part_number airflow description comments weight weight_unit last_updated
+    module_bay_types { id name slug manufacturer { slug } }
+    manufacturer { id name slug }
+  }
+}
+"""
+        assert " ".join(query.split()) == " ".join(expected_query.split())
+
+    def test_a_clone_still_selects_the_module_bay_type_relation(self, mock_post):
+        """The prefetch runs on clones, not on the client it was cloned from.
+
+        A clone that drops the relation reads every bay without it, and the comparison
+        then skips a field it never received.
+        """
+        from core.graphql_client import NetBoxGraphQLClient
+
+        client = NetBoxGraphQLClient("http://netbox.local", "tok", supports_module_bay_types=True)
+        mock_post.side_effect = _make_paged_responses({"module_bay_template_list": []}, "module_bay_template_list")
+
+        client.clone().get_component_templates("module_bay_templates")
+
+        queries = [call.kwargs["json"]["query"] for call in mock_post.call_args_list]
+        assert queries
+        assert all("module_bay_types" in q for q in queries)
+
+    def test_the_module_type_query_selects_the_relation_only_when_supported(self, mock_post):
+        """The selection has to track the server, in both directions.
+
+        An unselected field reads as missing and is skipped by the comparison, and
+        selecting it on a server below 4.7 fails the whole query.
+        """
+        from core.graphql_client import NetBoxGraphQLClient
+
+        def _query_for(supported):
+            client = NetBoxGraphQLClient("http://netbox.local", "tok", supports_module_bay_types=supported)
+            mock_post.reset_mock()
+            mock_post.side_effect = _make_paged_responses({"module_type_list": []}, "module_type_list")
+            client.get_module_types()
+            return mock_post.call_args_list[0].kwargs["json"]["query"]
+
+        assert "module_bay_types" in _query_for(True)
+        assert "module_bay_types" not in _query_for(False)
+
+    def test_the_front_port_fallback_drops_every_45_only_field(self, mock_post):
+        """Positions arrived with the mapping model, so a pre-4.5 tier must not ask for it.
+
+        Leaving it in a fallback tier makes every tier fail the same way, and the whole
+        front-port preload dies on a server that would answer the older shape.
+        """
+        from core.component_registry import BY_ENDPOINT
+        from core.graphql_client import NetBoxGraphQLClient
+
+        fields = list(BY_ENDPOINT["front_port_templates"].graphql_fields)
+        assert "positions" in fields, "guard: the registry is expected to select positions"
+
+        tiers = list(NetBoxGraphQLClient._front_port_field_variants(fields))
+
+        assert any("positions" in f for f in tiers[0]), "the 4.5 tier keeps it"
+        for tier in tiers[1:]:
+            assert not any("positions" in f for f in tier), f"pre-4.5 tier still asks for it: {tier}"
+
     def test_returns_dotdict_records_with_parent_info(self, mock_post):
         """Records should be DotDicts with device_type/module_type and correct id types."""
         data = {
@@ -1543,11 +1774,11 @@ class TestGetComponentTemplatesFrontPortFallback:
         selection — meaning there is no older tier left to fall back to.
         """
         from dataclasses import replace
+        from unittest.mock import patch
 
+        import core.graphql_client as gc_module
         from core.component_registry import BY_ENDPOINT
         from core.graphql_client import GraphQLError
-        from unittest.mock import patch
-        import core.graphql_client as gc_module
 
         # A NetBox whose schema dropped the mappings block entirely.
         stripped = {"front_port_templates": replace(BY_ENDPOINT["front_port_templates"], graphql_extra=())}
@@ -1660,9 +1891,8 @@ class TestGraphQLQueryErrorPaths:
         mock_post.side_effect = requests.exceptions.ConnectionError("connection refused")
 
         client = self._make_client()
-        with patch("core.graphql_client.time.sleep"):
-            with pytest.raises(GraphQLError, match="connection refused"):
-                client.query("{ test }", _retries=1)
+        with patch("core.graphql_client.time.sleep"), pytest.raises(GraphQLError, match="connection refused"):
+            client.query("{ test }", _retries=1)
 
     def test_request_exception_retries_before_exhausting(self, mock_post):
         """A RequestException on the first attempt stores last_exc and retries."""
@@ -1674,9 +1904,8 @@ class TestGraphQLQueryErrorPaths:
         mock_post.side_effect = requests.exceptions.Timeout("timed out")
 
         client = self._make_client()
-        with patch("core.graphql_client.time.sleep"):
-            with pytest.raises(GraphQLError, match="timed out"):
-                client.query("{ test }", _retries=1)
+        with patch("core.graphql_client.time.sleep"), pytest.raises(GraphQLError, match="timed out"):
+            client.query("{ test }", _retries=1)
 
 
 # ── Vendor-scoped filtering tests ─────────────────────────────────────────
@@ -1783,7 +2012,7 @@ class TestVendorScopedDeviceTypes:
         mock_post.side_effect = _make_paged_responses(data, "device_type_list")
 
         client = self._make_client()
-        by_model, by_slug = client.get_device_types(manufacturer_slugs=slugs)
+        by_model, _by_slug = client.get_device_types(manufacturer_slugs=slugs)
 
         assert ("cisco", "Catalyst 3850") in by_model
         assert by_model[("cisco", "Catalyst 3850")].model == "Catalyst 3850"
@@ -1839,7 +2068,7 @@ class TestVendorScopedDeviceTypes:
         mock_post.side_effect = _make_paged_responses(data, "device_type_list")
 
         client = self._make_client()
-        by_model, by_slug = client.get_device_types(manufacturer_slugs=slugs)
+        by_model, _by_slug = client.get_device_types(manufacturer_slugs=slugs)
 
         assert ("cisco", "Catalyst 3850") in by_model
         assert ("juniper", "EX4300") in by_model
@@ -1877,7 +2106,7 @@ class TestVendorScopedDeviceTypes:
         mock_post.side_effect = _make_paged_responses(data, "device_type_list")
 
         client = self._make_client()
-        by_model, by_slug = client.get_device_types(manufacturer_slugs=None)
+        _by_model, _by_slug = client.get_device_types(manufacturer_slugs=None)
 
         # Verify no filter in the query and no manufacturer variable sent
         call_payload = mock_post.call_args_list[0][1]["json"]
@@ -2248,12 +2477,12 @@ class TestVendorScopedComponentTemplates:
 
         # Verify both filters were applied via GraphQL variables (not string interpolation)
         calls = mock_post.call_args_list
-        # calls[0]: device_type filter query – data page
+        # calls[0]: device_type filter query - data page
         device_payload = calls[0][1]["json"]
         device_query = device_payload["query"]
         device_vars = device_payload["variables"]
-        # calls[1]: device_type filter query – empty terminator (pagination ends)
-        # calls[2]: module_type filter query – data page
+        # calls[1]: device_type filter query - empty terminator (pagination ends)
+        # calls[2]: module_type filter query - data page
         module_payload = calls[2][1]["json"]
         module_query = module_payload["query"]
         module_vars = module_payload["variables"]
@@ -2421,7 +2650,7 @@ class TestLastUpdatedInQueries:
             }
         ]
         client = self._mock_graphql(mocker, items)
-        by_model, by_slug = client.get_device_types()
+        by_model, _by_slug = client.get_device_types()
         record = by_model[("acme", "M")]
         assert record.last_updated == "2024-01-15T10:00:00Z"
 
@@ -2693,7 +2922,8 @@ class TestComponentFallbackClassification:
             server.shutdown()
 
         assert result == []
-        assert "T1" in attempts and "T2" in attempts
+        assert "T1" in attempts
+        assert "T2" in attempts
 
 
 @pytest.mark.real_http
@@ -2763,7 +2993,8 @@ class TestImageAttachmentFallbackClassification:
         finally:
             server.shutdown()
 
-        assert "filtered" in attempts and "unfiltered" in attempts
+        assert "filtered" in attempts
+        assert "unfiltered" in attempts
 
 
 class TestErrorHandlingStandards:

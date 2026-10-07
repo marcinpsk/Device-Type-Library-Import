@@ -11,6 +11,11 @@ from pathlib import Path
 
 _EMPTY: dict = {"device-types": {}, "module-types": {}, "rack-types": {}}
 
+# Bump whenever the serialized output shape changes (a new stanza, a field that starts or
+# stops being written).  An unchanged NetBox record has the same last_updated forever, so
+# without this an old manifest skips the very types the new shape was added for.
+EXPORT_SCHEMA_REVISION = 2
+
 
 def load_manifest(path: Path) -> dict:
     """Load manifest from *path*.  Returns an empty manifest on any error."""
@@ -33,12 +38,14 @@ def save_manifest(path: Path, data: dict) -> None:
 
 
 def is_entry_fresh(manifest: dict, kind: str, key: str, last_updated: str) -> bool:
-    """Return True if the manifest entry for *key* matches *last_updated*."""
+    """Return True if *key* was written by this exporter and the record has not changed."""
     section = manifest.get(kind)
     if not isinstance(section, dict):
         return False
     entry = section.get(key)
     if not isinstance(entry, dict):
+        return False
+    if entry.get("schema") != EXPORT_SCHEMA_REVISION:
         return False
     return entry.get("last_updated") == last_updated
 
@@ -48,4 +55,4 @@ def update_entry(manifest: dict, kind: str, key: str, last_updated: str) -> None
     section = manifest.get(kind)
     if not isinstance(section, dict):
         manifest[kind] = {}
-    manifest[kind][key] = {"last_updated": last_updated}
+    manifest[kind][key] = {"last_updated": last_updated, "schema": EXPORT_SCHEMA_REVISION}

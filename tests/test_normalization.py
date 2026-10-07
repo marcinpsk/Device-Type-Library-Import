@@ -8,7 +8,7 @@ class TestNormalizeValues:
 
     def test_netbox_choice_object_reads_value(self):
         choice = SimpleNamespace(value="1000base-t")
-        y, n = normalize_values("1000base-t", choice)
+        _y, n = normalize_values("1000base-t", choice)
         assert n == "1000base-t"
 
     def test_empty_string_normalized_to_none(self):
@@ -32,26 +32,26 @@ class TestNormalizeValues:
         assert n == "def"
 
     def test_numeric_yaml_coerces_string_netbox(self):
-        y, n = normalize_values(1.0, "1.0")
+        _y, n = normalize_values(1.0, "1.0")
         assert n == 1.0
 
     def test_numeric_netbox_coerces_string_yaml(self):
-        y, n = normalize_values("2.5", 2.5)
+        y, _n = normalize_values("2.5", 2.5)
         assert y == 2.5
 
     def test_int_yaml_preserves_int_type(self):
         """YAML int 166 vs NetBox '166.00' should normalize nb to int 166, not float 166.0."""
-        y, n = normalize_values(166, "166.00")
+        _y, n = normalize_values(166, "166.00")
         assert n == 166
         assert isinstance(n, int)
 
     def test_int_netbox_preserves_int_type(self):
-        y, n = normalize_values("166", 166)
+        y, _n = normalize_values("166", 166)
         assert y == 166
         assert isinstance(y, int)
 
     def test_float_yaml_stays_float(self):
-        y, n = normalize_values(26.1, "26.10")
+        _y, n = normalize_values(26.1, "26.10")
         assert n == 26.1
 
     def test_bool_not_coerced(self):
@@ -66,11 +66,11 @@ class TestNormalizeValues:
         assert n == "1.0"
 
     def test_non_numeric_string_netbox_stays_string(self):
-        y, n = normalize_values(1.0, "notanumber")
+        _y, n = normalize_values(1.0, "notanumber")
         assert n == "notanumber"
 
     def test_non_numeric_string_yaml_stays_string(self):
-        y, n = normalize_values("notanumber", 1.0)
+        y, _n = normalize_values("notanumber", 1.0)
         assert y == "notanumber"
 
 
