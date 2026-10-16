@@ -1196,6 +1196,7 @@ class TestGetComponentTemplates:
 query($pagination: OffsetPaginationInput) {
   module_type_list(pagination: $pagination) {
     id model part_number airflow description comments weight weight_unit last_updated
+    profile { id name } attribute_data
     module_bay_types { id name slug manufacturer { slug } }
     manufacturer { id name slug }
   }

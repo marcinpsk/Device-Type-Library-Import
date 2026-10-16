@@ -38,11 +38,15 @@ E. Front-port multi-position linkage
      - FP1 → RP1 position 1; FP2 → RP1 position 2 (same rear port).
 F. Module-type component creation
      - All module component types created; front-port rear_port mapping set.
+     - Profile and attribute data stored on the module type.
 G. Idempotency
      - Second run: 0 new, 0 modified device types and module types.
 H. Update mode
      - Delete one interface via REST API; re-run with --update; verify it is
        recreated with the original type value.
+I. Module-type profile update
+     - Change the profile and one attribute via REST API; re-run with --update;
+       verify both are restored from the YAML.
 
 Usage::
 
@@ -124,6 +128,12 @@ def api(path: str, **params) -> dict:
     r = session.get(f"{NETBOX_URL}/api{path}", params=params, timeout=30)
     r.raise_for_status()
     return r.json()
+
+
+def api_patch(path: str, payload: dict) -> None:
+    r = session.patch(f"{NETBOX_URL}/api{path}", json=payload, timeout=30)
+    if r.status_code != 200:
+        fail(f"PATCH {path} returned {r.status_code}: {r.text[:200]}")
 
 
 def api_delete(path: str) -> None:
@@ -373,6 +383,24 @@ def test_module_types() -> None:
         fail(f"full-module: {len(broken)} front ports have empty rear-port linkage: {broken}")
     ok("full-module: front port rear-port mapping set correctly")
 
+    assert_module_profile(get_one("/dcim/module-types/", model="Test Power Supply"))
+
+
+# The profile and attribute data in tests/fixtures/module-types/TestVendor/power-supply.yaml.
+PSU_PROFILE = "Power supply"
+PSU_ATTRIBUTES = {"input_current": "AC", "input_voltage": 230, "wattage": 650, "hot_swappable": True}
+
+
+def assert_module_profile(module_type: dict) -> None:
+    """Fail unless *module_type* (a REST record) carries the fixture's profile and attributes."""
+    profile = (module_type.get("profile") or {}).get("name")
+    if profile != PSU_PROFILE:
+        fail(f"power-supply: profile = {profile!r}, expected {PSU_PROFILE!r}")
+    ok(f"power-supply: profile = {profile!r}")
+    if module_type.get("attributes") != PSU_ATTRIBUTES:
+        fail(f"power-supply: attributes = {module_type.get('attributes')!r}, expected {PSU_ATTRIBUTES!r}")
+    ok("power-supply: attributes match the YAML")
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Scenario D: GraphQL schema consistency
@@ -469,6 +497,15 @@ def test_graphql_schema() -> None:
             f"get_module_types() did not return 'Test Full Module' — got manufacturer keys: {list(module_types.keys())}"
         )
     ok("get_module_types() completed without schema error")
+
+
+def test_graphql_module_profile() -> None:
+    """The change detection reads profile and attribute_data from this query."""
+    client = NetBoxGraphQLClient(NETBOX_URL, NETBOX_TOKEN, ignore_ssl=IGNORE_SSL)
+    psu = client.get_module_types().get("testvendor", {}).get("Test Power Supply")
+    if psu is None or psu.profile is None or psu.profile.name != PSU_PROFILE or psu.attribute_data != PSU_ATTRIBUTES:
+        fail(f"get_module_types() did not return the power supply profile and attribute data: {psu!r}")
+    ok("get_module_types() returned profile and attribute_data")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -570,3 +607,31 @@ def test_update_mode() -> None:
     if not re.search(r"(?<!\d)0 device types updated", result2.stdout):
         fail(f"After update, third run still shows updated device types\n{result2.stdout}")
     ok("Post-update run: 0 device types updated")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Scenario I: Update mode — module type profile and attributes
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_update_mode_module_profile() -> None:
+    print("\n=== Scenario I: Update mode — module type profile and attributes ===")
+    psu = get_one("/dcim/module-types/", model="Test Power Supply")
+    fan = get_one("/dcim/module-type-profiles/", name="Fan")
+    api_patch(f"/dcim/module-types/{psu['id']}/", {"profile": fan["id"], "attributes": {"wattage": 100}})
+    changed = get_one("/dcim/module-types/", model="Test Power Supply")
+    if changed["profile"]["name"] != "Fan" or changed["attributes"].get("wattage") != 100:
+        fail(f"REST PATCH did not change the power supply: {changed['profile']!r} {changed['attributes']!r}")
+    ok("Changed profile to Fan and wattage to 100")
+
+    result = run_importer("--update")
+    if result.returncode != 0:
+        fail(f"Importer --update exited with code {result.returncode}")
+    assert_module_profile(get_one("/dcim/module-types/", model="Test Power Supply"))
+
+    result2 = run_importer()
+    if "MODULE TYPE CHANGE DETECTION" in result2.stdout and not re.search(
+        r"Modified module types:\s+0", result2.stdout
+    ):
+        fail(f"After update, next run still reports modified module types\n{result2.stdout}")
+    ok("Post-update run: 0 modified module types")

@@ -542,6 +542,8 @@ class NetBoxGraphQLClient:
             weight
             weight_unit
             last_updated
+            profile {{ id name }}
+            attribute_data
             {module_bay_type_selection}manufacturer {{
               id
               name
