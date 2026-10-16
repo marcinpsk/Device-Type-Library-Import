@@ -144,6 +144,37 @@ class TestChangeDetection:
 
         assert actionable == []
 
+    def test_stored_attributes_that_are_not_an_object_are_reported_not_raised(self, netbox, server, definition):
+        nb, _ = netbox
+        record = existing(server, {"id": 3, "name": "Transceiver"}, [3000])
+
+        actionable, _, log = nb.filter_actionable_module_types([definition()], {"cisco": {"SFP-10G-SR": record}})
+
+        assert len(actionable) == 1
+        assert [field for field, _, _ in log[0][2]] == [f"attribute_data.{key}" for key in SFP_ATTRIBUTES]
+
+    def test_a_boolean_and_a_number_are_different_values(self, netbox, server, definition):
+        nb, _ = netbox
+        record = existing(server, {"id": 3, "name": "Transceiver"}, {**SFP_ATTRIBUTES, "hot_swap": 1})
+
+        _, _, log = nb.filter_actionable_module_types(
+            [definition(SFP_YAML + "  hot_swap: true\n")], {"cisco": {"SFP-10G-SR": record}}
+        )
+
+        assert log[0][2] == [("attribute_data.hot_swap", 1, True)]
+
+    @pytest.mark.parametrize("declared", ["{}", "null"])
+    def test_explicit_empty_attributes_clear_the_stored_ones(self, netbox, server, definition, declared):
+        nb, _ = netbox
+        record = existing(server, {"id": 4, "name": "Fan"}, {"rpm": 3000})
+        curr_mt = definition(f"manufacturer: Cisco\nmodel: SFP-10G-SR\nattribute_data: {declared}\n")
+
+        _, _, log = nb.filter_actionable_module_types([curr_mt], {"cisco": {"SFP-10G-SR": record}})
+        assert log[0][2] == [("attribute_data", {"rpm": 3000}, {})]
+
+        nb._try_update_module_type(curr_mt, record, "cisco/SFP-10G-SR.yaml")
+        assert server.sent("PATCH", "module_types") == [{"id": 7, "attributes": {}}]
+
 
 class TestUpdate:
     """The update path patches the profile and attributes under the names NetBox accepts."""
@@ -200,6 +231,7 @@ class TestMalformedDefinition:
             "profile:\n  name: [Transceiver]\n",
             "attribute_data: [phy]\n",
             "attribute_data: 10G\n",
+            "attribute_data:\n  manufactured: 2026-10-16\n",
         ],
     )
     def test_the_file_is_rejected(self, tmp_path, extra):

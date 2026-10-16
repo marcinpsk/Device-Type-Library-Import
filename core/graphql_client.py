@@ -557,6 +557,9 @@ class NetBoxGraphQLClient:
         result: dict = {}
         for item in items:
             record = _to_dotdict(item)
+            # Attribute values are user data, so the id coercion must not touch them.
+            if "attribute_data" in item:
+                record["attribute_data"] = item["attribute_data"]
             mfr_slug = record.manufacturer.slug
             result.setdefault(mfr_slug, {})[record.model] = record
 

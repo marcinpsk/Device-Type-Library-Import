@@ -391,6 +391,17 @@ def _with_rest_attributes(module_type):
     return payload
 
 
+def _json_equal(a, b) -> bool:
+    """Compare JSON values: numbers by value (400 equals 400.0), but a boolean never equals a number."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return type(a) is type(b) and a == b
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_json_equal(a[key], b[key]) for key in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_json_equal(x, y) for x, y in zip(a, b, strict=True))
+    return a == b
+
+
 @lru_cache(maxsize=1)
 def _load_module_type_properties(repo_path):
     """Load module type scalar properties from the schema, falling back to hardcoded list.
@@ -1671,11 +1682,17 @@ class NetBox:
             current = existing_module.profile.name if existing_module.profile else None
             if wanted != current:
                 changes.append(("profile", current, wanted))
-        if module_type.get("attribute_data") and hasattr(existing_module, "attribute_data"):
-            stored = existing_module.attribute_data or {}
-            for key, wanted in module_type["attribute_data"].items():
-                # Plain equality: JSON numbers compare by value, so 400 equals 400.0.
-                if stored.get(key, _MISSING) != wanted:
+        if "attribute_data" in module_type and hasattr(existing_module, "attribute_data"):
+            declared = module_type["attribute_data"] or {}
+            stored = existing_module.attribute_data
+            if not declared:
+                # NetBox replaces, not merges, the stored attributes with an empty value.
+                if stored:
+                    changes.append(("attribute_data", stored, {}))
+                return changes
+            stored = stored if isinstance(stored, dict) else {}
+            for key, wanted in declared.items():
+                if not _json_equal(stored.get(key, _MISSING), wanted):
                     changes.append((f"attribute_data.{key}", stored.get(key), wanted))
         return changes
 
@@ -1751,7 +1768,7 @@ class NetBox:
             if field == "profile":
                 updates["profile"] = curr_mt["profile"]
             else:
-                updates[_REST_ATTRIBUTES_FIELD] = curr_mt["attribute_data"]
+                updates[_REST_ATTRIBUTES_FIELD] = curr_mt["attribute_data"] or {}
         if self.module_bay_types:
             from core.module_bay_types import ModuleBayTypeError
 

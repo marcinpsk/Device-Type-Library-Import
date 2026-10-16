@@ -448,6 +448,10 @@ def parse_single_file(file):
             attribute_data = data.get("attribute_data")
             if attribute_data is not None and not isinstance(attribute_data, dict):
                 return f"Error: attribute_data must be a mapping, not {attribute_data!r}"
+            try:
+                json.dumps(attribute_data)
+            except (TypeError, ValueError) as exc:
+                return f"Error: attribute_data must hold JSON values only: {exc}"
             data["src"] = file
             err = normalize_port_mappings(data)
             if err:

@@ -798,6 +798,23 @@ class TestGetModuleTypes:
         assert mt.model == "Linecard 1"
         assert mt.manufacturer.slug == "juniper"
 
+    def test_attribute_data_is_kept_as_netbox_stored_it(self, mock_post):
+        data = {
+            "module_type_list": [
+                {
+                    "id": "42",
+                    "model": "Linecard 1",
+                    "attribute_data": {"id": "00123", "nested": {"id": "7"}},
+                    "manufacturer": {"id": "20", "name": "Juniper", "slug": "juniper"},
+                }
+            ]
+        }
+        mock_post.side_effect = _make_paged_responses(data, "module_type_list")
+
+        record = self._make_client().get_module_types()["juniper"]["Linecard 1"]
+
+        assert record.attribute_data == {"id": "00123", "nested": {"id": "7"}}
+
     def test_returns_empty_dict_when_no_modules(self, mock_post):
         mock_response = MagicMock()
         mock_response.status_code = 200
