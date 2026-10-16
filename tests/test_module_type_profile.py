@@ -232,6 +232,11 @@ class TestMalformedDefinition:
             "attribute_data: [phy]\n",
             "attribute_data: 10G\n",
             "attribute_data:\n  manufactured: 2026-10-16\n",
+            "attribute_data:\n  rpm: .nan\n",
+            "attribute_data:\n  rpm: .inf\n",
+            "attribute_data:\n  1: fast\n",
+            "attribute_data:\n  speeds:\n    1: fast\n",
+            "profile:\n  name: Fan\n  id: 2026-10-16\n",
         ],
     )
     def test_the_file_is_rejected(self, tmp_path, extra):
