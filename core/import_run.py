@@ -662,7 +662,7 @@ class ImportRun:
         slug_resolved = selection.slug_resolved
         if slug_resolved is not None:
             device_files = slug_resolved["device_files"].get(vendor["slug"], [])
-            device_types = self.repo.parse_files(device_files) if device_files else []
+            device_types = self.repo.parse_files(device_files, slugs=self.config.slugs or []) if device_files else []
         else:
             device_types = _parse_vendor_files(
                 self.repo, selection.devices_path, vendor["name"], self.config.slugs or []

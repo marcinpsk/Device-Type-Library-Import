@@ -3,6 +3,7 @@
 from collections import Counter
 from contextlib import contextmanager
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
 from helpers import recording_handle as _recording_handle
@@ -321,6 +322,63 @@ class TestPartialLibraryLayouts:
         }
         assert parsed[present] == 1, parsed
         assert sum(parsed.values()) == 1, parsed
+
+
+class TestSlugSelectionWithAStaleIndex:
+    """The upstream index lags a fork or branch, so --slugs must also find what only the disk holds."""
+
+    INDEX: ClassVar[dict] = {
+        "known-slugs": [["acme-old-box", "device-types/Acme/old-box.yaml"]],
+        "known-modules": [["old-card", "module-types/Acme"]],
+        "known-racks": [["old-rack", "rack-types/Acme"]],
+    }
+
+    @staticmethod
+    def _write(root, relpath, model, slug=None):
+        path = root / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        manufacturer = relpath.split("/")[1]
+        path.write_text(f"manufacturer: {manufacturer}\nmodel: {model}\n" + (f"slug: {slug}\n" if slug else ""))
+
+    def _plan(self, tmp_path, make_config, index, slugs):
+        """Plan every selected vendor of a real local library and return the planned models."""
+        import json
+
+        (tmp_path / "tests").mkdir()
+        for stem, entries in index.items():
+            (tmp_path / "tests" / f"{stem}.json").write_text(json.dumps(entries))
+        config = make_config(repo_url="local", repo_path=str(tmp_path), slugs=slugs)
+        run = ImportRun(
+            config, DTLRepo(config, LogHandler(False)), _NetBoxBoundary(), LogHandler(False), _ProgressFactory()
+        )
+        selection = run.discover()
+        models = set()
+        for vendor in selection.vendors:
+            plan = run.plan_vendor(selection, vendor)
+            models |= {t["model"] for t in [*plan.device_types, *plan.module_types, *plan.rack_types]}
+        return models
+
+    def test_definitions_missing_from_the_index_are_found(self, tmp_path, make_config):
+        self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")
+        self._write(tmp_path, "device-types/Acme/new-box.yaml", "New Box", "acme-new-box")
+        self._write(tmp_path, "device-types/Acme/other.yaml", "Other", "acme-other")
+        self._write(tmp_path, "module-types/Acme/old-card.yaml", "Old Card")
+        self._write(tmp_path, "module-types/Beta/new-card.yaml", "New Card")
+        self._write(tmp_path, "rack-types/Acme/old-rack.yaml", "Old Rack")
+        self._write(tmp_path, "rack-types/Gamma/new-rack.yaml", "New Rack")
+
+        models = self._plan(tmp_path, make_config, self.INDEX, ("box", "card", "rack"))
+
+        assert models == {"Old Box", "New Box", "Old Card", "New Card", "Old Rack", "New Rack"}
+
+    def test_an_indexed_file_that_is_gone_from_disk_is_skipped(self, tmp_path, make_config):
+        self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")
+        index = {
+            **self.INDEX,
+            "known-slugs": [*self.INDEX["known-slugs"], ["acme-gone-box", "device-types/Acme/gone.yaml"]],
+        }
+
+        assert self._plan(tmp_path, make_config, index, ("box",)) == {"Old Box"}
 
 
 class _ModuleNetBox:
