@@ -1546,6 +1546,14 @@ class TestRestrictedPickleLoading:
             _safe_pickle_load(str(path))
 
 
+def _write_definitions(root, *relpaths):
+    """Create the definition files an index entry points at, so the disk agrees with it."""
+    for relpath in relpaths:
+        path = root / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("manufacturer: Test\nmodel: Test\n")
+
+
 class TestResolveSlugFiles:
     """Tests for the pickle-based slug fast path."""
 
@@ -1583,6 +1591,7 @@ class TestResolveSlugFiles:
         tests_dir.mkdir()
         known = {("nokia-7750-sr-7s", "device-types/Nokia/7750-SR-7s.yaml")}
         (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(known))
+        _write_definitions(tmp_path, "device-types/Nokia/7750-SR-7s.yaml")
         # Create an empty module/rack pickle so those code paths don't crash
         (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
         (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
@@ -1610,6 +1619,7 @@ class TestResolveSlugFiles:
             ("cisco-catalyst-9200", "device-types/Cisco/Catalyst-9200.yaml"),
         }
         (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(known))
+        _write_definitions(tmp_path, *(relpath for _, relpath in known))
         (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
         (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
 
@@ -1804,6 +1814,7 @@ class TestResolveSlugFilesJson:
         self._write_json(tests_dir, "known-slugs", [("nokia-7750-sr-7s", "device-types/Nokia/7750-SR-7s.yaml")])
         self._write_json(tests_dir, "known-modules", [])
         self._write_json(tests_dir, "known-racks", [])
+        _write_definitions(tmp_path, "device-types/Nokia/7750-SR-7s.yaml")
 
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
@@ -1838,8 +1849,9 @@ class TestResolveSlugFilesJson:
         tests_dir.mkdir()
         self._write_json(tests_dir, "known-slugs", [("nokia-7750-sr-7s", "device-types/Nokia/7750-SR-7s.yaml")])
         (tests_dir / "known-slugs.pickle").write_bytes(
-            pickle.dumps({("cisco-catalyst-9200", "device-types/Cisco/Catalyst-9200.yaml")})
+            pickle.dumps({("other-slug", "device-types/Nokia/7750-SR-7s.yaml")})
         )
+        _write_definitions(tmp_path, "device-types/Nokia/7750-SR-7s.yaml")
         self._write_json(tests_dir, "known-modules", [])
         self._write_json(tests_dir, "known-racks", [])
 
@@ -1847,10 +1859,8 @@ class TestResolveSlugFilesJson:
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
 
-        result = repo.resolve_slug_files(["nokia"])
-
-        assert "nokia" in result["device_files"]
-        assert "cisco" not in result["device_files"]
+        assert "nokia" in repo.resolve_slug_files(["nokia"])["device_files"]
+        assert repo.resolve_slug_files(["other-slug"])["device_files"] == {}
 
     def test_corrupted_device_json_returns_none(self, tmp_path):
         tests_dir = tmp_path / "tests"

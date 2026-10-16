@@ -4,6 +4,7 @@ import concurrent.futures
 import json
 import os
 import pickle
+import posixpath
 from collections.abc import Sequence
 from glob import glob
 from re import sub as re_sub
@@ -117,15 +118,28 @@ def _resolve_index_path(base_dir: str, stem: str) -> "str | None":
     return None
 
 
+def _index_key(relpath: str) -> tuple[str, str]:
+    """Return the (directory, file stem) pair that the upstream indexes record for a definition file."""
+    directory, name = posixpath.split(relpath.replace("\\", "/"))
+    return directory, os.path.splitext(name)[0]
+
+
+def _vendor_of(directory: str) -> str:
+    """Return the vendor folder name of a definition directory such as ``module-types/Nokia``."""
+    return directory.rsplit("/", 1)[-1]
+
+
 def _vendor_slugs_from_index(
-    index_path: "str | None", slugs_lower: list, slug_format, subdir_filter: "str | None" = None
+    index_path: "str | None", slugs_lower: list, slug_format, on_disk: list, subdir_filter: "str | None" = None
 ) -> "set | None":
-    """Load a (model_name, vendor_dir) index and return the set of vendor slugs matching *slugs_lower*.
+    """Load a (file_stem, vendor_dir) index and return the set of vendor slugs matching *slugs_lower*.
 
     *index_path* may point at a ``.json`` (current) or ``.pickle`` (legacy) file; the loader is
     chosen by extension.  *subdir_filter*, if given, requires the vendor_dir to contain that
-    substring.  Returns ``None`` when the index is unavailable (missing or unreadable), so callers
-    can distinguish "no matches" (empty set) from "hint unavailable" (None).
+    substring.  *on_disk* holds the ``(index_key, path)`` pairs of the definition files on disk;
+    a vendor with a file the index does not list is a candidate too, because only parsing can
+    tell what that file defines.  Returns ``None`` when the index is unavailable (missing or
+    unreadable), so callers can distinguish "no matches" (empty set) from "hint unavailable" (None).
     """
     if index_path is None:
         return None
@@ -133,21 +147,17 @@ def _vendor_slugs_from_index(
         entries = _safe_index_load(index_path)
     except Exception:  # an unreadable index or definition is skipped, not fatal  # noqa: BLE001
         return None
+    indexed = set()
     result = set()
-    for model_name, vendor_dir in entries:
-        if subdir_filter and subdir_filter not in vendor_dir.replace("\\", "/"):
+    for stem, vendor_dir in entries:
+        vendor_dir = vendor_dir.replace("\\", "/")
+        if subdir_filter and subdir_filter not in vendor_dir:
             continue
-        if not any(s in model_name.casefold() for s in slugs_lower):
-            continue
-        vendor_name = vendor_dir.replace("\\", "/").split("/")[-1]
-        result.add(slug_format(vendor_name))
+        indexed.add((vendor_dir, stem))
+        if any(s in stem.casefold() for s in slugs_lower):
+            result.add(slug_format(_vendor_of(vendor_dir)))
+    result.update(slug_format(_vendor_of(key[0])) for key, _ in on_disk if key not in indexed)
     return result
-
-
-def _safe_abs_path(repo_root: str, relpath: str) -> "str | None":
-    """Return the absolute path for *relpath* inside *repo_root*, or None if it escapes the root."""
-    abs_path = os.path.normpath(os.path.join(repo_root, *relpath.replace("\\", "/").split("/")))
-    return abs_path if abs_path.startswith(os.path.normpath(repo_root) + os.sep) else None
 
 
 def _validate_index_data(data, source: str):
@@ -701,12 +711,17 @@ class DTLRepo:
         * ``known-slugs.json`` — list of ``(manufacturer_prefixed_slug, relpath)`` for
           device types.  ``relpath`` is relative to the repo root, e.g.
           ``device-types/Nokia/7750-SR-7s.yaml``.
-        * ``known-modules.json`` — list of ``(model_name, vendor_dir)`` for module
+        * ``known-modules.json`` — list of ``(file_stem, vendor_dir)`` for module
           types.  Only the vendor directory is stored, not the file name.
         * ``known-racks.json``  — same format as known-modules.
 
         Matching uses a **case-insensitive substring** check identical to the runtime
         :meth:`parse_files` filter so that partial slug/model searches work the same way.
+
+        The indexes come from upstream master, so a fork or branch can hold definitions they
+        do not list, and can lack files they list.  The definition files on disk are the
+        source of truth: an indexed file that is gone is dropped, and a file the index does
+        not list is always a candidate, for :meth:`parse_files` to filter by slug.
 
         Args:
             slugs (list[str]): User-supplied slug/model substrings (``--slugs``).
@@ -716,7 +731,8 @@ class DTLRepo:
             to the normal glob path).  Otherwise a dict with the keys:
 
             ``"device_files"``
-                ``{vendor_slug: [abs_path, ...]}`` for devices resolved via the index.
+                ``{vendor_slug: [abs_path, ...]}`` for devices resolved via the index, plus
+                every device file the index does not list.  Parse them with the slugs.
             ``"module_vendors"``
                 ``{vendor_slug}`` — set of vendor slugs that may contain matching module
                 types, or ``None`` when the module index was unavailable (caller should
@@ -736,36 +752,46 @@ class DTLRepo:
         slugs_lower = [s.casefold() for s in slugs]
 
         # --- device types --------------------------------------------------
-        device_files: dict = {}  # vendor_slug -> [abs_path]
         try:
             known_slugs = _safe_index_load(device_index)
         except Exception:  # an unreadable index or definition is skipped, not fatal  # noqa: BLE001
             return None
+        slug_by_key = {_index_key(relpath): entry_slug for entry_slug, relpath in known_slugs}
 
-        for entry_slug, relpath in known_slugs:
-            if not any(s in entry_slug.casefold() for s in slugs_lower):
-                continue
-            parts = relpath.replace("\\", "/").split("/")
-            if len(parts) < 3:
-                continue
-            vendor_name = parts[1]
-            vendor_slug = self.slug_format(vendor_name)
-            abs_path = _safe_abs_path(repo_root, relpath)
-            if abs_path is None:
-                continue
-            device_files.setdefault(vendor_slug, []).append(abs_path)
+        device_files: dict = {}  # vendor_slug -> [abs_path]
+        for key, abs_path in self._definition_files(self.get_devices_path()):
+            entry_slug = slug_by_key.get(key)
+            # An unindexed file can hold any slug, so the caller's parse_files filter decides.
+            if entry_slug is None or any(s in entry_slug.casefold() for s in slugs_lower):
+                device_files.setdefault(self.slug_format(_vendor_of(key[0])), []).append(abs_path)
 
         # --- module types --------------------------------------------------
-        module_vendors = _vendor_slugs_from_index(module_index, slugs_lower, self.slug_format)
+        module_vendors = _vendor_slugs_from_index(
+            module_index, slugs_lower, self.slug_format, self._definition_files(self.get_modules_path())
+        )
 
         # --- rack types ----------------------------------------------------
-        rack_vendors = _vendor_slugs_from_index(rack_index, slugs_lower, self.slug_format, subdir_filter="rack-types")
+        rack_vendors = _vendor_slugs_from_index(
+            rack_index,
+            slugs_lower,
+            self.slug_format,
+            self._definition_files(self.get_racks_path()),
+            subdir_filter="rack-types",
+        )
 
         return {
             "device_files": device_files,
             "module_vendors": module_vendors,
             "rack_vendors": rack_vendors,
         }
+
+    def _definition_files(self, type_root):
+        """Return ``(index_key, abs_path)`` for each definition file on disk under *type_root*."""
+        if not os.path.isdir(type_root):
+            return []
+        files, _ = self.get_devices(type_root)
+        repo_root = self.get_absolute_path()
+        return [(_index_key(os.path.relpath(path, repo_root)), path) for path in files]
 
     def discover_vendors(self, devices_path, modules_path, racks_path):
         """Discover all vendor directories across device-types/, module-types/, and rack-types/.
