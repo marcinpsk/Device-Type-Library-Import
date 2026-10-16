@@ -629,9 +629,10 @@ def test_update_mode_module_profile() -> None:
         fail(f"Importer --update exited with code {result.returncode}")
     assert_module_profile(get_one("/dcim/module-types/", model="Test Power Supply"))
 
+    # A no-change run prints no change banner, so first prove the run reached its summary.
     result2 = run_importer()
-    if "MODULE TYPE CHANGE DETECTION" in result2.stdout and not re.search(
-        r"Modified module types:\s+0", result2.stdout
-    ):
+    if result2.returncode != 0 or not re.search(r"(?<!\d)\d+ modules updated", result2.stdout):
+        fail(f"Post-update run did not complete (exit {result2.returncode})\n{result2.stdout}")
+    if re.search(r"Modified module types:\s+[1-9]", result2.stdout):
         fail(f"After update, next run still reports modified module types\n{result2.stdout}")
     ok("Post-update run: 0 modified module types")

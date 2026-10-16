@@ -185,3 +185,44 @@ class TestCreate:
         assert created["profile"] == {"name": "Transceiver"}
         assert created["attributes"] == SFP_ATTRIBUTES
         assert "attribute_data" not in created
+
+
+class TestMalformedDefinition:
+    """A profile or attribute_data of the wrong shape fails its own file at parse time, not the whole run."""
+
+    BASE = "manufacturer: Cisco\nmodel: SFP-10G-SR\n"
+
+    @pytest.mark.parametrize(
+        "extra",
+        [
+            "profile: [Transceiver]\n",
+            "profile:\n  id: 3\n",
+            "profile:\n  name: [Transceiver]\n",
+            "attribute_data: [phy]\n",
+            "attribute_data: 10G\n",
+        ],
+    )
+    def test_the_file_is_rejected(self, tmp_path, extra):
+        path = tmp_path / "bad.yaml"
+        path.write_text(self.BASE + extra, encoding="utf-8")
+
+        parsed = parse_single_file(str(path))
+
+        assert isinstance(parsed, str)
+        assert parsed.startswith("Error:")
+
+    @pytest.mark.parametrize(
+        ("extra", "profile"),
+        [
+            ("profile: null\nattribute_data: null\n", None),
+            ("profile:\n  name: Transceiver\n", {"name": "Transceiver"}),
+        ],
+    )
+    def test_null_and_a_named_mapping_are_accepted(self, netbox, server, tmp_path, extra, profile):
+        nb, _ = netbox
+        path = tmp_path / "ok.yaml"
+        path.write_text(self.BASE + extra, encoding="utf-8")
+        parsed = parse_single_file(str(path))
+
+        assert parsed["profile"] == profile
+        nb.filter_actionable_module_types([parsed], {"cisco": {"SFP-10G-SR": existing(server)}})
