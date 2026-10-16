@@ -380,6 +380,19 @@ class TestSlugSelectionWithAStaleIndex:
 
         assert self._plan(tmp_path, make_config, index, ("box",)) == {"Old Box"}
 
+    def test_a_yml_file_is_not_taken_for_the_indexed_yaml_file_of_the_same_name(self, tmp_path, make_config):
+        self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")
+        self._write(tmp_path, "device-types/Acme/old-box.yml", "Yml Box", "acme-yml-box")
+        self._write(tmp_path, "device-types/Acme/new-box.yaml", "New Box", "acme-new-box")
+
+        assert self._plan(tmp_path, make_config, self.INDEX, ("yml",)) == {"Yml Box"}
+
+    def test_a_broken_definition_link_is_skipped(self, tmp_path, make_config):
+        self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")
+        (tmp_path / "device-types/Acme/dangling.yaml").symlink_to(tmp_path / "device-types/Acme/missing.yaml")
+
+        assert self._plan(tmp_path, make_config, self.INDEX, ("box",)) == {"Old Box"}
+
 
 class _ModuleNetBox:
     """Report one new module type so the banner is emitted."""

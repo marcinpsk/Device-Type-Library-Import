@@ -115,7 +115,7 @@ def _vendor_slugs_from_index(
 
     *index_path* may point at a ``.json`` (current) or ``.pickle`` (legacy) file; the loader is
     chosen by extension.  *subdir_filter*, if given, requires the vendor_dir to contain that
-    substring.  *on_disk* holds the ``(index_key, path)`` pairs of the definition files on disk;
+    substring.  *on_disk* holds the ``(relpath, path)`` pairs of the definition files on disk;
     a vendor with a file the index does not list is a candidate too, because only parsing can
     tell what that file defines.  Returns ``None`` when the index is unavailable (missing or
     unreadable), so callers can distinguish "no matches" (empty set) from "hint unavailable" (None).
@@ -135,7 +135,8 @@ def _vendor_slugs_from_index(
         indexed.add((vendor_dir, stem))
         if any(s in stem.casefold() for s in slugs_lower):
             result.add(slug_format(_vendor_of(vendor_dir)))
-    result.update(slug_format(_vendor_of(key[0])) for key, _ in on_disk if key not in indexed)
+    unindexed = (_index_key(relpath) for relpath, _ in on_disk)
+    result.update(slug_format(_vendor_of(key[0])) for key in unindexed if key not in indexed)
     return result
 
 
@@ -451,33 +452,33 @@ def parse_single_file(file):
             `src` set to the file path.
         str: Error string beginning with "Error:" describing YAML parsing or other failure.
     """
-    with open(file) as stream:
-        try:
+    try:
+        with open(file) as stream:
             data = yaml.safe_load(stream)
-            manufacturer = data["manufacturer"]
-            # Use only slug for manufacturer lookup - more resilient to case mismatches
-            # (e.g., RuggedCOM vs RuggedCom in upstream data)
-            data["manufacturer"] = {"slug": re_sub(r"\W+", "-", manufacturer.lower())}
-            profile = data.get("profile")
-            if isinstance(profile, str):
-                data["profile"] = {"name": profile}
-            elif profile is not None and not (isinstance(profile, dict) and isinstance(profile.get("name"), str)):
-                return f"Error: profile must be a name or a mapping with a name, not {profile!r}"
-            attribute_data = data.get("attribute_data")
-            if attribute_data is not None and not isinstance(attribute_data, dict):
-                return f"Error: attribute_data must be a mapping, not {attribute_data!r}"
-            for field in ("profile", "attribute_data"):
-                if not _is_strict_json(data.get(field)):
-                    return f"Error: {field} must hold JSON values only (string keys, finite numbers): {data[field]!r}"
-            data["src"] = file
-            err = normalize_port_mappings(data)
-            if err:
-                return err
-            return data
-        except yaml.YAMLError as excep:
-            return f"Error: {excep}"
-        except Exception as e:  # an unreadable index or definition is skipped, not fatal  # noqa: BLE001
-            return f"Error: {e}"
+        manufacturer = data["manufacturer"]
+        # Use only slug for manufacturer lookup - more resilient to case mismatches
+        # (e.g., RuggedCOM vs RuggedCom in upstream data)
+        data["manufacturer"] = {"slug": re_sub(r"\W+", "-", manufacturer.lower())}
+        profile = data.get("profile")
+        if isinstance(profile, str):
+            data["profile"] = {"name": profile}
+        elif profile is not None and not (isinstance(profile, dict) and isinstance(profile.get("name"), str)):
+            return f"Error: profile must be a name or a mapping with a name, not {profile!r}"
+        attribute_data = data.get("attribute_data")
+        if attribute_data is not None and not isinstance(attribute_data, dict):
+            return f"Error: attribute_data must be a mapping, not {attribute_data!r}"
+        for field in ("profile", "attribute_data"):
+            if not _is_strict_json(data.get(field)):
+                return f"Error: {field} must hold JSON values only (string keys, finite numbers): {data[field]!r}"
+        data["src"] = file
+        err = normalize_port_mappings(data)
+        if err:
+            return err
+        return data
+    except yaml.YAMLError as excep:
+        return f"Error: {excep}"
+    except Exception as e:  # an unreadable index or definition is skipped, not fatal  # noqa: BLE001
+        return f"Error: {e}"
 
 
 class DTLRepo:
@@ -735,14 +736,15 @@ class DTLRepo:
             known_slugs = _safe_index_load(device_index)
         except Exception:  # an unreadable index or definition is skipped, not fatal  # noqa: BLE001
             return None
-        slug_by_key = {_index_key(relpath): entry_slug for entry_slug, relpath in known_slugs}
+        slug_by_relpath = {relpath.replace("\\", "/"): entry_slug for entry_slug, relpath in known_slugs}
 
         device_files: dict = {}  # vendor_slug -> [abs_path]
-        for key, abs_path in self._definition_files(self.get_devices_path()):
-            entry_slug = slug_by_key.get(key)
+        for relpath, abs_path in self._definition_files(self.get_devices_path()):
+            entry_slug = slug_by_relpath.get(relpath)
             # An unindexed file can hold any slug, so the caller's parse_files filter decides.
             if entry_slug is None or any(s in entry_slug.casefold() for s in slugs_lower):
-                device_files.setdefault(self.slug_format(_vendor_of(key[0])), []).append(abs_path)
+                vendor_slug = self.slug_format(_vendor_of(posixpath.dirname(relpath)))
+                device_files.setdefault(vendor_slug, []).append(abs_path)
 
         # --- module types --------------------------------------------------
         module_vendors = _vendor_slugs_from_index(
@@ -765,12 +767,12 @@ class DTLRepo:
         }
 
     def _definition_files(self, type_root):
-        """Return ``(index_key, abs_path)`` for each definition file on disk under *type_root*."""
+        """Return ``(posix relpath, abs_path)`` for each definition file on disk under *type_root*."""
         if not os.path.isdir(type_root):
             return []
         files, _ = self.get_devices(type_root)
         repo_root = self.get_absolute_path()
-        return [(_index_key(os.path.relpath(path, repo_root)), path) for path in files]
+        return [(os.path.relpath(path, repo_root).replace("\\", "/"), path) for path in files]
 
     def discover_vendors(self, devices_path, modules_path, racks_path):
         """Discover all vendor directories across device-types/, module-types/, and rack-types/.
