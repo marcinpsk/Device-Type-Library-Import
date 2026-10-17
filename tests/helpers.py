@@ -5,6 +5,7 @@ import json
 import re
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from typing import ClassVar
 from unittest.mock import MagicMock
 from urllib.parse import parse_qs, urlparse
 
@@ -72,9 +73,10 @@ class FakeNetBox:
     """A local HTTP server answering the slice of the NetBox REST API the importer uses.
 
     Collections are addressed by their URL segment with dashes turned into underscores,
-    so ``module-bay-types`` is ``module_bay_types``.  GET filters, POST creates and PATCH
-    bulk-updates behave the way pynetbox expects, so a real client drives it and the
-    serialising, filtering and paginating under test are the production ones.
+    so ``module-bay-types`` is ``module_bay_types``.  GET filters, POST creates, PATCH
+    bulk-updates and DELETE bulk-deletes behave the way pynetbox expects, so a real client
+    drives it and the serialising, filtering and paginating under test are the production ones.
+    A create that repeats a natural key gets NetBox's 400, as does a delete of a missing id.
 
     ``/graphql/`` answers every query with an empty list, which is enough to bring a real
     :class:`~core.netbox_api.NetBox` up; the REST half is where the assertions live.
@@ -91,6 +93,16 @@ class FakeNetBox:
     # A nested reference NetBox looks up by its attributes, keyed by field name.
     _NESTED_REFERENCES = (("manufacturer", "manufacturers"), ("profile", "module_type_profiles"))
 
+    # Fields that together identify one record, as NetBox's unique constraints do.
+    _UNIQUE_TOGETHER: ClassVar[dict[str, tuple[tuple[str, ...], ...]]] = {
+        "manufacturers": (("slug",),),
+        "device_types": (("manufacturer", "model"),),
+        "rack_types": (("manufacturer", "model"),),
+        "module_types": (("manufacturer", "model"),),
+        "module_bay_types": (("manufacturer", "name"),),
+    }
+    _COMPONENT_UNIQUE = (("device_type", "name"), ("module_type", "name"))
+
     def __init__(self, errors=None, netbox_version="4.7.0", **collections):
         """Start the server with *collections* seeded, keyed by collection name.
 
@@ -102,7 +114,7 @@ class FakeNetBox:
         self.errors = dict(errors or {})
         self.netbox_version = netbox_version
         self.requests = []
-        # (verb, 1-based number of that verb) -> "lost", "truncated" or "garbled": the write commits, the reply breaks.
+        # (verb, 1-based number of that verb) -> "lost", "truncated" or "garbled": the request runs, the reply breaks.
         self.broken_replies = {}
         self._server = HTTPServer(("127.0.0.1", 0), self._handler())
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
@@ -149,7 +161,8 @@ class FakeNetBox:
                 field = key[:-3] if key.endswith("_id") else key
                 actual = record.get(field)
                 if isinstance(actual, dict):
-                    actual = actual.get("id")
+                    # NetBox filters a nested reference by id with "<field>_id", by slug with "<field>".
+                    actual = actual.get("id" if key.endswith("_id") else "slug")
                 if str(actual) not in values:
                     ok = False
                     break
@@ -163,9 +176,46 @@ class FakeNetBox:
         A list payload is a bulk create, which is how the importer adds components, and it
         answers with a list.
         """
-        if isinstance(payload, list):
-            return [self._create_one(name, item) for item in payload]
-        return self._create_one(name, payload)
+        records = [self._build_record(item) for item in (payload if isinstance(payload, list) else [payload])]
+        errors = [self._duplicate_error(name, record) for record in records]
+        if any(errors):
+            # A bulk create is atomic: one duplicate refuses the whole batch.
+            raise _Refused(errors if isinstance(payload, list) else errors[0])
+        collection = self.collection(name)
+        for record in records:
+            record["id"] = 1000 + len(collection)
+            collection.append(record)
+        return records if isinstance(payload, list) else records[0]
+
+    def _duplicate_error(self, name, item):
+        """Return NetBox's error for an item that repeats a stored natural key, else an empty dict."""
+        constraints = self._UNIQUE_TOGETHER.get(name, self._COMPONENT_UNIQUE if name.endswith("_templates") else ())
+        for fields in constraints:
+            wanted = [self._reference_id(item.get(field)) for field in fields]
+            if None in wanted:
+                continue
+            if any(wanted == [self._reference_id(r.get(f)) for f in fields] for r in self.collection(name)):
+                return {"non_field_errors": [f"The fields {', '.join(fields)} must make a unique set."]}
+        return {}
+
+    @staticmethod
+    def _reference_id(value):
+        """Return the id of a nested reference, or the value itself."""
+        return value.get("id") if isinstance(value, dict) else value
+
+    def _delete(self, name, payload):
+        """Remove the records a bulk delete names, refusing the batch as NetBox does if one is missing."""
+        wanted = [entry["id"] for entry in payload]
+        stored = self.collection(name)
+        missing = [i for i in wanted if not any(r["id"] == i for r in stored)]
+        if missing:
+            raise _Refused(
+                {
+                    "detail": f"{len(missing)} of {len(wanted)} objects could not be found.",
+                    "errors": [{"id": i, "errors": {"id": [f"Object with ID {i} does not exist"]}} for i in missing],
+                }
+            )
+        stored[:] = [r for r in stored if r["id"] not in wanted]
 
     def _resolve_references(self, payload):
         """Replace each nested reference with the object it names, as NetBox does.
@@ -179,18 +229,24 @@ class FakeNetBox:
             match = next((r for r in self.collection(collection) if wanted.items() <= r.items()), None)
             if match is None:
                 raise _Refused({field: [f"Related object not found using the provided attributes: {wanted}"]})
-            payload[field] = {"id": match["id"], "name": match.get("name")}
+            payload[field] = self._nested(match)
         return payload
 
-    def _create_one(self, name, payload):
-        """Store one new record and return it as NetBox would echo it back."""
-        collection = self.collection(name)
-        record = {"id": 1000 + len(collection), **self._resolve_references(payload)}
+    @staticmethod
+    def _nested(record):
+        """Return *record* as NetBox nests it in another object: id, name, and slug when it has one."""
+        nested = {"id": record.get("id"), "name": record.get("name")}
+        if "slug" in record:
+            nested["slug"] = record["slug"]
+        return nested
+
+    def _build_record(self, payload):
+        """Return one new record as NetBox would echo it back, without storing it."""
+        record = self._resolve_references(payload)
         # NetBox echoes a foreign key back as a nested object, not the id it was given.
         if isinstance(record.get("manufacturer"), int):
             owner = next((m for m in self.collection("manufacturers") if m["id"] == record["manufacturer"]), {})
-            record["manufacturer"] = {"id": record["manufacturer"], "name": owner.get("name")}
-        collection.append(record)
+            record["manufacturer"] = {**self._nested(owner), "id": record["manufacturer"]}
         return record
 
     @staticmethod
@@ -238,6 +294,13 @@ class FakeNetBox:
             return
         handler._reply(*answer)
 
+    def _write(self, handler, verb, name, payload, status, apply):
+        """Record a write, then answer with *apply*'s result or the refusal it raises."""
+        self.requests.append((verb, name, payload))
+        if handler._refused(name):
+            return
+        self._reply_to(handler, verb, self._answer(status, lambda: apply(name, copy.deepcopy(payload))))
+
     def _handler(self):
         """Build the request handler class bound to this server's state."""
         state = self
@@ -250,7 +313,7 @@ class FakeNetBox:
                 return json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
 
             def _reply(self, status, payload):
-                body = json.dumps(payload).encode()
+                body = b"" if payload is None else json.dumps(payload).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -275,28 +338,24 @@ class FakeNetBox:
                 if self._refused(name):
                     return
                 results = state.matches(name, parse_qs(parsed.query))
-                self._reply(200, {"count": len(results), "next": None, "previous": None, "results": results})
+                page = {"count": len(results), "next": None, "previous": None, "results": results}
+                state._reply_to(self, "GET", (200, page))
 
             def do_POST(self):
                 name = self._collection_name()
                 payload = self._body()
-                if name == "graphql":
-                    state.requests.append(("POST", name, payload))
-                    key = state._LIST_KEY.search(payload.get("query", ""))
-                    self._reply(200, {"data": {key.group(1) if key else "unknown_list": []}})
+                if name != "graphql":
+                    state._write(self, "POST", name, payload, 201, state._create)
                     return
                 state.requests.append(("POST", name, payload))
-                if self._refused(name):
-                    return
-                state._reply_to(self, "POST", state._answer(201, lambda: state._create(name, copy.deepcopy(payload))))
+                key = state._LIST_KEY.search(payload.get("query", ""))
+                self._reply(200, {"data": {key.group(1) if key else "unknown_list": []}})
 
             def do_PATCH(self):
-                name = self._collection_name()
-                payload = self._body()
-                state.requests.append(("PATCH", name, payload))
-                if self._refused(name):
-                    return
-                state._reply_to(self, "PATCH", state._answer(200, lambda: state._patch(name, copy.deepcopy(payload))))
+                state._write(self, "PATCH", self._collection_name(), self._body(), 200, state._patch)
+
+            def do_DELETE(self):
+                state._write(self, "DELETE", self._collection_name(), self._body(), 204, state._delete)
 
             def log_message(self, *args):
                 """Silence the default stderr access log."""

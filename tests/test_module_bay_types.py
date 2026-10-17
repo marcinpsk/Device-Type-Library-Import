@@ -146,13 +146,50 @@ class TestRefusals:
         assert "mx304-re" in str(exc.value)
         assert not server.sent("POST", "module_bay_types")
 
-    @pytest.mark.parametrize("reply", ["truncated", "garbled"])
-    def test_a_broken_create_reply_fails_the_definition_not_the_run(self, catalog, reply):
+    @pytest.mark.parametrize("reply", ["lost", "truncated", "garbled"])
+    def test_retries_exhausted_fail_the_definition_not_the_run(self, catalog, monkeypatch, reply):
+        """The create commits but its reply breaks, and every lookup before a retry is dropped."""
+        monkeypatch.setattr("core.retry.time.sleep", lambda _seconds: None)
         cat, server = catalog()
-        server.broken_replies = {("POST", 1): reply}
+        server.broken_replies = {("POST", 1): reply, **{("GET", n): "lost" for n in (3, 4, 5)}}
         with pytest.raises(ModuleBayTypeError) as exc:
             cat.ids_for("juniper", ["MX304-RE"])
         assert "MX304-RE" in str(exc.value)
+        assert len(server.sent("POST", "module_bay_types")) == 1
+        assert len(cat.ids_for("juniper", ["MX304-LMIC"])) == 1
+
+
+@pytest.mark.real_http
+class TestRetries:
+    """A dropped connection is retried, and a create whose reply broke is not repeated."""
+
+    @pytest.fixture(autouse=True)
+    def no_backoff(self, monkeypatch):
+        """Skip the wait between attempts."""
+        monkeypatch.setattr("core.retry.time.sleep", lambda _seconds: None)
+
+    def test_a_dropped_lookup_is_retried(self, catalog):
+        cat, server = catalog()
+        server.broken_replies = {("GET", 1): "lost", ("GET", 2): "lost"}
+        [bay_type_id] = cat.ids_for("juniper", ["MX304-RE"])
+        assert [r["id"] for r in server.collection("module_bay_types")] == [bay_type_id]
+
+    @pytest.mark.parametrize("reply", ["lost", "truncated", "garbled"])
+    def test_a_module_bay_type_create_with_a_broken_reply_is_not_repeated(self, catalog, reply):
+        cat, server = catalog()
+        server.broken_replies = {("POST", 1): reply}
+        [bay_type_id] = cat.ids_for("juniper", ["MX304-RE"])
+        assert [r["id"] for r in server.collection("module_bay_types")] == [bay_type_id]
+        assert len(server.sent("POST", "module_bay_types")) == 1
+
+    @pytest.mark.parametrize("reply", ["lost", "truncated", "garbled"])
+    def test_a_manufacturer_create_with_a_broken_reply_is_not_repeated(self, catalog, reply):
+        cat, server = catalog(manufacturers=())
+        server.broken_replies = {("POST", 1): reply}
+        cat.ids_for("juniper", ["MX304-RE"])
+        assert [r["slug"] for r in server.collection("manufacturers")] == ["juniper"]
+        assert len(server.sent("POST", "manufacturers")) == 1
+        assert len(server.collection("module_bay_types")) == 1
 
 
 @pytest.mark.real_http

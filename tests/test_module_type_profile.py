@@ -217,7 +217,7 @@ class TestUpdate:
         self, netbox, server, definition, monkeypatch, broken, reply
     ):
         """Each PATCH commits but its reply breaks, so every retry is exhausted."""
-        monkeypatch.setattr("core.netbox_api.time.sleep", lambda _seconds: None)
+        monkeypatch.setattr("core.retry.time.sleep", lambda _seconds: None)
         nb, _ = netbox
         record = existing(server, {"id": 4, "name": "Fan"}, {"rpm": 3000})
         server.broken_replies = {("PATCH", number): reply for number in broken}
@@ -231,7 +231,7 @@ class TestUpdate:
     @pytest.mark.parametrize("reply", ["lost", "truncated", "garbled"])
     @pytest.mark.parametrize("broken", [1, 2], ids=["clear", "write"])
     def test_a_profile_change_retries_a_broken_reply(self, netbox, server, definition, monkeypatch, broken, reply):
-        monkeypatch.setattr("core.netbox_api.time.sleep", lambda _seconds: None)
+        monkeypatch.setattr("core.retry.time.sleep", lambda _seconds: None)
         nb, _ = netbox
         record = existing(server, {"id": 4, "name": "Fan"}, {"rpm": 3000})
         server.broken_replies = {("PATCH", broken): reply}
@@ -245,7 +245,7 @@ class TestUpdate:
 
     @pytest.mark.parametrize("reply", ["truncated", "garbled"])
     def test_an_update_retries_a_broken_reply(self, netbox, server, definition, monkeypatch, reply):
-        monkeypatch.setattr("core.netbox_api.time.sleep", lambda _seconds: None)
+        monkeypatch.setattr("core.retry.time.sleep", lambda _seconds: None)
         nb, _ = netbox
         record = existing(server, {"id": 3, "name": "Transceiver"}, {})
         server.broken_replies = {("PATCH", 1): reply}
@@ -259,7 +259,7 @@ class TestUpdate:
     def test_an_update_whose_replies_stay_broken_fails_only_that_module_type(
         self, netbox, server, definition, monkeypatch, reply
     ):
-        monkeypatch.setattr("core.netbox_api.time.sleep", lambda _seconds: None)
+        monkeypatch.setattr("core.retry.time.sleep", lambda _seconds: None)
         nb, console = netbox
         record = existing(server, {"id": 3, "name": "Transceiver"}, {})
         server.broken_replies = {("PATCH", number): reply for number in range(1, 5)}

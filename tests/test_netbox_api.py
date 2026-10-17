@@ -4950,18 +4950,18 @@ class TestTryUpdateModuleTypeErrors:
         module_type_res = self._make_module_type_res()
         module_type_res.part_number = "OLD-123"
 
-        with patch("core.netbox_api.time.sleep") as mock_sleep:
+        with patch("core.retry.time.sleep") as mock_sleep:
             ok, updated = nb._try_update_module_type(curr_mt, module_type_res, "test.yaml")
 
         assert ok is False
         assert updated is False
         mock_handle.log.assert_called()
         # Prove the retry loop actually ran the full budget with the correct backoff.
-        from core.netbox_api import _MAX_RETRIES, _RETRY_BACKOFF
+        from core.retry import MAX_RETRIES, RETRY_BACKOFF
 
-        assert nb.netbox.dcim.module_types.update.call_count == _MAX_RETRIES + 1
-        assert mock_sleep.call_count == _MAX_RETRIES
-        assert [call.args[0] for call in mock_sleep.call_args_list] == list(_RETRY_BACKOFF[:_MAX_RETRIES])
+        assert nb.netbox.dcim.module_types.update.call_count == MAX_RETRIES + 1
+        assert mock_sleep.call_count == MAX_RETRIES
+        assert [call.args[0] for call in mock_sleep.call_args_list] == list(RETRY_BACKOFF[:MAX_RETRIES])
 
 
 # ---------------------------------------------------------------------------
@@ -4989,6 +4989,7 @@ class TestProcessSingleModuleTypeCreateRetryable:
         mock_handle.log.reset_mock()
 
         mock_nb_api.dcim.module_types.create.side_effect = requests.exceptions.ConnectionError("network down")
+        mock_nb_api.dcim.module_types.get.return_value = None  # no earlier attempt committed
 
         curr_mt = {
             "manufacturer": {"slug": "cisco"},
@@ -4996,7 +4997,7 @@ class TestProcessSingleModuleTypeCreateRetryable:
             "slug": "cm-retryable",
         }
 
-        with patch("core.netbox_api.time.sleep") as mock_sleep:
+        with patch("core.retry.time.sleep") as mock_sleep:
             result = nb._process_single_module_type(
                 curr_mt,
                 "test.yaml",
@@ -5008,11 +5009,11 @@ class TestProcessSingleModuleTypeCreateRetryable:
         assert result is False
         mock_handle.log.assert_called()
         # Prove the retry loop actually ran the full budget with the correct backoff.
-        from core.netbox_api import _MAX_RETRIES, _RETRY_BACKOFF
+        from core.retry import MAX_RETRIES, RETRY_BACKOFF
 
-        assert mock_nb_api.dcim.module_types.create.call_count == _MAX_RETRIES + 1
-        assert mock_sleep.call_count == _MAX_RETRIES
-        assert [call.args[0] for call in mock_sleep.call_args_list] == list(_RETRY_BACKOFF[:_MAX_RETRIES])
+        assert mock_nb_api.dcim.module_types.create.call_count == MAX_RETRIES + 1
+        assert mock_sleep.call_count == MAX_RETRIES
+        assert [call.args[0] for call in mock_sleep.call_args_list] == list(RETRY_BACKOFF[:MAX_RETRIES])
 
 
 # ---------------------------------------------------------------------------
@@ -6046,7 +6047,7 @@ class TestAdditionalNetBoxCoverage:
         nb = NetBox(mock_settings, mock_handle)
         nb.netbox.dcim.manufacturers.create.side_effect = requests.exceptions.ConnectionError("offline")
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             nb.create_manufacturers([{"name": "Cisco", "slug": "cisco"}])
 
         assert any("Connection error creating manufacturers" in str(c) for c in mock_handle.log.call_args_list)
@@ -6145,7 +6146,7 @@ class TestAdditionalNetBoxCoverage:
 
         with (
             patch("core.netbox_api.classify_device_type_update_failure", return_value=resolution),
-            patch("core.netbox_api.time.sleep"),
+            patch("core.retry.time.sleep"),
         ):
             ok, returned = nb._try_resolve_and_retry_device_type_update(dt, {}, {"slug": "m1"}, MagicMock())
 
@@ -6231,7 +6232,7 @@ class TestAdditionalNetBoxCoverage:
             component_changes=[],
         )
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             nb._handle_existing_device_type(dt, {}, "cisco", {}, False, dt_change, False)
 
         assert any("Connection error updating device type Router" in str(c) for c in mock_handle.log.call_args_list)
@@ -6245,8 +6246,9 @@ class TestAdditionalNetBoxCoverage:
         mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.netbox.dcim.device_types.create.side_effect = requests.exceptions.ConnectionError("offline")
+        nb.netbox.dcim.device_types.get.return_value = None  # no earlier attempt committed
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             dt, should_continue = nb._create_new_device_type(
                 {"manufacturer": {"slug": "cisco"}, "model": "Router"},
                 "router.yaml",
@@ -6446,7 +6448,7 @@ class TestAdditionalDeviceTypesCoverage:
         dcim = mock_pynetbox.api.return_value.dcim
         dcim.interface_templates.create.side_effect = requests.exceptions.ConnectionError("offline")
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             dt._create_generic(BY_YAML_KEY["interfaces"], [{"name": "eth0"}], 1)
 
         assert any("Connection error creating Interface" in str(c) for c in mock_handle.log.call_args_list)
@@ -6473,7 +6475,7 @@ class TestAdditionalDeviceTypesCoverage:
             )
         ]
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             dt._apply_updates_for_type("interfaces", changes, {}, 1, "device")
 
         assert any("Connection error updating interfaces (ID: 9)" in str(c) for c in mock_handle.log.call_args_list)
@@ -6493,7 +6495,7 @@ class TestAdditionalDeviceTypesCoverage:
         dt.netbox.dcim.interface_templates.delete.side_effect = requests.exceptions.ConnectionError("offline")
         changes = [ComponentChange("interfaces", "eth0", ChangeType.COMPONENT_REMOVED)]
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             dt.remove_components(1, changes)
 
         assert any("Connection error removing interfaces (ID: 9)" in str(c) for c in mock_handle.log.call_args_list)
@@ -6513,7 +6515,7 @@ class TestAdditionalDeviceTypesCoverage:
         dt.netbox.dcim.interface_templates.update.side_effect = requests.exceptions.ConnectionError("offline")
         interfaces = [{"name": "eth0", "type": "virtual", "bridge": "eth1"}, {"name": "eth1", "type": "virtual"}]
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             dt.create_components("interfaces", interfaces, 1, context="ctx.yaml")
 
         assert any("Connection error bridging interfaces" in str(c) for c in mock_handle.log.call_args_list)
@@ -6545,7 +6547,7 @@ class TestRemainingCoverageBranches:
         nb = NetBox(mock_settings, mock_handle)
         existing = DotDict({"id": 5, "model": "AR1300", "u_height": 40})
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             nb.create_rack_types(
                 [{"manufacturer": {"slug": "apc"}, "model": "AR1300", "u_height": 42, "src": "rack.yaml"}],
                 all_rack_types={"apc": {"AR1300": existing}},
@@ -6562,9 +6564,10 @@ class TestRemainingCoverageBranches:
         mock_pynetbox.api.return_value.dcim.rack_types.create.side_effect = requests.exceptions.ConnectionError(
             "offline"
         )
+        mock_pynetbox.api.return_value.dcim.rack_types.get.return_value = None  # no earlier attempt committed
         nb = NetBox(mock_settings, mock_handle)
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             nb.create_rack_types(
                 [{"manufacturer": {"slug": "apc"}, "model": "AR1300", "slug": "apc-ar1300", "src": "rack.yaml"}],
                 all_rack_types={},
@@ -7417,7 +7420,7 @@ class TestComponentFailureReasonReachesTheReport:
             "interfaces": [{"name": "LAN", "type": "2.5gbase-t", "description": "uplink"}],
             "src": "/repo/device-types/TP-Link/EAP670.yaml",
         }
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             nb.create_device_types(
                 [device_type], update=True, change_report=ChangeReport(modified_device_types=[change])
             )
@@ -7447,7 +7450,7 @@ class TestComponentFailureReasonReachesTheReport:
         dt.components.record("interface_templates", "device", 6119, {"OLD": stale})
         mock_nb_api.dcim.interface_templates.delete.side_effect = requests.exceptions.ConnectionError("network down")
 
-        with patch("core.netbox_api.time.sleep"), dt.collect_component_errors() as errors:
+        with patch("core.retry.time.sleep"), dt.collect_component_errors() as errors:
             dt.remove_components(
                 6119,
                 [ComponentChange("interfaces", "OLD", ChangeType.COMPONENT_REMOVED)],

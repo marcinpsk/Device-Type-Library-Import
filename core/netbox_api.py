@@ -5,7 +5,6 @@ import hashlib
 import json
 import os
 import tempfile
-import time
 from collections import Counter
 from contextlib import contextmanager, suppress
 from dataclasses import replace
@@ -33,6 +32,7 @@ from core.formatting import log_property_diffs
 from core.graphql_client import GraphQLError, NetBoxGraphQLClient
 from core.normalization import values_equal
 from core.outcomes import EntityKind, Outcome, OutcomeRegistry
+from core.retry import MAX_RETRIES, RETRYABLE_EXCEPTIONS, call_with_retry, create_with_retry, delete_with_retry
 from core.schema_reader import load_properties_for_type
 from core.update_failure_resolver import (
     FailureKind,
@@ -141,17 +141,6 @@ def _fmt_connection_error(url: str, exc: Exception) -> str:
         "Verify that NetBox is running, reachable, and not being restarted."
     )
 
-
-# Transient errors that warrant a retry: no reply, a cut-off reply, or a reply that is not JSON
-_RETRYABLE_EXCEPTIONS = (
-    requests.exceptions.ConnectionError,
-    requests.exceptions.Timeout,
-    requests.exceptions.ChunkedEncodingError,
-    pynetbox.core.query.ContentError,
-)
-
-_MAX_RETRIES = 3
-_RETRY_BACKOFF = (2, 5, 10)  # seconds to wait before each retry attempt
 
 # Sentinel used when a YAML record has no "src" key (e.g. synthesised entries).
 # _image_dir_for_yaml treats this value as "no path known" and returns None.
@@ -347,24 +336,6 @@ def _delete_image_attachment(base_url: str, token: str, att_id: int, ignore_ssl:
     except requests.RequestException as e:
         handle.log(f"Error deleting image attachment {att_id}: {_format_request_error(e)}")
         return False
-
-
-def _retry_on_connection_error(func, *args, **kwargs):
-    """Call *func* with retries on transient connection errors.
-
-    Retries up to ``_MAX_RETRIES`` times with exponential-ish backoff
-    for each error in ``_RETRYABLE_EXCEPTIONS``.
-    Non-retryable exceptions propagate immediately.
-    """
-    for attempt in range(_MAX_RETRIES + 1):
-        try:
-            return func(*args, **kwargs)
-        except _RETRYABLE_EXCEPTIONS:
-            if attempt >= _MAX_RETRIES:
-                raise
-            wait = _RETRY_BACKOFF[attempt] if attempt < len(_RETRY_BACKOFF) else _RETRY_BACKOFF[-1]
-            time.sleep(wait)
-    return None
 
 
 # Module type scalar properties that can be compared and updated.
@@ -748,15 +719,15 @@ class NetBox:
         if to_create:
             self.handle.log(f"Creating {len(to_create)} new manufacturers...")
             try:
-                created_manufacturers = _retry_on_connection_error(self.netbox.dcim.manufacturers.create, to_create)
+                created_manufacturers = create_with_retry(self.netbox.dcim.manufacturers, to_create, "slug")
                 for manufacturer in created_manufacturers:
                     self.handle.verbose_log(f"Manufacturer Created: {manufacturer.name} - {manufacturer.id}")
                     self.counter.update({"manufacturer": 1})
             except pynetbox.RequestError as request_error:
                 # Log error with detailed API error message
                 self.handle.log(f"Error creating manufacturers: {request_error.error}")
-            except _RETRYABLE_EXCEPTIONS as e:
-                self.handle.log(f"Connection error creating manufacturers after {_MAX_RETRIES} retries: {e}")
+            except RETRYABLE_EXCEPTIONS as e:
+                self.handle.log(f"Connection error creating manufacturers after {MAX_RETRIES} retries: {e}")
         else:
             self.handle.verbose_log("No new manufacturers to create.")
 
@@ -864,7 +835,7 @@ class NetBox:
 
         # Retry the original PATCH exactly once.
         try:
-            _retry_on_connection_error(
+            call_with_retry(
                 self.netbox.dcim.device_types.update,
                 [{"id": dt.id, **updates}],
             )
@@ -873,7 +844,7 @@ class NetBox:
         except pynetbox.RequestError as e:
             self.handle.log(f"Retry after auto-resolve still failed for {dt.model}: {e.error}")
             return False, resolution
-        except _RETRYABLE_EXCEPTIONS as e:
+        except RETRYABLE_EXCEPTIONS as e:
             self.handle.log(f"Connection error during retry after auto-resolve for {dt.model}: {e}")
             return False, resolution
 
@@ -1109,7 +1080,7 @@ class NetBox:
                 if updates:
                     property_attempted = True
                     try:
-                        _retry_on_connection_error(self.netbox.dcim.device_types.update, [{"id": dt.id, **updates}])
+                        call_with_retry(self.netbox.dcim.device_types.update, [{"id": dt.id, **updates}])
                         dt.update(updates)  # keep local cache in sync
                         self.counter.update({"properties_updated": 1})
                         property_succeeded = True
@@ -1125,9 +1096,9 @@ class NetBox:
                             self.handle.verbose_log(
                                 f"Updated device type {dt.model} properties after auto-resolve: {list(updates.keys())}"
                             )
-                    except _RETRYABLE_EXCEPTIONS as e:
+                    except RETRYABLE_EXCEPTIONS as e:
                         self.handle.log(
-                            f"Connection error updating device type {dt.model} after {_MAX_RETRIES} retries: {e}"
+                            f"Connection error updating device type {dt.model} after {MAX_RETRIES} retries: {e}"
                         )
 
             # Apply component changes
@@ -1188,7 +1159,12 @@ class NetBox:
                 True when the caller should skip to the next iteration.
         """
         try:
-            dt = _retry_on_connection_error(self.netbox.dcim.device_types.create, device_type)
+            dt = create_with_retry(
+                self.netbox.dcim.device_types,
+                device_type,
+                "model",
+                manufacturer=device_type["manufacturer"]["slug"],
+            )
             self.counter.update({"added": 1})
             self.handle.verbose_log(f"Device Type Created: {dt.manufacturer.name} - " + f"{dt.model} - {dt.id}")
             return dt, False
@@ -1205,16 +1181,16 @@ class NetBox:
                 src_file,
             )
             return None, True
-        except _RETRYABLE_EXCEPTIONS as e:
+        except RETRYABLE_EXCEPTIONS as e:
             self.handle.log(
                 f"Connection error creating device type"
                 f" {device_type.get('manufacturer', {}).get('slug', '')} {device_type.get('model', '')}"
-                f" after {_MAX_RETRIES} retries: {e} (Context: {src_file})"
+                f" after {MAX_RETRIES} retries: {e} (Context: {src_file})"
             )
             self._record_failure(
                 EntityKind.DEVICE_TYPE,
                 self._yaml_identity(device_type),
-                f"Connection error after {_MAX_RETRIES} retries: {e}",
+                f"Connection error after {MAX_RETRIES} retries: {e}",
                 src_file,
             )
             return None, True
@@ -1428,7 +1404,7 @@ class NetBox:
                 }
                 if updates:
                     try:
-                        _retry_on_connection_error(self.netbox.dcim.rack_types.update, [{"id": existing.id, **updates}])
+                        call_with_retry(self.netbox.dcim.rack_types.update, [{"id": existing.id, **updates}])
                         self.counter.update({"rack_type_updated": 1})
                         self.handle.verbose_log(
                             f"Rack Type Updated: {manufacturer_slug} - {model} - {existing.id} "
@@ -1439,22 +1415,24 @@ class NetBox:
                         self._record_failure(
                             EntityKind.RACK_TYPE, f"{manufacturer_slug}/{model}", str(e.error), src_file
                         )
-                    except _RETRYABLE_EXCEPTIONS as e:
+                    except RETRYABLE_EXCEPTIONS as e:
                         self.handle.log(
-                            f"Connection error updating Rack Type {model} after {_MAX_RETRIES} retries:"
+                            f"Connection error updating Rack Type {model} after {MAX_RETRIES} retries:"
                             f" {e} (Context: {src_file})"
                         )
                         self._record_failure(
                             EntityKind.RACK_TYPE,
                             f"{manufacturer_slug}/{model}",
-                            f"Connection error after {_MAX_RETRIES} retries: {e}",
+                            f"Connection error after {MAX_RETRIES} retries: {e}",
                             src_file,
                         )
                 else:
                     self.handle.verbose_log(f"Rack Type Unchanged: {manufacturer_slug} - {model} - {existing.id}")
             else:
                 try:
-                    rt = _retry_on_connection_error(self.netbox.dcim.rack_types.create, rack_type)
+                    rt = create_with_retry(
+                        self.netbox.dcim.rack_types, rack_type, "model", manufacturer=manufacturer_slug
+                    )
                     self.counter.update({"rack_type_added": 1})
                     all_rack_types.setdefault(manufacturer_slug, {})[model] = rt
                     self.handle.verbose_log(f"Rack Type Created: {manufacturer_slug} - {model} - {rt.id}")
@@ -1463,15 +1441,15 @@ class NetBox:
                     self._record_failure(
                         EntityKind.RACK_TYPE, f"{manufacturer_slug}/{model}", str(excep.error), src_file
                     )
-                except _RETRYABLE_EXCEPTIONS as e:
+                except RETRYABLE_EXCEPTIONS as e:
                     self.handle.log(
-                        f"Connection error creating Rack Type {model} after {_MAX_RETRIES} retries:"
+                        f"Connection error creating Rack Type {model} after {MAX_RETRIES} retries:"
                         f" {e} (Context: {src_file})"
                     )
                     self._record_failure(
                         EntityKind.RACK_TYPE,
                         f"{manufacturer_slug}/{model}",
-                        f"Connection error after {_MAX_RETRIES} retries: {e}",
+                        f"Connection error after {MAX_RETRIES} retries: {e}",
                         src_file,
                     )
 
@@ -1802,9 +1780,7 @@ class NetBox:
             if stale_attributes:
                 self._patch_profile_change(module_type_res, updates)
             else:
-                _retry_on_connection_error(
-                    self.netbox.dcim.module_types.update, [{"id": module_type_res.id, **updates}]
-                )
+                call_with_retry(self.netbox.dcim.module_types.update, [{"id": module_type_res.id, **updates}])
             self.handle.verbose_log(
                 f"Module Type Updated: {module_type_res.manufacturer.name} - "
                 f"{module_type_res.model} - {module_type_res.id} "
@@ -1813,9 +1789,9 @@ class NetBox:
         except pynetbox.RequestError as excep:
             self.handle.log(f"Error updating Module Type: {excep.error} (Context: {src_file})")
             return False, False
-        except _RETRYABLE_EXCEPTIONS as e:
+        except RETRYABLE_EXCEPTIONS as e:
             self.handle.log(
-                f"Connection error updating Module Type after {_MAX_RETRIES} retries: {e} (Context: {src_file})"
+                f"Connection error updating Module Type after {MAX_RETRIES} retries: {e} (Context: {src_file})"
             )
             return False, False
         return True, True
@@ -1831,14 +1807,14 @@ class NetBox:
         type_id = module_type_res.id
         cleared = {"id": type_id, "profile": None, _REST_ATTRIBUTES_FIELD: None}
         try:
-            _retry_on_connection_error(update, [cleared])
-            _retry_on_connection_error(update, [{"id": type_id, **updates}])
+            call_with_retry(update, [cleared])
+            call_with_retry(update, [{"id": type_id, **updates}])
         except Exception:  # any failure after the clear leaves an unknown state; restore, then re-raise
             old_profile = {"name": module_type_res.profile.name} if module_type_res.profile else None
             restore = {"id": type_id, "profile": old_profile, _REST_ATTRIBUTES_FIELD: module_type_res.attribute_data}
             for step, payload in (("clear", cleared), ("restore", restore)):
                 try:
-                    _retry_on_connection_error(update, [payload])
+                    call_with_retry(update, [payload])
                 except Exception as step_error:  # noqa: BLE001  # logged; the original error is re-raised
                     self.handle.log(
                         f"Could not {step} the profile and attributes of Module Type {type_id}: {step_error}"
@@ -2031,7 +2007,9 @@ class NetBox:
                         src_file,
                     )
                     return False
-                module_type_res = _retry_on_connection_error(self.netbox.dcim.module_types.create, payload)
+                module_type_res = create_with_retry(
+                    self.netbox.dcim.module_types, payload, "model", manufacturer=curr_mt["manufacturer"]["slug"]
+                )
                 self.counter["module_added"] += 1
                 is_new = True
                 manufacturer_slug = curr_mt["manufacturer"]["slug"]
@@ -2049,14 +2027,14 @@ class NetBox:
                     src_file,
                 )
                 return False
-            except _RETRYABLE_EXCEPTIONS as e:
+            except RETRYABLE_EXCEPTIONS as e:
                 self.handle.log(
-                    f"Connection error creating Module Type after {_MAX_RETRIES} retries: {e} (Context: {src_file})"
+                    f"Connection error creating Module Type after {MAX_RETRIES} retries: {e} (Context: {src_file})"
                 )
                 self._record_failure(
                     EntityKind.MODULE_TYPE,
                     self._yaml_identity(curr_mt),
-                    f"Connection error after {_MAX_RETRIES} retries: {e}",
+                    f"Connection error after {MAX_RETRIES} retries: {e}",
                     src_file,
                 )
                 return False
@@ -2597,7 +2575,7 @@ class DeviceTypes:
 
         if to_create:
             try:
-                created = _retry_on_connection_error(endpoint.create, to_create)
+                created = create_with_retry(endpoint, to_create, "name", **{f"{parent_key}_id": parent_id})
                 self.handle.log_ports_created(created, parent_type, component_name)
                 self.counter.update({"components_added": len(created)})
 
@@ -2620,11 +2598,11 @@ class DeviceTypes:
                     self._log_component_error(
                         f"Error '{excep.error}' creating {component_name}. Items: {failed_items}{context_str}"
                     )
-            except _RETRYABLE_EXCEPTIONS as excep:
+            except RETRYABLE_EXCEPTIONS as excep:
                 context_str = f" (Context: {context})" if context else ""
                 failed_items = [x["name"] for x in to_create]
                 self._log_component_error(
-                    f"Connection error creating {component_name} after {_MAX_RETRIES} retries: {excep}."
+                    f"Connection error creating {component_name} after {MAX_RETRIES} retries: {excep}."
                     f" Items: {failed_items}{context_str}"
                 )
 
@@ -2793,14 +2771,14 @@ class DeviceTypes:
         success_count = 0
         for update_data in updates:
             try:
-                _retry_on_connection_error(endpoint.update, [update_data])
+                call_with_retry(endpoint.update, [update_data])
                 success_count += 1
                 self.handle.verbose_log(f"Updated {comp_type} (ID: {update_data['id']})")
             except pynetbox.RequestError as e:
                 self._log_component_error(f"Error updating {comp_type} (ID: {update_data['id']}): {e.error}")
-            except _RETRYABLE_EXCEPTIONS as e:
+            except RETRYABLE_EXCEPTIONS as e:
                 self._log_component_error(
-                    f"Connection error updating {comp_type} (ID: {update_data['id']}) after {_MAX_RETRIES} retries: {e}"
+                    f"Connection error updating {comp_type} (ID: {update_data['id']}) after {MAX_RETRIES} retries: {e}"
                 )
 
         if success_count:
@@ -2906,13 +2884,13 @@ class DeviceTypes:
             success_count = 0
             for comp_id in ids_to_delete:
                 try:
-                    _retry_on_connection_error(endpoint.delete, [comp_id])
+                    delete_with_retry(endpoint, comp_id)
                     success_count += 1
                 except pynetbox.RequestError as e:
                     self._log_component_error(f"Error removing {comp_type} (ID: {comp_id}): {e.error}")
-                except _RETRYABLE_EXCEPTIONS as e:
+                except RETRYABLE_EXCEPTIONS as e:
                     self._log_component_error(
-                        f"Connection error removing {comp_type} (ID: {comp_id}) after {_MAX_RETRIES} retries: {e}"
+                        f"Connection error removing {comp_type} (ID: {comp_id}) after {MAX_RETRIES} retries: {e}"
                     )
 
             if success_count:
@@ -3119,13 +3097,13 @@ class DeviceTypes:
         if not to_update:
             return
         try:
-            _retry_on_connection_error(self.netbox.dcim.interface_templates.update, to_update)
+            call_with_retry(self.netbox.dcim.interface_templates.update, to_update)
             self.handle.verbose_log(f"Bridged {len(to_update)} interfaces.")
         except pynetbox.RequestError as e:
             self._log_component_error(f"Error bridging interfaces: {e} (Context: {context})")
-        except _RETRYABLE_EXCEPTIONS as e:
+        except RETRYABLE_EXCEPTIONS as e:
             self._log_component_error(
-                f"Connection error bridging interfaces after {_MAX_RETRIES} retries: {e} (Context: {context})"
+                f"Connection error bridging interfaces after {MAX_RETRIES} retries: {e} (Context: {context})"
             )
 
     @property
