@@ -146,6 +146,18 @@ def _fmt_connection_error(url: str, exc: Exception) -> str:
 # _image_dir_for_yaml treats this value as "no path known" and returns None.
 _UNKNOWN_SRC = "Unknown"
 
+# (connect, read) seconds for each REST call; it stops a stalled server, not a slow bulk write.
+_REST_TIMEOUT = (30, 300)
+
+
+class _TimeoutSession(requests.Session):
+    """A requests session that gives each request ``_REST_TIMEOUT`` unless the caller sets one."""
+
+    def request(self, *args, **kwargs):
+        """Send the request with the default timeout when the caller gives none."""
+        kwargs.setdefault("timeout", _REST_TIMEOUT)
+        return super().request(*args, **kwargs)
+
 
 def _check_image_url(
     base_url: str,
@@ -597,6 +609,7 @@ class NetBox:
         """Connect to the NetBox API using the stored URL and token credentials."""
         try:
             self.netbox = pynetbox.api(self.url, token=self.token, threading=True)
+            self.netbox.http_session = _TimeoutSession()
             if self.ignore_ssl:
                 self.handle.verbose_log("IGNORE_SSL_ERRORS is True, catching exception and disabling SSL verification.")
                 import urllib3

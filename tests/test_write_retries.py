@@ -205,3 +205,22 @@ class TestDelete:
         assert "Error removing interfaces (ID: 88)" in error
         assert requests_to(server, "DELETE", "interface_templates") == 1
         assert nb.counter["components_removed"] == 0
+
+
+class TestTimeout:
+    """A stalled reply times out, so the run does not hang on it."""
+
+    def test_a_stalled_create_times_out_and_is_not_repeated(self, make_config, server, tmp_path, monkeypatch):
+        monkeypatch.setattr("core.netbox_api._REST_TIMEOUT", (5, 0.5))
+        # A real client from connect_api, so the session under test is the one the importer builds.
+        nb = NetBox(make_config(netbox_url=server.url, repo_path=str(tmp_path)), recording_handle()[0])
+        server.broken_replies = {("POST", 1): "stalled"}
+
+        dt, skip = nb._create_new_device_type(
+            {"manufacturer": {"slug": "cisco"}, "model": "C9500", "slug": "c9500"}, "c9500.yaml"
+        )
+
+        assert skip is False
+        assert dt.model == "C9500"
+        assert len([r for r in server.collection("device_types") if r["model"] == "C9500"]) == 1
+        assert requests_to(server, "POST", "device_types") == 1

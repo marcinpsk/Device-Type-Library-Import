@@ -6,7 +6,7 @@ import re
 import threading
 from email.parser import BytesParser
 from email.policy import HTTP
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import ClassVar
 from unittest.mock import MagicMock
 from urllib.parse import parse_qs, urlparse
@@ -121,10 +121,14 @@ class FakeNetBox:
         self.requests = []
         # (verb, 1-based number of that verb) -> "lost", "truncated" or "garbled": the request runs, the reply breaks.
         # "dropped": the connection closes before the request runs, so nothing commits.
+        # "stalled": the request runs, and the reply never comes until close().
         self.broken_replies = {}
         # (field, filename, bytes) of each file a multipart write carried, in arrival order.
         self.uploads = []
-        self._server = HTTPServer(("127.0.0.1", 0), self._handler())
+        self._released = threading.Event()  # ends every "stalled" reply
+        # Threaded, so a request can still be answered while a "stalled" reply holds its thread.
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
+        self._server.daemon_threads = True
         # A short poll lets close() return at once instead of after the default half second.
         threading.Thread(target=self._server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
 
@@ -139,6 +143,7 @@ class FakeNetBox:
 
     def close(self):
         """Stop serving and release the listening socket."""
+        self._released.set()
         self._server.shutdown()
         self._server.server_close()
 
@@ -340,6 +345,10 @@ class FakeNetBox:
     def _reply_to(self, handler, verb, answer):
         """Send *answer*, or break the reply the way the test chose for this request."""
         broken = self._broken(verb)
+        if broken == "stalled":
+            self._released.wait()
+            handler.close_connection = True
+            return
         if broken == "lost":
             handler.close_connection = True
             return
@@ -387,6 +396,7 @@ class FakeNetBox:
             def _send(self, status, body):
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
+                self.send_header("API-Version", ".".join(state.netbox_version.split(".")[:2]))
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
