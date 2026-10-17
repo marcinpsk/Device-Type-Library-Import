@@ -1791,12 +1791,11 @@ class NetBox:
             return True, False
         try:
             if stale_attributes:
-                # NetBox merges PATCHed attributes into the stored ones; dropping the profile clears them.
+                self._patch_profile_change(module_type_res, updates)
+            else:
                 _retry_on_connection_error(
-                    self.netbox.dcim.module_types.update,
-                    [{"id": module_type_res.id, "profile": None, _REST_ATTRIBUTES_FIELD: None}],
+                    self.netbox.dcim.module_types.update, [{"id": module_type_res.id, **updates}]
                 )
-            _retry_on_connection_error(self.netbox.dcim.module_types.update, [{"id": module_type_res.id, **updates}])
             self.handle.verbose_log(
                 f"Module Type Updated: {module_type_res.manufacturer.name} - "
                 f"{module_type_res.model} - {module_type_res.id} "
@@ -1811,6 +1810,28 @@ class NetBox:
             )
             return False, False
         return True, True
+
+    def _patch_profile_change(self, module_type_res, updates):
+        """PATCH *updates* on a cleared module type, and put the old profile and attributes back if it fails.
+
+        NetBox merges PATCHed attributes into the stored ones, so the old profile's attributes must go
+        first. A module type without a profile has no attributes, so dropping the profile clears them.
+        """
+        update = self.netbox.dcim.module_types.update
+        type_id = module_type_res.id
+        _retry_on_connection_error(update, [{"id": type_id, "profile": None, _REST_ATTRIBUTES_FIELD: None}])
+        try:
+            _retry_on_connection_error(update, [{"id": type_id, **updates}])
+        except (pynetbox.RequestError, *_RETRYABLE_EXCEPTIONS):
+            old_profile = {"name": module_type_res.profile.name} if module_type_res.profile else None
+            restore = {"id": type_id, "profile": old_profile, _REST_ATTRIBUTES_FIELD: module_type_res.attribute_data}
+            try:
+                _retry_on_connection_error(update, [restore])
+            except (pynetbox.RequestError, *_RETRYABLE_EXCEPTIONS) as restore_error:
+                self.handle.log(
+                    f"Could not restore the profile and attributes of Module Type {type_id}: {restore_error}"
+                )
+            raise
 
     def _create_module_type_components(self, curr_mt, module_type_id, src_file):
         """Create all component templates for a newly created module type.

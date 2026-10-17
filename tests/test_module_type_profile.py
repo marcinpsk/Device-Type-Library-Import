@@ -200,6 +200,17 @@ class TestUpdate:
         assert stored_type["profile"] == {"id": 3, "name": "Transceiver"}
         assert stored_type["attribute_data"] == SFP_ATTRIBUTES
 
+    def test_a_rejected_profile_change_keeps_the_old_profile_and_attributes(self, netbox, server, definition):
+        nb, _ = netbox
+        record = existing(server, {"id": 4, "name": "Fan"}, {"rpm": 3000})
+        curr_mt = definition(SFP_YAML.replace("profile: Transceiver", "profile: No Such Profile"))
+
+        assert nb._try_update_module_type(curr_mt, record, "cisco/SFP-10G-SR.yaml") == (False, False)
+
+        [stored_type] = server.collection("module_types")
+        assert stored_type["profile"] == {"id": 4, "name": "Fan"}
+        assert stored_type["attribute_data"] == {"rpm": 3000}
+
     def test_an_unchanged_profile_keeps_attributes_the_yaml_omits(self, netbox, server, definition):
         nb, _ = netbox
         record = existing(server, {"id": 3, "name": "Transceiver"}, {**SFP_ATTRIBUTES, "reach": 300, "rpm": 3000})
