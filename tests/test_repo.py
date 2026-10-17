@@ -17,6 +17,7 @@ from core.repo import (
     GitInvalidRepositoryError,
     InvalidGitURLError,
     InvalidRepoPathError,
+    _reached_through_link,
     _resolve_index_path,
     _safe_index_load,
     _safe_json_load,
@@ -1879,6 +1880,25 @@ class TestDeviceIndexAgainstTheCheckout:
         self._library(root)
 
         assert self._resolve(root, ["old-box"]) == {"acme": [str(root / "device-types/Acme/old-box.yaml")]}
+
+
+class TestReachedThroughLink:
+    """The link check compares native paths, so a POSIX index relpath matches on Windows too."""
+
+    def test_a_plain_windows_path_is_not_a_link(self, monkeypatch):
+        import ntpath
+
+        monkeypatch.setattr(os, "path", ntpath)
+        abs_path = r"C:\dtl\device-types\Acme\other.yaml"
+
+        assert not _reached_through_link(abs_path, r"C:\dtl", "device-types/Acme/other.yaml")
+
+    def test_a_windows_path_that_resolves_elsewhere_is_a_link(self, monkeypatch):
+        import ntpath
+
+        monkeypatch.setattr(os, "path", ntpath)
+
+        assert _reached_through_link(r"C:\shared\other.yaml", r"C:\dtl", "device-types/Acme/other.yaml")
 
 
 class TestAnExplicitlyEmptyStanza:
