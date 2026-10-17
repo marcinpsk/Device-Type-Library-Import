@@ -3,8 +3,11 @@
 from collections import Counter
 from contextlib import contextmanager
 from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
+from git import Actor
+from git import Repo as GitRepo
 from helpers import recording_handle as _recording_handle
 
 from core.errors import VendorSelectionError
@@ -238,11 +241,11 @@ def test_discover_raises_a_typed_fatal_error_when_no_vendor_matches(make_config,
 def test_discover_raises_a_typed_fatal_error_when_slug_selection_removes_the_vendor(make_config, tmp_path):
     class SlugResolvedRepository(_RepositoryBoundary):
         def resolve_slug_files(self, _slugs):
-            return {
-                "device_files": {"other-vendor": []},
-                "module_vendors": set(),
-                "rack_vendors": set(),
-            }
+            return {"other-vendor": []}
+
+        @staticmethod
+        def parse_files(_files, slugs=None):
+            return []
 
     repo = SlugResolvedRepository(tmp_path)
     run = ImportRun(
@@ -321,6 +324,107 @@ class TestPartialLibraryLayouts:
         }
         assert parsed[present] == 1, parsed
         assert sum(parsed.values()) == 1, parsed
+
+
+@pytest.mark.real_git
+class TestSlugSelectionWithAStaleIndex:
+    """The upstream index lags a fork or branch, so --slugs must also find what only the disk holds."""
+
+    INDEX: ClassVar[dict] = {
+        "known-slugs": [["acme-old-box", "device-types/Acme/old-box.yaml"]],
+        "known-modules": [["old-card", "module-types/Acme"]],
+        "known-racks": [["old-rack", "rack-types/Acme"]],
+    }
+
+    @staticmethod
+    def _write(root, relpath, model, slug=None):
+        path = root / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        manufacturer = relpath.split("/")[1]
+        path.write_text(f"manufacturer: {manufacturer}\nmodel: {model}\n" + (f"slug: {slug}\n" if slug else ""))
+
+    def _plan(self, tmp_path, make_config, index, slugs, vendors=(), after_clone=None):
+        """Commit *tmp_path* with *index*, clone it, run *after_clone* on the clone, and return the planned models."""
+        import json
+
+        (tmp_path / "tests").mkdir()
+        for stem, entries in index.items():
+            (tmp_path / "tests" / f"{stem}.json").write_text(json.dumps(entries))
+        git_repo = GitRepo.init(tmp_path, initial_branch="master")
+        git_repo.git.add("-A")
+        git_repo.index.commit("library", author=Actor("t", "t@example.com"), committer=Actor("t", "t@example.com"))
+        clone = tmp_path.parent / f"{tmp_path.name}-clone"
+        config = make_config(
+            repo_url=f"file://{tmp_path}", repo_path=str(clone), repo_branch="master", slugs=slugs, vendors=vendors
+        )
+        repo = DTLRepo(config, LogHandler(False))
+        if after_clone is not None:
+            after_clone(clone)
+        assert repo.resolve_slug_files(slugs) is not None, "the test must reach the device index"
+        run = ImportRun(config, repo, _NetBoxBoundary(), LogHandler(False), _ProgressFactory())
+        selection = run.discover()
+        models = set()
+        for vendor in selection.vendors:
+            plan = run.plan_vendor(selection, vendor)
+            models |= {t["model"] for t in [*plan.device_types, *plan.module_types, *plan.rack_types]}
+        return models
+
+    def test_definitions_missing_from_the_index_are_found(self, tmp_path, make_config):
+        self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")
+        self._write(tmp_path, "device-types/Acme/new-box.yaml", "New Box", "acme-new-box")
+        self._write(tmp_path, "device-types/Acme/other.yaml", "Other", "acme-other")
+        self._write(tmp_path, "module-types/Acme/old-card.yaml", "Old Card")
+        self._write(tmp_path, "module-types/Beta/new-card.yaml", "New Card")
+        self._write(tmp_path, "rack-types/Acme/old-rack.yaml", "Old Rack")
+        self._write(tmp_path, "rack-types/Gamma/new-rack.yaml", "New Rack")
+
+        models = self._plan(tmp_path, make_config, self.INDEX, ("box", "card", "rack"))
+
+        assert models == {"Old Box", "New Box", "Old Card", "New Card", "Old Rack", "New Rack"}
+
+    def test_a_module_is_found_when_its_file_stem_does_not_hold_the_model(self, tmp_path, make_config):
+        self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")
+        self._write(tmp_path, "module-types/Acme/Patch Antenna.yaml", "Patch Antenna")
+        self._write(tmp_path, "module-types/Datto/AP-ANT-1.yaml", "Patch Antenna")
+        index = {
+            **self.INDEX,
+            "known-modules": [["Patch Antenna", "module-types/Acme"], ["AP-ANT-1", "module-types/Datto"]],
+        }
+
+        assert self._plan(tmp_path, make_config, index, ("Patch Antenna",), vendors=("datto",)) == {"Patch Antenna"}
+
+    def test_an_indexed_file_whose_slug_changed_after_the_index_is_found(self, tmp_path, make_config):
+        self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")
+        self._write(tmp_path, "device-types/Acme/other.yaml", "Other", "acme-other")
+
+        def rename(clone):
+            self._write(clone, "device-types/Acme/old-box.yaml", "Renamed Box", "acme-renamed-box")
+
+        models = self._plan(tmp_path, make_config, self.INDEX, ("renamed",), vendors=("acme",), after_clone=rename)
+
+        assert models == {"Renamed Box"}
+
+    def test_an_indexed_file_that_is_gone_from_disk_is_skipped(self, tmp_path, make_config):
+        self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")
+        index = {
+            **self.INDEX,
+            "known-slugs": [*self.INDEX["known-slugs"], ["acme-gone-box", "device-types/Acme/gone.yaml"]],
+        }
+
+        assert self._plan(tmp_path, make_config, index, ("box",)) == {"Old Box"}
+
+    def test_a_yml_file_is_not_taken_for_the_indexed_yaml_file_of_the_same_name(self, tmp_path, make_config):
+        self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")
+        self._write(tmp_path, "device-types/Acme/old-box.yml", "Yml Box", "acme-yml-box")
+        self._write(tmp_path, "device-types/Acme/new-box.yaml", "New Box", "acme-new-box")
+
+        assert self._plan(tmp_path, make_config, self.INDEX, ("yml",)) == {"Yml Box"}
+
+    def test_a_broken_definition_link_is_skipped(self, tmp_path, make_config):
+        self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")
+        (tmp_path / "device-types/Acme/dangling.yaml").symlink_to(tmp_path / "device-types/Acme/missing.yaml")
+
+        assert self._plan(tmp_path, make_config, self.INDEX, ("box",)) == {"Old Box"}
 
 
 class _ModuleNetBox:

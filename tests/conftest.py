@@ -67,6 +67,13 @@ def mock_git_repo(request):
     if request.node.get_closest_marker("integration"):
         yield None
         return
+    if request.node.get_closest_marker("real_git"):
+        # A hook runner exports GIT_DIR and friends for the outer repo.
+        monkeypatch = request.getfixturevalue("monkeypatch")
+        for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"):
+            monkeypatch.delenv(var, raising=False)
+        yield None
+        return
     with patch("core.repo.Repo") as mock_repo:
         mock_remote = MagicMock()
         mock_remote.url = "https://example.com/repo.git"

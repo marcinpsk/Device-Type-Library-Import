@@ -4,8 +4,9 @@ import concurrent.futures
 import json
 import os
 import pickle
+import posixpath
 from collections.abc import Sequence
-from glob import glob
+from glob import escape, glob
 from re import sub as re_sub
 from urllib.parse import urlparse
 
@@ -96,37 +97,39 @@ def _resolve_index_path(base_dir: str, stem: str) -> "str | None":
     return None
 
 
-def _vendor_slugs_from_index(
-    index_path: "str | None", slugs_lower: list, slug_format, subdir_filter: "str | None" = None
-) -> "set | None":
-    """Load a (model_name, vendor_dir) index and return the set of vendor slugs matching *slugs_lower*.
+def _vendor_of(directory: str) -> str:
+    """Return the vendor folder name of a definition directory such as ``device-types/Nokia``."""
+    return directory.rsplit("/", 1)[-1]
 
-    *index_path* may point at a ``.json`` (current) or ``.pickle`` (legacy) file; the loader is
-    chosen by extension.  *subdir_filter*, if given, requires the vendor_dir to contain that
-    substring.  Returns ``None`` when the index is unavailable (missing or unreadable), so callers
-    can distinguish "no matches" (empty set) from "hint unavailable" (None).
+
+def _reached_through_link(abs_path: str, real_root: str, relpath: str) -> bool:
+    """Return True when *abs_path* does not resolve to *relpath* (POSIX separators) under *real_root*."""
+    return os.path.realpath(abs_path) != os.path.join(real_root, *relpath.split("/"))
+
+
+def _paths_changed_since_index(repo_root: str, index_path: str, type_dir: str) -> "set[str] | None":
+    """Return the repo-relative paths under *type_dir* that differ from the commit that last wrote *index_path*.
+
+    Returns ``None`` when the index cannot describe the checkout: *repo_root* is not a git work
+    tree, its history is shallow, the index is not committed, or the index differs from that commit.
     """
-    if index_path is None:
-        return None
+    index_relpath = os.path.relpath(index_path, repo_root).replace("\\", "/")
     try:
-        entries = _safe_index_load(index_path)
-    except Exception:  # an unreadable index or definition is skipped, not fatal  # noqa: BLE001
+        git = Repo(repo_root).git
+        git.update_environment(GIT_OPTIONAL_LOCKS="0")  # read-only: do not refresh .git/index
+        # In a shallow clone, git log reports the shallow boundary, not the commit that wrote the index.
+        if git.rev_parse("--is-shallow-repository") != "false":
+            return None
+        commit = git.log("-1", "--format=%H", "--", index_relpath)
+        if not commit:
+            return None
+        # A tree diff against the working tree catches fork edits, upstream merges and uncommitted edits.
+        changed = git.diff("--name-only", "--no-renames", "-z", commit, "--", type_dir, index_relpath)
+    except (exc.InvalidGitRepositoryError, exc.NoSuchPathError, exc.GitCommandError):
         return None
-    result = set()
-    for model_name, vendor_dir in entries:
-        if subdir_filter and subdir_filter not in vendor_dir.replace("\\", "/"):
-            continue
-        if not any(s in model_name.casefold() for s in slugs_lower):
-            continue
-        vendor_name = vendor_dir.replace("\\", "/").split("/")[-1]
-        result.add(slug_format(vendor_name))
-    return result
+    paths = {path for path in changed.split("\0") if path}
 
-
-def _safe_abs_path(repo_root: str, relpath: str) -> "str | None":
-    """Return the absolute path for *relpath* inside *repo_root*, or None if it escapes the root."""
-    abs_path = os.path.normpath(os.path.join(repo_root, *relpath.replace("\\", "/").split("/")))
-    return abs_path if abs_path.startswith(os.path.normpath(repo_root) + os.sep) else None
+    return None if index_relpath in paths else paths
 
 
 def _validate_index_data(data, source: str):
@@ -441,33 +444,33 @@ def parse_single_file(file):
             `src` set to the file path.
         str: Error string beginning with "Error:" describing YAML parsing or other failure.
     """
-    with open(file) as stream:
-        try:
+    try:
+        with open(file) as stream:
             data = yaml.safe_load(stream)
-            manufacturer = data["manufacturer"]
-            # Use only slug for manufacturer lookup - more resilient to case mismatches
-            # (e.g., RuggedCOM vs RuggedCom in upstream data)
-            data["manufacturer"] = {"slug": re_sub(r"\W+", "-", manufacturer.lower())}
-            profile = data.get("profile")
-            if isinstance(profile, str):
-                data["profile"] = {"name": profile}
-            elif profile is not None and not (isinstance(profile, dict) and isinstance(profile.get("name"), str)):
-                return f"Error: profile must be a name or a mapping with a name, not {profile!r}"
-            attribute_data = data.get("attribute_data")
-            if attribute_data is not None and not isinstance(attribute_data, dict):
-                return f"Error: attribute_data must be a mapping, not {attribute_data!r}"
-            for field in ("profile", "attribute_data"):
-                if not _is_strict_json(data.get(field)):
-                    return f"Error: {field} must hold JSON values only (string keys, finite numbers): {data[field]!r}"
-            data["src"] = file
-            err = normalize_port_mappings(data)
-            if err:
-                return err
-            return data
-        except yaml.YAMLError as excep:
-            return f"Error: {excep}"
-        except Exception as e:  # an unreadable index or definition is skipped, not fatal  # noqa: BLE001
-            return f"Error: {e}"
+        manufacturer = data["manufacturer"]
+        # Use only slug for manufacturer lookup - more resilient to case mismatches
+        # (e.g., RuggedCOM vs RuggedCom in upstream data)
+        data["manufacturer"] = {"slug": re_sub(r"\W+", "-", manufacturer.lower())}
+        profile = data.get("profile")
+        if isinstance(profile, str):
+            data["profile"] = {"name": profile}
+        elif profile is not None and not (isinstance(profile, dict) and isinstance(profile.get("name"), str)):
+            return f"Error: profile must be a name or a mapping with a name, not {profile!r}"
+        attribute_data = data.get("attribute_data")
+        if attribute_data is not None and not isinstance(attribute_data, dict):
+            return f"Error: attribute_data must be a mapping, not {attribute_data!r}"
+        for field in ("profile", "attribute_data"):
+            if not _is_strict_json(data.get(field)):
+                return f"Error: {field} must hold JSON values only (string keys, finite numbers): {data[field]!r}"
+        data["src"] = file
+        err = normalize_port_mappings(data)
+        if err:
+            return err
+        return data
+    except yaml.YAMLError as excep:
+        return f"Error: {excep}"
+    except Exception as e:  # an unreadable index or definition is skipped, not fatal  # noqa: BLE001
+        return f"Error: {e}"
 
 
 class DTLRepo:
@@ -667,84 +670,72 @@ class DTLRepo:
             if folder.casefold() != "testing":
                 discovered_vendors.append({"name": folder, "slug": self.slug_format(folder)})
                 for extension in self.yaml_extensions:
-                    files.extend(glob(os.path.join(base_path, folder, f"*.{extension}")))
+                    files.extend(glob(os.path.join(escape(os.path.join(base_path, folder)), f"*.{extension}")))
         return files, discovered_vendors
 
     def resolve_slug_files(self, slugs):
-        """Use the upstream slug indexes to resolve YAML file paths for slug/model matches.
+        """Use the upstream device index to select the device type files that can match *slugs*.
 
-        The DTL repo ships three index files under ``tests/``.  Upstream replaced the original
-        ``known-*.pickle`` files with ``known-*.json`` (GHSA-492p-5wp7-2w7c); both carry the same
-        data shape, and we prefer JSON, falling back to pickle for older pinned checkouts:
+        The DTL repo ships ``tests/known-slugs.json`` (``known-slugs.pickle`` in older checkouts,
+        GHSA-492p-5wp7-2w7c): a list of ``(manufacturer_prefixed_slug, relpath)`` for device
+        types, where ``relpath`` is relative to the repo root, e.g. ``device-types/Nokia/7750-SR-7s.yaml``.
+        Matching uses the same case-insensitive substring check as :meth:`parse_files`.
 
-        * ``known-slugs.json`` — list of ``(manufacturer_prefixed_slug, relpath)`` for
-          device types.  ``relpath`` is relative to the repo root, e.g.
-          ``device-types/Nokia/7750-SR-7s.yaml``.
-        * ``known-modules.json`` — list of ``(model_name, vendor_dir)`` for module
-          types.  Only the vendor directory is stored, not the file name.
-        * ``known-racks.json``  — same format as known-modules.
+        The index comes from upstream master, so a fork or branch can hold files it does not
+        list, can lack files it lists, and can change files it lists. The files on disk are the
+        source of truth: an indexed file that is gone is dropped, and a file that the index does
+        not list, or that differs from the commit that last wrote the index, is always selected.
 
-        Matching uses a **case-insensitive substring** check identical to the runtime
-        :meth:`parse_files` filter so that partial slug/model searches work the same way.
+        The module and rack indexes are not used: they record file stems, not models, so they
+        cannot tell which files hold a matching model.
 
         Args:
             slugs (list[str]): User-supplied slug/model substrings (``--slugs``).
 
         Returns:
-            dict or None: ``None`` when the device index is unavailable (caller falls back
-            to the normal glob path).  Otherwise a dict with the keys:
-
-            ``"device_files"``
-                ``{vendor_slug: [abs_path, ...]}`` for devices resolved via the index.
-            ``"module_vendors"``
-                ``{vendor_slug}`` — set of vendor slugs that may contain matching module
-                types, or ``None`` when the module index was unavailable (caller should
-                fall back to full glob+parse instead of skipping).
-            ``"rack_vendors"``
-                ``{vendor_slug}`` — same for rack types; ``None`` means unavailable.
+            dict or None: ``{vendor_slug: [abs_path, ...]}``, to parse with *slugs*, or ``None``
+            when the device index is missing, unreadable, or cannot be compared with the checkout.
+            ``REPO_URL=local`` always gives ``None``, because that mode runs no git command.
         """
+        if is_local_repo_url(self.url):
+            return None
         repo_root = self.get_absolute_path()
-        tests_dir = os.path.join(repo_root, "tests")
-        device_index = _resolve_index_path(tests_dir, "known-slugs")
-        module_index = _resolve_index_path(tests_dir, "known-modules")
-        rack_index = _resolve_index_path(tests_dir, "known-racks")
-
+        device_index = _resolve_index_path(os.path.join(repo_root, "tests"), "known-slugs")
         if device_index is None:
             return None
-
-        slugs_lower = [s.casefold() for s in slugs]
-
-        # --- device types --------------------------------------------------
-        device_files: dict = {}  # vendor_slug -> [abs_path]
+        changed = _paths_changed_since_index(repo_root, device_index, "device-types")
+        if changed is None:
+            return None
         try:
             known_slugs = _safe_index_load(device_index)
-        except Exception:  # an unreadable index or definition is skipped, not fatal  # noqa: BLE001
+        except Exception:  # an unreadable index is skipped, not fatal  # noqa: BLE001
             return None
+        slug_by_relpath = {relpath.replace("\\", "/"): entry_slug for entry_slug, relpath in known_slugs}
 
-        for entry_slug, relpath in known_slugs:
-            if not any(s in entry_slug.casefold() for s in slugs_lower):
-                continue
-            parts = relpath.replace("\\", "/").split("/")
-            if len(parts) < 3:
-                continue
-            vendor_name = parts[1]
-            vendor_slug = self.slug_format(vendor_name)
-            abs_path = _safe_abs_path(repo_root, relpath)
-            if abs_path is None:
-                continue
-            device_files.setdefault(vendor_slug, []).append(abs_path)
+        slugs_lower = [s.casefold() for s in slugs]
+        real_root = os.path.realpath(repo_root)
+        device_files: dict = {}  # vendor_slug -> [abs_path]
+        for relpath, abs_path in self._definition_files(self.get_devices_path()):
+            entry_slug = slug_by_relpath.get(relpath)
+            # An unindexed or changed file can hold any slug, so the caller's parse_files filter decides.
+            # A link target can change while the link blob does not, so a file reached through a link counts as changed.
+            if (
+                entry_slug is None
+                or relpath in changed
+                or _reached_through_link(abs_path, real_root, relpath)
+                or any(s in entry_slug.casefold() for s in slugs_lower)
+            ):
+                vendor_slug = self.slug_format(_vendor_of(posixpath.dirname(relpath)))
+                device_files.setdefault(vendor_slug, []).append(abs_path)
+        return device_files
 
-        # --- module types --------------------------------------------------
-        module_vendors = _vendor_slugs_from_index(module_index, slugs_lower, self.slug_format)
-
-        # --- rack types ----------------------------------------------------
-        rack_vendors = _vendor_slugs_from_index(rack_index, slugs_lower, self.slug_format, subdir_filter="rack-types")
-
-        return {
-            "device_files": device_files,
-            "module_vendors": module_vendors,
-            "rack_vendors": rack_vendors,
-        }
+    def _definition_files(self, type_root):
+        """Return ``(posix relpath, abs_path)`` for each definition file on disk under *type_root*."""
+        if not os.path.isdir(type_root):
+            return []
+        files, _ = self.get_devices(type_root)
+        repo_root = self.get_absolute_path()
+        return [(os.path.relpath(path, repo_root).replace("\\", "/"), path) for path in files]
 
     def discover_vendors(self, devices_path, modules_path, racks_path):
         """Discover all vendor directories across device-types/, module-types/, and rack-types/.
