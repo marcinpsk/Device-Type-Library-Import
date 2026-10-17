@@ -29,7 +29,7 @@ class RunSelection:
     devices_path: str
     modules_path: str
     racks_path: str
-    slug_resolved: dict | None
+    slug_matches: dict | None
 
 
 @dataclass(frozen=True)
@@ -618,7 +618,7 @@ class ImportRun:
         else:
             vendors = all_vendors
 
-        vendors, slug_resolved = self._narrow_by_slug(vendors)
+        vendors, slug_matches = self._match_slugs(vendors, devices_path, modules_path, racks_path)
         if self.config.vendors and not vendors:
             raise VendorSelectionError(
                 f"No vendors matched the combination of --vendors and --slugs: {', '.join(self.config.vendors)}"
@@ -629,63 +629,46 @@ class ImportRun:
             devices_path=devices_path,
             modules_path=modules_path,
             racks_path=racks_path,
-            slug_resolved=slug_resolved,
+            slug_matches=slug_matches,
         )
 
-    def _narrow_by_slug(self, vendors):
-        """Narrow vendors with the repository slug index when available."""
-        if not self.config.slugs:
+    def _match_slugs(self, vendors, devices_path, modules_path, racks_path):
+        """Parse the types that match --slugs, and keep only the vendors that have some.
+
+        Returns the narrowed vendors and ``{vendor_slug: (device_types, module_types, rack_types)}``.
+        The device index, when available, limits which device files are parsed.
+        """
+        slugs = self.config.slugs
+        if not slugs:
             return vendors, None
 
-        slug_resolved = self.repo.resolve_slug_files(self.config.slugs)
-        if slug_resolved is None:
-            self.reporter.verbose_log("Slug index unavailable; falling back to full file scan.")
-            return vendors, None
+        device_files = self.repo.resolve_slug_files(slugs)
+        if device_files is None:
+            self.reporter.verbose_log("Slug index unavailable; parsing every device type file.")
 
-        matched_vendor_slugs = (
-            set(slug_resolved["device_files"])
-            | (slug_resolved["module_vendors"] or set())
-            | (slug_resolved["rack_vendors"] or set())
-        )
-        if not matched_vendor_slugs:
-            self.reporter.verbose_log("Slug index returned no matches; falling back to full file scan.")
-            return vendors, None
-        narrowed = [vendor for vendor in vendors if vendor["slug"] in matched_vendor_slugs]
-        self.reporter.verbose_log(
-            f"Slug index resolved {sum(len(files) for files in slug_resolved['device_files'].values())} "
-            f"device file(s) across {len(matched_vendor_slugs)} vendor(s)."
-        )
-        return narrowed, slug_resolved
+        matches = {}
+        for vendor in vendors:
+            if device_files is None:
+                device_types = _parse_vendor_files(self.repo, devices_path, vendor["name"], slugs)
+            else:
+                files = device_files.get(vendor["slug"], [])
+                device_types = self.repo.parse_files(files, slugs=slugs) if files else []
+            module_types = _parse_vendor_files(self.repo, modules_path, vendor["name"], slugs)
+            rack_types = _parse_vendor_files(self.repo, racks_path, vendor["name"], slugs)
+            if device_types or module_types or rack_types:
+                matches[vendor["slug"]] = (device_types, module_types, rack_types)
+
+        self.reporter.verbose_log(f"--slugs matched types from {len(matches)} vendor(s).")
+        return [vendor for vendor in vendors if vendor["slug"] in matches], matches
 
     def plan_vendor(self, selection, vendor):
         """Parse source files and return an inspectable vendor plan."""
-        slug_resolved = selection.slug_resolved
-        if slug_resolved is not None:
-            device_files = slug_resolved["device_files"].get(vendor["slug"], [])
-            device_types = self.repo.parse_files(device_files, slugs=self.config.slugs or []) if device_files else []
+        if selection.slug_matches is not None:
+            device_types, module_types, rack_types = selection.slug_matches[vendor["slug"]]
         else:
-            device_types = _parse_vendor_files(
-                self.repo, selection.devices_path, vendor["name"], self.config.slugs or []
-            )
-
-        module_hint = slug_resolved["module_vendors"] if slug_resolved is not None else None
-        if module_hint is not None and vendor["slug"] not in module_hint:
-            module_types = []
-        else:
-            module_types = _parse_vendor_files(
-                self.repo, selection.modules_path, vendor["name"], self.config.slugs or []
-            )
-
-        rack_hint = slug_resolved["rack_vendors"] if slug_resolved is not None else None
-        if rack_hint is not None and vendor["slug"] not in rack_hint:
-            rack_types = []
-        else:
-            rack_types = _parse_vendor_files(
-                self.repo,
-                selection.racks_path,
-                vendor["name"],
-                self.config.slugs or [],
-            )
+            device_types = _parse_vendor_files(self.repo, selection.devices_path, vendor["name"], [])
+            module_types = _parse_vendor_files(self.repo, selection.modules_path, vendor["name"], [])
+            rack_types = _parse_vendor_files(self.repo, selection.racks_path, vendor["name"], [])
 
         return VendorPlan(
             vendor=vendor,

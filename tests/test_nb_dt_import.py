@@ -844,7 +844,9 @@ class TestMain:
             patch("nb_dt_import.NetBox") as MockNetBox,
             patch("core.import_run.ChangeDetector") as MockDetector,
         ):
-            mock_repo = _make_mock_repo()
+            mock_repo = _make_mock_repo(
+                device_types=[{"manufacturer": {"slug": "cisco"}, "model": "WS-C3750", "slug": "cisco-ws-c3750"}]
+            )
             mock_repo.discover_vendors.return_value = [{"name": "Cisco", "slug": "cisco"}]
             MockRepo.return_value = mock_repo
             MockNetBox.return_value = _make_mock_netbox()
@@ -1809,11 +1811,7 @@ class TestMainAdditionalCoverage:
     def test_main_uses_slug_fast_path_device_files(self, nb_dt_import):
         mock_repo = _make_mock_repo()
         mock_repo.discover_vendors.return_value = [{"name": "Cisco", "slug": "cisco"}]
-        mock_repo.resolve_slug_files.return_value = {
-            "device_files": {"cisco": ["resolved.yaml"]},
-            "module_vendors": set(),
-            "rack_vendors": set(),
-        }
+        mock_repo.resolve_slug_files.return_value = {"cisco": ["resolved.yaml"]}
         mock_repo.parse_files.side_effect = lambda files, slugs=None, progress=None: (
             [{"manufacturer": {"slug": "cisco"}, "model": "X", "slug": "x"}] if files == ["resolved.yaml"] else []
         )
@@ -1951,8 +1949,8 @@ class TestMainAdditionalCoverage:
         assert parsed.export_diff_dir == "exports/"
         assert parsed.force_export_overwrite is True
 
-    def test_import_run_processes_slug_fast_path_and_skips_empty_vendor(self, make_config):
-        """Execution applies a resolved plan and advances past an empty plan."""
+    def test_import_run_processes_slug_fast_path_and_drops_unmatched_vendor(self, make_config):
+        """Execution applies the matched vendor's plan, and discovery drops a vendor with no match."""
         config = make_config(slugs=("x",))
         handle = MagicMock()
         progress = MagicMock()
@@ -1971,11 +1969,7 @@ class TestMainAdditionalCoverage:
             else []
         )
         netbox = _make_mock_netbox()
-        slug_resolved = {
-            "device_files": {"empty": [], "cisco": ["resolved.yaml"]},
-            "module_vendors": {"cisco"},
-            "rack_vendors": set(),
-        }
+        slug_resolved = {"empty": [], "cisco": ["resolved.yaml"]}
         vendors = [{"slug": "empty", "name": "Empty"}, {"slug": "cisco", "name": "Cisco"}]
         dtl_repo.discover_vendors.return_value = vendors
         dtl_repo.resolve_slug_files.return_value = slug_resolved
@@ -2012,8 +2006,8 @@ class TestMainAdditionalCoverage:
             {"manufacturer": {"slug": "cisco"}, "model": "M", "slug": "m"}
         ]
         mock_process_rack_types.assert_called_once()
-        assert mock_process_rack_types.call_args.args[4] == []  # cisco not in rack_vendors → empty
-        assert progress.advance.call_args_list == [((7,),), ((7,),)]
+        assert mock_process_rack_types.call_args.args[4] == []  # no cisco rack type matches the slug
+        assert progress.advance.call_args_list == [((7,),)]
         mock_finalize.assert_called_once_with(progress, {})
         assert any(call.args[0] == ["resolved.yaml"] for call in dtl_repo.parse_files.call_args_list)
 
