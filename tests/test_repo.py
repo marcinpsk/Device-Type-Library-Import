@@ -1856,6 +1856,17 @@ class TestDeviceIndexAgainstTheCheckout:
 
         assert self._resolve(tmp_path, ["acme-new"]) == {"acme": [str(tmp_path / "device-types/Acme/other.yaml")]}
 
+    def test_a_definition_under_a_symlinked_directory_is_always_selected(self, tmp_path):
+        shared = tmp_path / "shared" / "Acme"
+        shared.mkdir(parents=True)
+        (tmp_path / "device-types").mkdir()
+        (tmp_path / "device-types/Acme").symlink_to("../shared/Acme")
+        self._library(tmp_path)
+        (shared / "other.yaml").write_text("manufacturer: Acme\nmodel: Other\nslug: acme-new\n")
+
+        selected = self._resolve(tmp_path, ["acme-new"])["acme"]
+        assert sorted(selected) == [str(tmp_path / f"device-types/Acme/{n}.yaml") for n in ("old-box", "other")]
+
     def test_a_local_library_runs_no_git_and_does_not_use_the_index(self, tmp_path):
         self._library(tmp_path)
         repo = _dtl_repo(MagicMock(repo_url="local", repo_branch="master"), str(tmp_path), LogHandler(False))

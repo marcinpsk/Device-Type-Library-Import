@@ -729,15 +729,16 @@ class DTLRepo:
         slug_by_relpath = {relpath.replace("\\", "/"): entry_slug for entry_slug, relpath in known_slugs}
 
         slugs_lower = [s.casefold() for s in slugs]
+        real_root = os.path.realpath(repo_root)
         device_files: dict = {}  # vendor_slug -> [abs_path]
         for relpath, abs_path in self._definition_files(self.get_devices_path()):
             entry_slug = slug_by_relpath.get(relpath)
             # An unindexed or changed file can hold any slug, so the caller's parse_files filter decides.
-            # A link target can change while the link blob does not, so a link counts as changed.
+            # A link target can change while the link blob does not, so a file reached through a link counts as changed.
             if (
                 entry_slug is None
                 or relpath in changed
-                or os.path.islink(abs_path)
+                or os.path.realpath(abs_path) != os.path.join(real_root, relpath)
                 or any(s in entry_slug.casefold() for s in slugs_lower)
             ):
                 vendor_slug = self.slug_format(_vendor_of(posixpath.dirname(relpath)))
