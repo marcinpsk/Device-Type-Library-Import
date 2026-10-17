@@ -8,6 +8,7 @@ GraphQL client builds it.
 
 import pynetbox
 import pytest
+import requests
 from helpers import FakeNetBox, recording_handle
 
 from core.graphql_client import _to_dotdict
@@ -222,6 +223,18 @@ class TestUpdate:
         server.lost_patch_responses = lost
 
         assert nb._try_update_module_type(definition(), record, "cisco/SFP-10G-SR.yaml") == (False, False)
+
+        [stored_type] = server.collection("module_types")
+        assert stored_type["profile"] == {"id": 4, "name": "Fan"}
+        assert stored_type["attribute_data"] == {"rpm": 3000}
+
+    def test_a_truncated_clear_reply_restores_the_old_profile_and_attributes(self, netbox, server, definition):
+        nb, _ = netbox
+        record = existing(server, {"id": 4, "name": "Fan"}, {"rpm": 3000})
+        server.truncated_patch_responses = {1}
+
+        with pytest.raises(requests.exceptions.ChunkedEncodingError):
+            nb._try_update_module_type(definition(), record, "cisco/SFP-10G-SR.yaml")
 
         [stored_type] = server.collection("module_types")
         assert stored_type["profile"] == {"id": 4, "name": "Fan"}
