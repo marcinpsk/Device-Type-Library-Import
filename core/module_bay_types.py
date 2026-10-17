@@ -19,6 +19,7 @@ import requests
 import yaml
 
 from core.errors import FatalError
+from core.retry import call_with_retry, create_with_retry
 
 # Directory in the devicetype-library holding the catalog, one directory per manufacturer.
 CATALOG_DIRNAME = "module-bay-types"
@@ -197,28 +198,29 @@ class ModuleBayTypeCatalog:
         return entries
 
     @staticmethod
-    def _request(action, description):
-        """Run one NetBox request, reporting a rejection as a catalog error.
+    def _request(action, description, *args, **kwargs):
+        """Call ``action(*args, **kwargs)``, a core.retry helper, and report a rejection as a catalog error.
 
         Callers resolve one definition at a time and recover from ModuleBayTypeError.  A
         raw RequestError or a dropped connection escapes that recovery and ends the run,
         which can leave a parent half created and every later definition unprocessed.
         """
         try:
-            return action()
+            return action(*args, **kwargs)
         except pynetbox.RequestError as exc:
             raise ModuleBayTypeError(f"NetBox rejected {description}: {exc}") from exc
-        except requests.exceptions.RequestException as exc:
-            raise ModuleBayTypeError(f"NetBox could not be reached for {description}: {exc}") from exc
+        except (requests.exceptions.RequestException, pynetbox.core.query.ContentError) as exc:
+            raise ModuleBayTypeError(f"NetBox gave no usable reply for {description}: {exc}") from exc
 
     def _netbox_id(self, entry):
         """Return the id of the NetBox object for *entry*, creating it if absent."""
         manufacturer_id = self._manufacturer_id(entry["manufacturer"])
         existing = self._request(
+            call_with_retry,
+            f"the lookup of module bay type {entry['name']!r}",
             lambda: list(
                 self._netbox.dcim.module_bay_types.filter(manufacturer_id=manufacturer_id, name=entry["name"])
             ),
-            f"the lookup of module bay type {entry['name']!r}",
         )
         for record in existing:
             if record.slug != entry["slug"]:
@@ -234,8 +236,12 @@ class ModuleBayTypeCatalog:
         if entry.get("description"):
             payload["description"] = entry["description"]
         created = self._request(
-            lambda: self._netbox.dcim.module_bay_types.create(payload),
+            create_with_retry,
             f"creating module bay type {entry['name']!r}",
+            self._netbox.dcim.module_bay_types,
+            payload,
+            "name",
+            manufacturer_id=manufacturer_id,
         )
         self._handle.verbose_log(f"Module Bay Type Created: {entry['name']} ({entry['manufacturer']}) - {created.id}")
         return created.id
@@ -249,15 +255,19 @@ class ModuleBayTypeCatalog:
         if name in self._manufacturer_ids:
             return self._manufacturer_ids[name]
         found = self._request(
-            lambda: list(self._netbox.dcim.manufacturers.filter(slug=manufacturer_slug(name))),
+            call_with_retry,
             f"the lookup of manufacturer {name!r}",
+            lambda: list(self._netbox.dcim.manufacturers.filter(slug=manufacturer_slug(name))),
         )
         if found:
             self._manufacturer_ids[name] = found[0].id
         else:
             created = self._request(
-                lambda: self._netbox.dcim.manufacturers.create({"name": name, "slug": manufacturer_slug(name)}),
+                create_with_retry,
                 f"creating manufacturer {name!r}",
+                self._netbox.dcim.manufacturers,
+                {"name": name, "slug": manufacturer_slug(name)},
+                "slug",
             )
             self._handle.verbose_log(f"Manufacturer Created: {name} - {created.id}")
             self._manufacturer_ids[name] = created.id
