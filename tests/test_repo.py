@@ -1795,6 +1795,8 @@ class TestDeviceIndexAgainstTheCheckout:
         for name, slug in (("old-box", "acme-old-box"), ("other", "acme-other")):
             path = root / "device-types" / "Acme" / f"{name}.yaml"
             path.parent.mkdir(parents=True, exist_ok=True)
+            if path.is_symlink():
+                continue
             path.write_text(f"manufacturer: Acme\nmodel: {name}\nslug: {slug}\n")
         return _commit_library(root)
 
@@ -1818,7 +1820,8 @@ class TestDeviceIndexAgainstTheCheckout:
     def test_a_slug_change_committed_after_the_index_is_selected(self, tmp_path):
         git_repo = self._library(tmp_path)
         (tmp_path / "device-types/Acme/other.yaml").write_text("manufacturer: Acme\nmodel: Other\nslug: acme-new\n")
-        git_repo.git.commit("-am", "fork edit", "--author", "t <t@example.com>")
+        git_repo.index.add(["device-types/Acme/other.yaml"])
+        git_repo.index.commit("fork edit", author=Actor("t", "t@example.com"), committer=Actor("t", "t@example.com"))
 
         assert self._resolve(tmp_path, ["acme-new"]) == {"acme": [str(tmp_path / "device-types/Acme/other.yaml")]}
 
@@ -1835,6 +1838,23 @@ class TestDeviceIndexAgainstTheCheckout:
         shutil.rmtree(tmp_path / ".git")
 
         assert self._resolve(tmp_path, ["old-box"]) is None
+
+    def test_a_shallow_clone_is_not_compared(self, tmp_path):
+        self._library(tmp_path / "source")
+        GitRepo.clone_from(f"file://{tmp_path / 'source'}", tmp_path / "shallow", depth=1)
+
+        assert self._resolve(tmp_path / "shallow", ["old-box"]) is None
+
+    def test_a_symlinked_definition_is_always_selected(self, tmp_path):
+        target = tmp_path / "shared" / "other.yaml"
+        target.parent.mkdir()
+        target.write_text("manufacturer: Acme\nmodel: Other\nslug: acme-other\n")
+        (tmp_path / "device-types/Acme").mkdir(parents=True)
+        (tmp_path / "device-types/Acme/other.yaml").symlink_to("../../shared/other.yaml")
+        self._library(tmp_path)
+        target.write_text("manufacturer: Acme\nmodel: Other\nslug: acme-new\n")
+
+        assert self._resolve(tmp_path, ["acme-new"]) == {"acme": [str(tmp_path / "device-types/Acme/other.yaml")]}
 
     def test_a_local_library_runs_no_git_and_does_not_use_the_index(self, tmp_path):
         self._library(tmp_path)

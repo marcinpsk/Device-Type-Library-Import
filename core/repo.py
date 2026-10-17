@@ -127,12 +127,15 @@ def _paths_changed_since_index(repo_root: str, index_path: str, type_dir: str) -
     """Return the repo-relative paths under *type_dir* that differ from the commit that last wrote *index_path*.
 
     Returns ``None`` when the index cannot describe the checkout: *repo_root* is not a git work
-    tree, the index is not committed, or the index itself differs from that commit.
+    tree, its history is shallow, the index is not committed, or the index differs from that commit.
     """
     index_relpath = os.path.relpath(index_path, repo_root).replace("\\", "/")
     try:
         git = Repo(repo_root).git
         git.update_environment(GIT_OPTIONAL_LOCKS="0")  # read-only: do not refresh .git/index
+        # In a shallow clone, git log reports the shallow boundary, not the commit that wrote the index.
+        if git.rev_parse("--is-shallow-repository") != "false":
+            return None
         commit = git.log("-1", "--format=%H", "--", index_relpath)
         if not commit:
             return None
@@ -730,7 +733,13 @@ class DTLRepo:
         for relpath, abs_path in self._definition_files(self.get_devices_path()):
             entry_slug = slug_by_relpath.get(relpath)
             # An unindexed or changed file can hold any slug, so the caller's parse_files filter decides.
-            if entry_slug is None or relpath in changed or any(s in entry_slug.casefold() for s in slugs_lower):
+            # A link target can change while the link blob does not, so a link counts as changed.
+            if (
+                entry_slug is None
+                or relpath in changed
+                or os.path.islink(abs_path)
+                or any(s in entry_slug.casefold() for s in slugs_lower)
+            ):
                 vendor_slug = self.slug_format(_vendor_of(posixpath.dirname(relpath)))
                 device_files.setdefault(vendor_slug, []).append(abs_path)
         return device_files
