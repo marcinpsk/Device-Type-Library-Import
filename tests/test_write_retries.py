@@ -141,6 +141,21 @@ class TestCreate:
         assert requests_to(server, "POST", "interface_templates") == 1
         assert nb.counter["components_added"] == 3
 
+    def test_a_large_bulk_create_is_looked_up_in_short_requests(self, netbox, server):
+        """Hundreds of names in one lookup URL would pass a proxy's URL limit and fail with 414."""
+        nb, _ = netbox
+        server.max_url_length = 2000
+        server.broken_replies = {("POST", 1): "lost"}
+        items = [{"name": f"GigabitEthernet1/0/{n}", "type": "1000base-t"} for n in range(1, 201)]
+
+        with nb.device_types.collect_component_errors() as errors:
+            nb.device_types._create_generic(BY_YAML_KEY["interfaces"], items, SWITCH["id"])
+
+        assert errors == []
+        assert len(server.collection("interface_templates")) == 200
+        assert requests_to(server, "POST", "interface_templates") == 1
+        assert nb.counter["components_added"] == 200
+
     def test_a_partial_bulk_match_is_sent_again_not_taken_as_the_result(self, server):
         """Another writer holds one of the names: NetBox refuses the batch, and nothing is guessed."""
         server.collection("interface_templates").append({"id": 77, "name": "Gi1/0/1", "device_type": {"id": 5}})

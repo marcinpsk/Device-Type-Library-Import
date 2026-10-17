@@ -17,6 +17,9 @@ RETRYABLE_EXCEPTIONS = (
 MAX_RETRIES = 3
 RETRY_BACKOFF = (2, 5, 10)  # seconds to wait before each retry attempt
 
+# Keys per lookup request, so the query string stays under common proxy URL limits.
+LOOKUP_CHUNK = 50
+
 
 def call_with_retry(func, *args, find_existing=None, **kwargs):
     """Call *func* with retries on transient connection errors.
@@ -85,7 +88,12 @@ def _rewind_files(args):
 
 def _find_all(endpoint, items, key, scope):
     """Return the record for each item in payload order, or None unless every item exists."""
-    found = {getattr(record, key): record for record in endpoint.filter(**scope, **{key: [i[key] for i in items]})}
+    keys = [item[key] for item in items]
+    found = {
+        getattr(record, key): record
+        for start in range(0, len(keys), LOOKUP_CHUNK)
+        for record in endpoint.filter(**scope, **{key: keys[start : start + LOOKUP_CHUNK]})
+    }
     if any(item[key] not in found for item in items):
         return None
     return [found[item[key]] for item in items]

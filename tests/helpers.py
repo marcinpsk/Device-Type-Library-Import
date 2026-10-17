@@ -118,6 +118,8 @@ class FakeNetBox:
         self.collections = {name: [dict(r) for r in records] for name, records in collections.items()}
         self.errors = dict(errors or {})
         self.netbox_version = netbox_version
+        # A GET whose request target is longer than this gets 414, as from a proxy URL limit.
+        self.max_url_length = None
         self.requests = []
         # (verb, 1-based number of that verb) -> "lost", "truncated" or "garbled": the request runs, the reply breaks.
         # "dropped": the connection closes before the request runs, so nothing commits.
@@ -405,6 +407,9 @@ class FakeNetBox:
                 parsed = urlparse(self.path)
                 name = self._collection_name()
                 state.requests.append(("GET", name, parsed.query))
+                if state.max_url_length is not None and len(self.path) > state.max_url_length:
+                    self._reply(414, {"detail": "Request-URI Too Long"})
+                    return
                 if name == "status":
                     self._reply(200, {"netbox-version": state.netbox_version})
                     return
