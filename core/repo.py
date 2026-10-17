@@ -102,6 +102,12 @@ def _vendor_of(directory: str) -> str:
     return directory.rsplit("/", 1)[-1]
 
 
+def _reached_through_link(abs_path: str, real_root: str, relpath: str) -> bool:
+    """Return True when *abs_path* does not resolve to *relpath* (POSIX separators) under *real_root*."""
+    expected = os.path.join(real_root, *relpath.split("/"))
+    return os.path.normcase(os.path.realpath(abs_path)) != os.path.normcase(expected)
+
+
 def _paths_changed_since_index(repo_root: str, index_path: str, type_dir: str) -> "set[str] | None":
     """Return the repo-relative paths under *type_dir* that differ from the commit that last wrote *index_path*.
 
@@ -717,7 +723,7 @@ class DTLRepo:
             if (
                 entry_slug is None
                 or relpath in changed
-                or os.path.realpath(abs_path) != os.path.join(real_root, relpath)
+                or _reached_through_link(abs_path, real_root, relpath)
                 or any(s in entry_slug.casefold() for s in slugs_lower)
             ):
                 vendor_slug = self.slug_format(_vendor_of(posixpath.dirname(relpath)))
