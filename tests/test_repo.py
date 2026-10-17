@@ -1592,9 +1592,6 @@ class TestResolveSlugFiles:
         known = {("nokia-7750-sr-7s", "device-types/Nokia/7750-SR-7s.yaml")}
         (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(known))
         _write_definitions(tmp_path, "device-types/Nokia/7750-SR-7s.yaml")
-        # Create an empty module/rack pickle so those code paths don't crash
-        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
 
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
@@ -1603,9 +1600,9 @@ class TestResolveSlugFiles:
         result = repo.resolve_slug_files(["nokia-7750-sr-7s"])
 
         assert result is not None
-        assert "nokia" in result["device_files"]
+        assert "nokia" in result
         expected_path = str(tmp_path / "device-types" / "Nokia" / "7750-SR-7s.yaml")
-        assert expected_path in result["device_files"]["nokia"]
+        assert expected_path in result["nokia"]
 
     def test_substring_match(self, tmp_path):
         """Partial slug matches (substring) are found."""
@@ -1620,8 +1617,6 @@ class TestResolveSlugFiles:
         }
         (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(known))
         _write_definitions(tmp_path, *(relpath for _, relpath in known))
-        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
 
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
@@ -1630,20 +1625,18 @@ class TestResolveSlugFiles:
         result = repo.resolve_slug_files(["7750-sr"])
 
         assert result is not None
-        assert "nokia" in result["device_files"]
-        assert len(result["device_files"]["nokia"]) == 2
-        assert "cisco" not in result["device_files"]
+        assert "nokia" in result
+        assert len(result["nokia"]) == 2
+        assert "cisco" not in result
 
     def test_no_match_returns_empty_dict(self, tmp_path):
-        """No matching slug returns empty device_files (not None)."""
+        """No matching slug returns an empty dict (not None)."""
         import pickle
 
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
         known = {("cisco-catalyst-9200", "device-types/Cisco/Catalyst-9200.yaml")}
         (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(known))
-        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
 
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
@@ -1652,8 +1645,7 @@ class TestResolveSlugFiles:
         result = repo.resolve_slug_files(["nokia-7750-sr-7s"])
 
         assert result is not None
-        assert result["device_files"] == {}
-        assert result["module_vendors"] == set()
+        assert result == {}
 
     def test_corrupted_device_pickle_returns_none(self, tmp_path):
         tests_dir = tmp_path / "tests"
@@ -1672,8 +1664,6 @@ class TestResolveSlugFiles:
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
         (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps({("nokia-7750-sr-7s", "device-types/Nokia.yaml")}))
-        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
 
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
@@ -1681,82 +1671,7 @@ class TestResolveSlugFiles:
 
         result = repo.resolve_slug_files(["7750-sr"])
 
-        assert result["device_files"] == {}
-
-    def test_corrupted_module_pickle_is_ignored(self, tmp_path):
-        import pickle
-
-        tests_dir = tmp_path / "tests"
-        tests_dir.mkdir()
-        (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-modules.pickle").write_bytes(b"bad-module-pickle")
-        (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
-
-        repo = self._make_repo()
-        repo.repo_path = str(tmp_path)
-        repo.cwd = ""
-
-        result = repo.resolve_slug_files(["module"])
-
-        assert result["module_vendors"] is None
-
-    def test_matching_module_pickle_adds_vendor_slug(self, tmp_path):
-        import pickle
-
-        tests_dir = tmp_path / "tests"
-        tests_dir.mkdir()
-        (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps({("7750 line card", "module-types/Nokia")}))
-        (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
-
-        repo = self._make_repo()
-        repo.repo_path = str(tmp_path)
-        repo.cwd = ""
-
-        result = repo.resolve_slug_files(["7750"])
-
-        assert result["module_vendors"] == {"nokia"}
-
-    def test_corrupted_rack_pickle_is_ignored(self, tmp_path):
-        import pickle
-
-        tests_dir = tmp_path / "tests"
-        tests_dir.mkdir()
-        (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-racks.pickle").write_bytes(b"bad-rack-pickle")
-
-        repo = self._make_repo()
-        repo.repo_path = str(tmp_path)
-        repo.cwd = ""
-
-        result = repo.resolve_slug_files(["rack"])
-
-        assert result["rack_vendors"] is None
-
-    def test_rack_pickle_only_uses_rack_type_entries(self, tmp_path):
-        import pickle
-
-        tests_dir = tmp_path / "tests"
-        tests_dir.mkdir()
-        (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-racks.pickle").write_bytes(
-            pickle.dumps(
-                {
-                    ("42U Rack", "rack-types/APC"),
-                    ("Not A Rack", "module-types/Nokia"),
-                }
-            )
-        )
-
-        repo = self._make_repo()
-        repo.repo_path = str(tmp_path)
-        repo.cwd = ""
-
-        result = repo.resolve_slug_files(["rack"])
-
-        assert result["rack_vendors"] == {"apc"}
+        assert result == {}
 
 
 class TestIndexLoaders:
@@ -1812,8 +1727,6 @@ class TestResolveSlugFilesJson:
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
         self._write_json(tests_dir, "known-slugs", [("nokia-7750-sr-7s", "device-types/Nokia/7750-SR-7s.yaml")])
-        self._write_json(tests_dir, "known-modules", [])
-        self._write_json(tests_dir, "known-racks", [])
         _write_definitions(tmp_path, "device-types/Nokia/7750-SR-7s.yaml")
 
         repo = self._make_repo()
@@ -1824,22 +1737,7 @@ class TestResolveSlugFilesJson:
 
         assert result is not None
         expected_path = str(tmp_path / "device-types" / "Nokia" / "7750-SR-7s.yaml")
-        assert expected_path in result["device_files"]["nokia"]
-
-    def test_matching_module_json_adds_vendor_slug(self, tmp_path):
-        tests_dir = tmp_path / "tests"
-        tests_dir.mkdir()
-        self._write_json(tests_dir, "known-slugs", [])
-        self._write_json(tests_dir, "known-modules", [("7750 line card", "module-types/Nokia")])
-        self._write_json(tests_dir, "known-racks", [])
-
-        repo = self._make_repo()
-        repo.repo_path = str(tmp_path)
-        repo.cwd = ""
-
-        result = repo.resolve_slug_files(["7750"])
-
-        assert result["module_vendors"] == {"nokia"}
+        assert expected_path in result["nokia"]
 
     def test_json_preferred_over_pickle(self, tmp_path):
         """When both formats exist, JSON wins — pickle here would yield a different match."""
@@ -1852,15 +1750,13 @@ class TestResolveSlugFilesJson:
             pickle.dumps({("other-slug", "device-types/Nokia/7750-SR-7s.yaml")})
         )
         _write_definitions(tmp_path, "device-types/Nokia/7750-SR-7s.yaml")
-        self._write_json(tests_dir, "known-modules", [])
-        self._write_json(tests_dir, "known-racks", [])
 
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
 
-        assert "nokia" in repo.resolve_slug_files(["nokia"])["device_files"]
-        assert repo.resolve_slug_files(["other-slug"])["device_files"] == {}
+        assert "nokia" in repo.resolve_slug_files(["nokia"])
+        assert repo.resolve_slug_files(["other-slug"]) == {}
 
     def test_corrupted_device_json_returns_none(self, tmp_path):
         tests_dir = tmp_path / "tests"

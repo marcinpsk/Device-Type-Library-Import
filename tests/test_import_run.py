@@ -239,11 +239,11 @@ def test_discover_raises_a_typed_fatal_error_when_no_vendor_matches(make_config,
 def test_discover_raises_a_typed_fatal_error_when_slug_selection_removes_the_vendor(make_config, tmp_path):
     class SlugResolvedRepository(_RepositoryBoundary):
         def resolve_slug_files(self, _slugs):
-            return {
-                "device_files": {"other-vendor": []},
-                "module_vendors": set(),
-                "rack_vendors": set(),
-            }
+            return {"other-vendor": []}
+
+        @staticmethod
+        def parse_files(_files, slugs=None):
+            return []
 
     repo = SlugResolvedRepository(tmp_path)
     run = ImportRun(
@@ -340,14 +340,14 @@ class TestSlugSelectionWithAStaleIndex:
         manufacturer = relpath.split("/")[1]
         path.write_text(f"manufacturer: {manufacturer}\nmodel: {model}\n" + (f"slug: {slug}\n" if slug else ""))
 
-    def _plan(self, tmp_path, make_config, index, slugs):
+    def _plan(self, tmp_path, make_config, index, slugs, vendors=()):
         """Plan every selected vendor of a real local library and return the planned models."""
         import json
 
         (tmp_path / "tests").mkdir()
         for stem, entries in index.items():
             (tmp_path / "tests" / f"{stem}.json").write_text(json.dumps(entries))
-        config = make_config(repo_url="local", repo_path=str(tmp_path), slugs=slugs)
+        config = make_config(repo_url="local", repo_path=str(tmp_path), slugs=slugs, vendors=vendors)
         run = ImportRun(
             config, DTLRepo(config, LogHandler(False)), _NetBoxBoundary(), LogHandler(False), _ProgressFactory()
         )
@@ -370,6 +370,17 @@ class TestSlugSelectionWithAStaleIndex:
         models = self._plan(tmp_path, make_config, self.INDEX, ("box", "card", "rack"))
 
         assert models == {"Old Box", "New Box", "Old Card", "New Card", "Old Rack", "New Rack"}
+
+    def test_a_module_is_found_when_its_file_stem_does_not_hold_the_model(self, tmp_path, make_config):
+        self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")
+        self._write(tmp_path, "module-types/Acme/Patch Antenna.yaml", "Patch Antenna")
+        self._write(tmp_path, "module-types/Datto/AP-ANT-1.yaml", "Patch Antenna")
+        index = {
+            **self.INDEX,
+            "known-modules": [["Patch Antenna", "module-types/Acme"], ["AP-ANT-1", "module-types/Datto"]],
+        }
+
+        assert self._plan(tmp_path, make_config, index, ("Patch Antenna",), vendors=("datto",)) == {"Patch Antenna"}
 
     def test_an_indexed_file_that_is_gone_from_disk_is_skipped(self, tmp_path, make_config):
         self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")
