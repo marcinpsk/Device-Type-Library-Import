@@ -102,6 +102,8 @@ class FakeNetBox:
         self.errors = dict(errors or {})
         self.netbox_version = netbox_version
         self.requests = []
+        # 1-based PATCH numbers that commit, then close the connection with no reply.
+        self.lost_patch_responses = set()
         self._server = HTTPServer(("127.0.0.1", 0), self._handler())
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
 
@@ -219,6 +221,13 @@ class FakeNetBox:
             updated.append(record)
         return updated
 
+    def _reply_to_patch(self, handler, answer):
+        """Send *answer*, or close the connection when the test chose to lose this PATCH's reply."""
+        if sum(method == "PATCH" for method, _, _ in self.requests) in self.lost_patch_responses:
+            handler.close_connection = True
+            return
+        handler._reply(*answer)
+
     def _handler(self):
         """Build the request handler class bound to this server's state."""
         state = self
@@ -277,7 +286,7 @@ class FakeNetBox:
                 state.requests.append(("PATCH", name, payload))
                 if self._refused(name):
                     return
-                self._reply(*state._answer(200, lambda: state._patch(name, copy.deepcopy(payload))))
+                state._reply_to_patch(self, state._answer(200, lambda: state._patch(name, copy.deepcopy(payload))))
 
             def log_message(self, *args):
                 """Silence the default stderr access log."""

@@ -1770,7 +1770,10 @@ class NetBox:
                 updates["profile"] = curr_mt["profile"]
                 stored = getattr(module_type_res, "attribute_data", None)
                 declared = curr_mt.get("attribute_data") or {}
-                stale_attributes = bool(stored) and (not isinstance(stored, dict) or bool(stored.keys() - declared))
+                # A merge keeps every stored key, and an undeclared set must end as no attributes, as on create.
+                stale_attributes = stored is not None and (
+                    not declared or not isinstance(stored, dict) or bool(stored.keys() - declared)
+                )
                 if stale_attributes and declared:
                     updates[_REST_ATTRIBUTES_FIELD] = declared
             else:
@@ -1816,16 +1819,19 @@ class NetBox:
 
         NetBox merges PATCHed attributes into the stored ones, so the old profile's attributes must go
         first. A module type without a profile has no attributes, so dropping the profile clears them.
+        A lost reply can hide a committed write, so the restore clears again before it writes.
         """
         update = self.netbox.dcim.module_types.update
         type_id = module_type_res.id
-        _retry_on_connection_error(update, [{"id": type_id, "profile": None, _REST_ATTRIBUTES_FIELD: None}])
+        cleared = {"id": type_id, "profile": None, _REST_ATTRIBUTES_FIELD: None}
         try:
+            _retry_on_connection_error(update, [cleared])
             _retry_on_connection_error(update, [{"id": type_id, **updates}])
         except (pynetbox.RequestError, *_RETRYABLE_EXCEPTIONS):
             old_profile = {"name": module_type_res.profile.name} if module_type_res.profile else None
             restore = {"id": type_id, "profile": old_profile, _REST_ATTRIBUTES_FIELD: module_type_res.attribute_data}
             try:
+                _retry_on_connection_error(update, [cleared])
                 _retry_on_connection_error(update, [restore])
             except (pynetbox.RequestError, *_RETRYABLE_EXCEPTIONS) as restore_error:
                 self.handle.log(

@@ -211,6 +211,36 @@ class TestUpdate:
         assert stored_type["profile"] == {"id": 4, "name": "Fan"}
         assert stored_type["attribute_data"] == {"rpm": 3000}
 
+    @pytest.mark.parametrize("lost", [{1, 2, 3, 4}, {2, 3, 4, 5}], ids=["clear", "write"])
+    def test_a_profile_change_with_lost_responses_keeps_the_old_profile_and_attributes(
+        self, netbox, server, definition, monkeypatch, lost
+    ):
+        """Each PATCH commits but its reply never arrives, so every retry is exhausted."""
+        monkeypatch.setattr("core.netbox_api.time.sleep", lambda _seconds: None)
+        nb, _ = netbox
+        record = existing(server, {"id": 4, "name": "Fan"}, {"rpm": 3000})
+        server.lost_patch_responses = lost
+
+        assert nb._try_update_module_type(definition(), record, "cisco/SFP-10G-SR.yaml") == (False, False)
+
+        [stored_type] = server.collection("module_types")
+        assert stored_type["profile"] == {"id": 4, "name": "Fan"}
+        assert stored_type["attribute_data"] == {"rpm": 3000}
+
+    def test_a_profile_only_change_drops_empty_old_attributes(self, netbox, server, definition):
+        """A new profile can reject {} (required keys) but accepts no attributes, as on create."""
+        nb, _ = netbox
+        record = existing(server, {"id": 4, "name": "Fan"}, {})
+
+        assert nb._try_update_module_type(definition(SFP_YAML.split("attribute_data")[0]), record, "x.yaml") == (
+            True,
+            True,
+        )
+
+        [stored_type] = server.collection("module_types")
+        assert stored_type["profile"] == {"id": 3, "name": "Transceiver"}
+        assert stored_type["attribute_data"] is None
+
     def test_an_unchanged_profile_keeps_attributes_the_yaml_omits(self, netbox, server, definition):
         nb, _ = netbox
         record = existing(server, {"id": 3, "name": "Transceiver"}, {**SFP_ATTRIBUTES, "reach": 300, "rpm": 3000})
