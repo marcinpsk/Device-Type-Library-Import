@@ -246,6 +246,30 @@ class TestUpdate:
         assert stored_type["profile"] == {"id": 4, "name": "Fan"}
         assert stored_type["attribute_data"] == {"rpm": 3000}
 
+    def test_a_failed_recovery_clear_still_restores_the_old_profile(self, netbox, server, definition):
+        nb, console = netbox
+        record = existing(server, {"id": 4, "name": "Fan"}, {"rpm": 3000})
+        curr_mt = definition(SFP_YAML.replace("profile: Transceiver", "profile: No Such Profile"))
+        server.garbled_patch_responses = {3}
+
+        assert nb._try_update_module_type(curr_mt, record, "cisco/SFP-10G-SR.yaml") == (False, False)
+
+        [stored_type] = server.collection("module_types")
+        assert stored_type["profile"] == {"id": 4, "name": "Fan"}
+        assert stored_type["attribute_data"] == {"rpm": 3000}
+        assert any("Could not clear" in line for line in console.lines)
+
+    def test_a_profile_change_keeps_explicit_empty_attributes(self, netbox, server, definition):
+        nb, _ = netbox
+        record = existing(server, {"id": 4, "name": "Fan"}, {})
+        curr_mt = definition(SFP_YAML.split("attribute_data")[0] + "attribute_data: {}\n")
+
+        assert nb._try_update_module_type(curr_mt, record, "x.yaml") == (True, True)
+
+        [stored_type] = server.collection("module_types")
+        assert stored_type["profile"] == {"id": 3, "name": "Transceiver"}
+        assert stored_type["attribute_data"] == {}
+
     def test_a_profile_only_change_drops_empty_old_attributes(self, netbox, server, definition):
         """A new profile can reject {} (required keys) but accepts no attributes, as on create."""
         nb, _ = netbox

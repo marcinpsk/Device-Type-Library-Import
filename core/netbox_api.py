@@ -1770,12 +1770,13 @@ class NetBox:
                 updates["profile"] = curr_mt["profile"]
                 stored = getattr(module_type_res, "attribute_data", None)
                 declared = curr_mt.get("attribute_data") or {}
-                # A merge keeps every stored key, and an undeclared set must end as no attributes, as on create.
-                stale_attributes = stored is not None and (
-                    not declared or not isinstance(stored, dict) or bool(stored.keys() - declared)
-                )
-                if stale_attributes and declared:
+                if "attribute_data" in curr_mt:
                     updates[_REST_ATTRIBUTES_FIELD] = declared
+                # A non-empty PATCH keeps every stored key; an undeclared set must end as no attributes, as on create.
+                stale_attributes = stored is not None and (
+                    "attribute_data" not in curr_mt
+                    or (bool(declared) and (not isinstance(stored, dict) or bool(stored.keys() - declared)))
+                )
             else:
                 updates[_REST_ATTRIBUTES_FIELD] = curr_mt["attribute_data"] or {}
         if self.module_bay_types:
@@ -1830,13 +1831,13 @@ class NetBox:
         except Exception:  # any failure after the clear leaves an unknown state; restore, then re-raise
             old_profile = {"name": module_type_res.profile.name} if module_type_res.profile else None
             restore = {"id": type_id, "profile": old_profile, _REST_ATTRIBUTES_FIELD: module_type_res.attribute_data}
-            try:
-                _retry_on_connection_error(update, [cleared])
-                _retry_on_connection_error(update, [restore])
-            except Exception as restore_error:  # noqa: BLE001  # logged; the original error is re-raised
-                self.handle.log(
-                    f"Could not restore the profile and attributes of Module Type {type_id}: {restore_error}"
-                )
+            for step, payload in (("clear", cleared), ("restore", restore)):
+                try:
+                    _retry_on_connection_error(update, [payload])
+                except Exception as step_error:  # noqa: BLE001  # logged; the original error is re-raised
+                    self.handle.log(
+                        f"Could not {step} the profile and attributes of Module Type {type_id}: {step_error}"
+                    )
             raise
 
     def _create_module_type_components(self, curr_mt, module_type_id, src_file):
