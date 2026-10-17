@@ -1,5 +1,6 @@
 """Retry NetBox writes after a transient error, without repeating a write that committed."""
 
+import io
 import time
 
 import pynetbox
@@ -26,6 +27,8 @@ def call_with_retry(func, *args, find_existing=None, **kwargs):
     A transient error can arrive after NetBox committed the write.  Before each retry,
     *find_existing* (when given) checks for that: a result other than None is returned
     in place of a second write.  A transient error in that check counts as a failed attempt.
+
+    An upload reads its files to the end, so each attempt first rewinds every file in a dict argument.
     """
     for attempt in range(MAX_RETRIES + 1):
         try:
@@ -33,6 +36,7 @@ def call_with_retry(func, *args, find_existing=None, **kwargs):
                 existing = find_existing()
                 if existing is not None:
                     return existing
+            _rewind_files(args)
             return func(*args, **kwargs)
         except RETRYABLE_EXCEPTIONS:
             if attempt >= MAX_RETRIES:
@@ -66,6 +70,17 @@ def delete_with_retry(endpoint, object_id):
     return call_with_retry(
         endpoint.delete, [object_id], find_existing=lambda: True if endpoint.get(id=object_id) is None else None
     )
+
+
+def _rewind_files(args):
+    """Seek each file in a dict argument back to its start, as a bare file or a ``(filename, file)`` pair."""
+    for arg in args:
+        if not isinstance(arg, dict):
+            continue
+        for value in arg.values():
+            file = value[1] if isinstance(value, tuple) and len(value) > 1 else value
+            if isinstance(file, io.IOBase):
+                file.seek(0)
 
 
 def _find_all(endpoint, items, key, scope):

@@ -4,6 +4,8 @@ import copy
 import json
 import re
 import threading
+from email.parser import BytesParser
+from email.policy import HTTP
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import ClassVar
 from unittest.mock import MagicMock
@@ -77,6 +79,8 @@ class FakeNetBox:
     bulk-updates and DELETE bulk-deletes behave the way pynetbox expects, so a real client
     drives it and the serialising, filtering and paginating under test are the production ones.
     A create that repeats a natural key gets NetBox's 400, as does a delete of a missing id.
+    A PATCH to one object's URL updates that object.  A multipart write stores each file as
+    a media URL and keeps the received bytes in ``uploads``.
 
     ``/graphql/`` answers every query with an empty list, which is enough to bring a real
     :class:`~core.netbox_api.NetBox` up; the REST half is where the assertions live.
@@ -107,7 +111,8 @@ class FakeNetBox:
         """Start the server with *collections* seeded, keyed by collection name.
 
         *errors* maps a collection name to an HTTP status the server answers it with, so a
-        test can drive a rejection the importer has to survive.  *netbox_version* is what
+        test can drive a rejection the importer has to survive.  A ``(status, text)`` pair
+        answers with that raw body instead of a JSON detail.  *netbox_version* is what
         ``/api/status/`` reports, which is how the export side decides what it may select.
         """
         self.collections = {name: [dict(r) for r in records] for name, records in collections.items()}
@@ -115,9 +120,13 @@ class FakeNetBox:
         self.netbox_version = netbox_version
         self.requests = []
         # (verb, 1-based number of that verb) -> "lost", "truncated" or "garbled": the request runs, the reply breaks.
+        # "dropped": the connection closes before the request runs, so nothing commits.
         self.broken_replies = {}
+        # (field, filename, bytes) of each file a multipart write carried, in arrival order.
+        self.uploads = []
         self._server = HTTPServer(("127.0.0.1", 0), self._handler())
-        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        # A short poll lets close() return at once instead of after the default half second.
+        threading.Thread(target=self._server.serve_forever, kwargs={"poll_interval": 0.02}, daemon=True).start()
 
     @property
     def url(self):
@@ -158,7 +167,8 @@ class FakeNetBox:
             for key, values in query.items():
                 if key in self._IGNORED_FILTERS:
                     continue
-                field = key[:-3] if key.endswith("_id") else key
+                # A plain field such as object_id matches itself; device_type_id filters the device_type reference.
+                field = key[:-3] if key.endswith("_id") and key not in record else key
                 actual = record.get(field)
                 if isinstance(actual, dict):
                     # NetBox filters a nested reference by id with "<field>_id", by slug with "<field>".
@@ -277,10 +287,59 @@ class FakeNetBox:
             updated.append(record)
         return updated
 
+    @staticmethod
+    def _target(path):
+        """Return the collection name in *path* and, for one object's URL, its id."""
+        segments = urlparse(path).path.rstrip("/").split("/")
+        object_id = int(segments.pop()) if segments[-1].isdigit() else None
+        return segments[-1].replace("-", "_"), object_id
+
+    def _collection_name(self, path):
+        """Return the collection name in *path*, which must be a collection URL."""
+        name, object_id = self._target(path)
+        assert object_id is None, f"the fake answers only PATCH on one object's URL, not {path}"
+        return name
+
+    def _decode(self, headers, raw):
+        """Return a request body as a payload: JSON, or a multipart form."""
+        if headers.get_content_type() == "multipart/form-data":
+            return self._form(headers["Content-Type"], raw)
+        return json.loads(raw or b"{}")
+
+    def _refused(self, handler, name):
+        """Answer with the status (and raw body, when given) the test set for *name*; return True if it did."""
+        error = self.errors.get(name)
+        if error is None:
+            return False
+        if isinstance(error, tuple):
+            status, text = error
+        else:
+            status, text = error, json.dumps({"detail": f"{name} refused with {error}"})
+        handler._send(status, text.encode())
+        return True
+
+    def _form(self, content_type, raw):
+        """Return a multipart form body as a payload; each file becomes the media URL NetBox echoes."""
+        message = BytesParser(policy=HTTP).parsebytes(f"Content-Type: {content_type}\r\n\r\n".encode() + raw)
+        payload = {}
+        for part in message.iter_parts():
+            field = part.get_param("name", header="content-disposition")
+            filename = part.get_filename()
+            if filename is None:
+                payload[field] = part.get_payload(decode=True).decode()
+                continue
+            self.uploads.append((field, filename, part.get_payload(decode=True)))
+            payload[field] = f"/media/{filename}"
+        return payload
+
+    def _broken(self, verb):
+        """Return how the test chose to break the latest *verb* request, or None."""
+        number = sum(method == verb for method, name, _ in self.requests if name != "graphql")
+        return self.broken_replies.get((verb, number))
+
     def _reply_to(self, handler, verb, answer):
         """Send *answer*, or break the reply the way the test chose for this request."""
-        number = sum(method == verb for method, name, _ in self.requests if name != "graphql")
-        broken = self.broken_replies.get((verb, number))
+        broken = self._broken(verb)
         if broken == "lost":
             handler.close_connection = True
             return
@@ -297,9 +356,19 @@ class FakeNetBox:
     def _write(self, handler, verb, name, payload, status, apply):
         """Record a write, then answer with *apply*'s result or the refusal it raises."""
         self.requests.append((verb, name, payload))
-        if handler._refused(name):
+        if self._broken(verb) == "dropped":
+            handler.close_connection = True
+            return
+        if self._refused(handler, name):
             return
         self._reply_to(handler, verb, self._answer(status, lambda: apply(name, copy.deepcopy(payload))))
+
+    def _write_patch(self, handler, name, object_id, payload):
+        """Record a PATCH: a bulk update on a collection URL, or one object's update on its own URL."""
+        if object_id is None:
+            self._write(handler, "PATCH", name, payload, 200, self._patch)
+            return
+        self._write(handler, "PATCH", name, {**payload, "id": object_id}, 200, lambda n, p: self._patch(n, p)[0])
 
     def _handler(self):
         """Build the request handler class bound to this server's state."""
@@ -307,26 +376,20 @@ class FakeNetBox:
 
         class Handler(BaseHTTPRequestHandler):
             def _collection_name(self):
-                return urlparse(self.path).path.rstrip("/").rsplit("/", 1)[-1].replace("-", "_")
+                return state._collection_name(self.path)
 
             def _body(self):
-                return json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+                return state._decode(self.headers, self.rfile.read(int(self.headers.get("Content-Length", 0))))
 
             def _reply(self, status, payload):
-                body = b"" if payload is None else json.dumps(payload).encode()
+                self._send(status, b"" if payload is None else json.dumps(payload).encode())
+
+            def _send(self, status, body):
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
-
-            def _refused(self, name):
-                """Answer with the configured status for *name*, if the test set one."""
-                status = state.errors.get(name)
-                if status is None:
-                    return False
-                self._reply(status, {"detail": f"{name} refused with {status}"})
-                return True
 
             def do_GET(self):
                 parsed = urlparse(self.path)
@@ -335,7 +398,7 @@ class FakeNetBox:
                 if name == "status":
                     self._reply(200, {"netbox-version": state.netbox_version})
                     return
-                if self._refused(name):
+                if state._refused(self, name):
                     return
                 results = state.matches(name, parse_qs(parsed.query))
                 page = {"count": len(results), "next": None, "previous": None, "results": results}
@@ -352,7 +415,7 @@ class FakeNetBox:
                 self._reply(200, {"data": {key.group(1) if key else "unknown_list": []}})
 
             def do_PATCH(self):
-                state._write(self, "PATCH", self._collection_name(), self._body(), 200, state._patch)
+                state._write_patch(self, *state._target(self.path), self._body())
 
             def do_DELETE(self):
                 state._write(self, "DELETE", self._collection_name(), self._body(), 204, state._delete)

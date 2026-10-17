@@ -6,7 +6,7 @@ import json
 import os
 import tempfile
 from collections import Counter
-from contextlib import contextmanager, suppress
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import replace
 from functools import lru_cache
 from pathlib import Path
@@ -14,6 +14,7 @@ from typing import Any
 
 import pynetbox
 import requests
+from pynetbox.core.query import Request
 
 from core.change_detector import ChangeDetector, ChangeType
 from core.compat import parse_netbox_version, supports_module_bay_types
@@ -102,23 +103,22 @@ _LOG_ESCAPES = {c: f"\\x{c:02x}" for c in [*range(0x20), 0x7F]}
 _LOG_ESCAPES.update({ord("\n"): "\\n", ord("\r"): "\\r", ord("\t"): "\\t"})
 
 
-def _format_request_error(exc) -> str:
-    """Return *exc* as text, with NetBox's response body appended when there is one.
+def _format_request_error(exc: pynetbox.RequestError) -> str:
+    """Return the status of a request NetBox refused, with its response body appended when there is one.
 
-    ``requests.HTTPError`` stringifies to only the status line, discarding the body where
-    NetBox reports the actual cause (e.g. ``{"front_image": ["Upload a valid image..."]}``
-    for an image above its pixel cap).  Without the body an operator sees nothing but
-    ``400 Client Error: Bad Request``.
+    The body holds the actual cause (e.g. ``{"front_image": ["Upload a valid image..."]}``
+    for an image above its pixel cap), and pynetbox drops a body that is not JSON from its message.
 
     The body is server-controlled, so control characters are escaped before truncation.
     """
-    body = (getattr(getattr(exc, "response", None), "text", "") or "").strip()
+    status = f"HTTP {exc.req.status_code} {exc.req.reason}"
+    body = (exc.error or "").strip()
     if not body:
-        return str(exc)
+        return status
     body = body.translate(_LOG_ESCAPES)
     if len(body) > _MAX_ERROR_BODY_CHARS:
         body = f"{body[:_MAX_ERROR_BODY_CHARS]}… (truncated)"
-    return f"{exc} — NetBox returned: {body}"
+    return f"{status} — NetBox returned: {body}"
 
 
 def _fmt_connection_error(url: str, exc: Exception) -> str:
@@ -312,30 +312,6 @@ def _store_image_hashes(cache: dict, images: dict, log_fn=None) -> None:
         except OSError as exc:
             if log_fn is not None:
                 log_fn(f"[yellow]Cannot hash image {path}, so it will be re-uploaded next run: {exc}[/yellow]")
-
-
-def _delete_image_attachment(base_url: str, token: str, att_id: int, ignore_ssl: bool, handle) -> bool:
-    """Delete a NetBox image attachment by ID via DELETE /api/extras/image-attachments/{id}/.
-
-    Args:
-        base_url: NetBox base URL.
-        token: API token used for the Authorization header.
-        att_id: Numeric ID of the image attachment to delete.
-        ignore_ssl: When True, skip SSL certificate verification.
-        handle: Log handler with a ``log`` method for error reporting.
-
-    Returns:
-        bool: True on success, False on any HTTP or network error.
-    """
-    url = f"{base_url}/api/extras/image-attachments/{att_id}/"
-    headers = {"Authorization": _build_auth_header(token)}
-    try:
-        response = requests.delete(url, headers=headers, verify=(not ignore_ssl), timeout=30)
-        response.raise_for_status()
-        return True
-    except requests.RequestException as e:
-        handle.log(f"Error deleting image attachment {att_id}: {_format_request_error(e)}")
-        return False
 
 
 # Module type scalar properties that can be compared and updated.
@@ -567,7 +543,6 @@ class NetBox:
                 self.netbox,
                 self.handle,
                 self.counter,
-                self.ignore_ssl,
                 graphql=self.graphql,
                 m2m_front_ports=self.m2m_front_ports,
                 module_bay_types_supported=self.module_bay_types,
@@ -1051,8 +1026,7 @@ class NetBox:
         """
         if saved_images:
             self._filter_images_for_upload(dt, saved_images)
-            if saved_images:
-                self.device_types.upload_images(self.url, self.token, saved_images, dt.id)
+            if saved_images and self.device_types.upload_images(saved_images, dt.id):
                 _store_image_hashes(self._image_hash_cache, saved_images, log_fn=self.handle.log)
                 self._persist_hash_cache()
 
@@ -1244,8 +1218,7 @@ class NetBox:
                 Outcome.PARTIAL,
                 reason=_summarise_component_errors(component_errors),
             )
-        if saved_images:
-            self.device_types.upload_images(self.url, self.token, saved_images, dt_id)
+        if saved_images and self.device_types.upload_images(saved_images, dt_id):
             _store_image_hashes(self._image_hash_cache, saved_images, log_fn=self.handle.log)
             self._persist_hash_cache()
 
@@ -2233,7 +2206,7 @@ class NetBox:
                 "missing or invalid att_id, skipping upload to avoid duplicates."
             )
             return False
-        if not _delete_image_attachment(self.url, self.token, att_id, self.ignore_ssl, self.handle):
+        if not self.device_types.delete_image_attachment(att_id):
             self.handle.verbose_log(
                 f"Failed to delete stale attachment for "
                 f"'{os.path.basename(img_path)}' on {module_type_res.model}, "
@@ -2334,9 +2307,7 @@ class NetBox:
                         f"Image '{os.path.basename(img_path)}' already exists for {module_type_res.model}, skipping."
                     )
                     continue
-            if self.device_types.upload_image_attachment(
-                self.url, self.token, img_path, "dcim.moduletype", module_type_res.id
-            ):
+            if self.device_types.upload_image_attachment(img_path, "dcim.moduletype", module_type_res.id):
                 existing.add(img_name)
                 _store_image_hashes(self._image_hash_cache, {"image": img_path}, log_fn=self.handle.log)
                 self._persist_hash_cache()
@@ -2431,7 +2402,6 @@ class DeviceTypes:
         netbox,
         handle,
         counter,
-        ignore_ssl,
         *,
         graphql,
         repo_path,
@@ -2448,7 +2418,6 @@ class DeviceTypes:
             netbox: Connected pynetbox API instance.
             handle (LogHandler): Sink for creation and error messages.
             counter (Counter): Shared operation counter updated during creation.
-            ignore_ssl (bool): Whether SSL certificate verification is disabled.
             graphql (NetBoxGraphQLClient): GraphQL client for read queries.
             module_bay_types_supported (bool): True when NetBox supports ModuleBayType (>= 4.7).
             repo_path (str): Local library checkout, used to read the module-type schema.
@@ -2458,7 +2427,6 @@ class DeviceTypes:
         self.netbox = netbox
         self.handle = handle
         self.counter = counter
-        self.ignore_ssl = ignore_ssl
         self.graphql = graphql
         self.repo_path = repo_path
         self.m2m_front_ports = m2m_front_ports
@@ -3209,98 +3177,114 @@ class DeviceTypes:
         if bridged:
             self._link_bridges(bridged, parent_id, parent_type, context)
 
-    def upload_images(self, baseurl, token, images, device_type):
-        """Upload front and/or rear image files to the specified NetBox device type.
+    def upload_images(self, images, device_type_id):
+        """Upload front and/or rear image files to one NetBox device type.
 
-        Sends a PATCH request to the device-type endpoint attaching the provided image files,
-        increments self.counter["images"] by the number of files sent, and ensures all opened
-        file handles are closed. Respects self.ignore_ssl to determine SSL verification behavior.
+        Sends one multipart PATCH to the device type, retried after a transient error, and
+        adds the number of files sent to ``self.counter["images"]``.
 
         Args:
-            baseurl (str): Base URL of the NetBox instance (e.g. "https://netbox.example.com").
-            token (str): API token used for the Authorization header.
             images (dict): Mapping of form field name to local file path (e.g.
                 {"front_image": "/path/front.jpg", "rear_image": "/path/rear.jpg"}).
-            device_type (int | str): Identifier of the device type to update in NetBox (used in the endpoint URL).
+            device_type_id (int): ID of the device type to update.
+
+        Returns:
+            bool: True when NetBox stored the images, False when the upload failed.
         """
-        url = f"{baseurl}/api/dcim/device-types/{device_type}/"
-        headers = {"Authorization": _build_auth_header(token)}
+        # One object's URL: Endpoint.update sends a list, which pynetbox never sends as multipart.
+        request = Request(
+            key=device_type_id,
+            base=self.netbox.dcim.device_types.url,
+            token=self.netbox.token,
+            http_session=self.netbox.http_session,
+        )
+        with ExitStack() as files:
+            try:
+                payload = {
+                    field: (os.path.basename(path), files.enter_context(open(path, "rb")))
+                    for field, path in images.items()
+                }
+            except OSError as e:
+                self.handle.log(f"Error reading image file for device type {device_type_id}: {e}")
+                return False
+            try:
+                call_with_retry(request.patch, payload)
+            except pynetbox.RequestError as e:
+                self.handle.log(f"Error uploading images for device type {device_type_id}: {_format_request_error(e)}")
+                return False
+            except RETRYABLE_EXCEPTIONS as e:
+                self.handle.log(
+                    f"Error uploading images for device type {device_type_id} after {MAX_RETRIES} retries: {e}"
+                )
+                return False
+        self.handle.verbose_log(f"Images {images} updated on device type {device_type_id}")
+        self.counter["images"] += len(images)
+        if self._image_progress:
+            self._image_progress(len(images))
+        return True
 
-        # Open files with proper cleanup to avoid resource leaks
-        file_handles = {}
-        try:
-            for field, path in images.items():
-                file_handles[field] = (os.path.basename(path), open(path, "rb"))  # noqa: SIM115
-            response = requests.patch(
-                url,
-                headers=headers,
-                files=file_handles,
-                verify=(not self.ignore_ssl),
-                timeout=60,
-            )
-            response.raise_for_status()
-            self.handle.verbose_log(f"Images {images} updated at {url}: {response.status_code}")
-            self.counter["images"] += len(images)
-            if self._image_progress:
-                self._image_progress(len(images))
-        except requests.RequestException as e:
-            self.handle.log(f"Error uploading images for device type {device_type}: {_format_request_error(e)}")
-        except OSError as e:
-            self.handle.log(f"Error reading image file for device type {device_type}: {e}")
-        finally:
-            for _, fh in file_handles.values():
-                with suppress(Exception):
-                    fh.close()
-
-    def upload_image_attachment(self, baseurl, token, image_path, object_type, object_id):
+    def upload_image_attachment(self, image_path, object_type, object_id):
         """Upload an image as an Image Attachment to a NetBox object.
 
-        Uses POST /api/extras/image-attachments/ to attach an image to any
-        NetBox object type (e.g. module types which lack built-in image fields).
+        Attaches an image to any NetBox object type (e.g. module types, which lack built-in
+        image fields).  After a transient error the attachment is looked up by name on that
+        object before the upload is sent again, so a lost reply does not create a second one.
 
         Args:
-            baseurl (str): Base URL of the NetBox instance.
-            token (str): API token for authorization.
             image_path (str): Local file path of the image to upload.
             object_type (str): NetBox content type string (e.g. "dcim.moduletype").
-            object_id (int | str): ID of the object to attach the image to.
+            object_id (int): ID of the object to attach the image to.
 
         Returns:
             bool: True if the upload succeeded, False on any error.
         """
-        url = f"{baseurl}/api/extras/image-attachments/"
-        headers = {"Authorization": _build_auth_header(token)}
-        data = {
-            "object_type": object_type,
-            "object_id": str(object_id),
-            "name": os.path.splitext(os.path.basename(image_path))[0],
-        }
-
+        filename = os.path.basename(image_path)
+        target = f"{object_type} {object_id}"
         try:
-            with open(image_path, "rb") as f:
-                files = {"image": (os.path.basename(image_path), f)}
-                response = requests.post(
-                    url,
-                    headers=headers,
-                    data=data,
-                    files=files,
-                    verify=(not self.ignore_ssl),
-                    timeout=60,
-                )
-                response.raise_for_status()
-                self.handle.verbose_log(
-                    f"Image attachment '{os.path.basename(image_path)}' uploaded"
-                    f" for {object_type} {object_id}: {response.status_code}"
-                )
-                self.counter["images"] += 1
-                if self._image_progress:
-                    self._image_progress(1)
-                return True
-        except requests.RequestException as e:
-            self.handle.log(
-                f"Error uploading image attachment for {object_type} {object_id}: {_format_request_error(e)}"
-            )
-            return False
+            f = open(image_path, "rb")  # noqa: SIM115
         except OSError as e:
             self.handle.log(f"Error reading image file {image_path}: {e}")
             return False
+        payload = {
+            "object_type": object_type,
+            "object_id": object_id,
+            "name": os.path.splitext(filename)[0],
+            "image": (filename, f),
+        }
+        with f:
+            try:
+                create_with_retry(
+                    self.netbox.extras.image_attachments, payload, "name", object_type=object_type, object_id=object_id
+                )
+            except pynetbox.RequestError as e:
+                self.handle.log(f"Error uploading image attachment for {target}: {_format_request_error(e)}")
+                return False
+            except RETRYABLE_EXCEPTIONS as e:
+                self.handle.log(f"Error uploading image attachment for {target} after {MAX_RETRIES} retries: {e}")
+                return False
+            except ValueError as e:
+                # Endpoint.get raises this when the lookup before a retry matches more than one attachment.
+                self.handle.log(f"Cannot tell if the image attachment for {target} was created: {e}")
+                return False
+        self.handle.verbose_log(f"Image attachment '{filename}' uploaded for {target}")
+        self.counter["images"] += 1
+        if self._image_progress:
+            self._image_progress(1)
+        return True
+
+    def delete_image_attachment(self, att_id):
+        """Delete one NetBox image attachment by ID, retried after a transient error.
+
+        Args:
+            att_id (int): ID of the image attachment to delete.
+
+        Returns:
+            bool: True when the attachment is gone, False when NetBox refused or retries ran out.
+        """
+        try:
+            return delete_with_retry(self.netbox.extras.image_attachments, att_id)
+        except pynetbox.RequestError as e:
+            self.handle.log(f"Error deleting image attachment {att_id}: {_format_request_error(e)}")
+        except RETRYABLE_EXCEPTIONS as e:
+            self.handle.log(f"Error deleting image attachment {att_id} after {MAX_RETRIES} retries: {e}")
+        return False
