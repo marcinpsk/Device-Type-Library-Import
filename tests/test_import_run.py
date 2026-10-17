@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from typing import ClassVar
 
 import pytest
+from git import Actor
+from git import Repo as GitRepo
 from helpers import recording_handle as _recording_handle
 
 from core.errors import VendorSelectionError
@@ -324,6 +326,7 @@ class TestPartialLibraryLayouts:
         assert sum(parsed.values()) == 1, parsed
 
 
+@pytest.mark.real_git
 class TestSlugSelectionWithAStaleIndex:
     """The upstream index lags a fork or branch, so --slugs must also find what only the disk holds."""
 
@@ -340,17 +343,25 @@ class TestSlugSelectionWithAStaleIndex:
         manufacturer = relpath.split("/")[1]
         path.write_text(f"manufacturer: {manufacturer}\nmodel: {model}\n" + (f"slug: {slug}\n" if slug else ""))
 
-    def _plan(self, tmp_path, make_config, index, slugs, vendors=()):
-        """Plan every selected vendor of a real local library and return the planned models."""
+    def _plan(self, tmp_path, make_config, index, slugs, vendors=(), after_clone=None):
+        """Commit *tmp_path* with *index*, clone it, run *after_clone* on the clone, and return the planned models."""
         import json
 
         (tmp_path / "tests").mkdir()
         for stem, entries in index.items():
             (tmp_path / "tests" / f"{stem}.json").write_text(json.dumps(entries))
-        config = make_config(repo_url="local", repo_path=str(tmp_path), slugs=slugs, vendors=vendors)
-        run = ImportRun(
-            config, DTLRepo(config, LogHandler(False)), _NetBoxBoundary(), LogHandler(False), _ProgressFactory()
+        git_repo = GitRepo.init(tmp_path, initial_branch="master")
+        git_repo.git.add("-A")
+        git_repo.index.commit("library", author=Actor("t", "t@example.com"), committer=Actor("t", "t@example.com"))
+        clone = tmp_path.parent / f"{tmp_path.name}-clone"
+        config = make_config(
+            repo_url=f"file://{tmp_path}", repo_path=str(clone), repo_branch="master", slugs=slugs, vendors=vendors
         )
+        repo = DTLRepo(config, LogHandler(False))
+        if after_clone is not None:
+            after_clone(clone)
+        assert repo.resolve_slug_files(slugs) is not None, "the test must reach the device index"
+        run = ImportRun(config, repo, _NetBoxBoundary(), LogHandler(False), _ProgressFactory())
         selection = run.discover()
         models = set()
         for vendor in selection.vendors:
@@ -381,6 +392,17 @@ class TestSlugSelectionWithAStaleIndex:
         }
 
         assert self._plan(tmp_path, make_config, index, ("Patch Antenna",), vendors=("datto",)) == {"Patch Antenna"}
+
+    def test_an_indexed_file_whose_slug_changed_after_the_index_is_found(self, tmp_path, make_config):
+        self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")
+        self._write(tmp_path, "device-types/Acme/other.yaml", "Other", "acme-other")
+
+        def rename(clone):
+            self._write(clone, "device-types/Acme/old-box.yaml", "Renamed Box", "acme-renamed-box")
+
+        models = self._plan(tmp_path, make_config, self.INDEX, ("renamed",), vendors=("acme",), after_clone=rename)
+
+        assert models == {"Renamed Box"}
 
     def test_an_indexed_file_that_is_gone_from_disk_is_skipped(self, tmp_path, make_config):
         self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")

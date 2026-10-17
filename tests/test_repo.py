@@ -250,22 +250,12 @@ class TestDTLRepoLocalMode:
         mock_git_repo.assert_not_called()
 
 
+@pytest.mark.real_git
 class TestDTLRepoRealGit:
     """Clone/pull branching driven against a real local Git repository (no git mocks)."""
 
     # Pinned so the fixture never depends on ambient git config or on getpass.getuser().
     ACTOR = Actor("DTL test", "dtl-test@example.invalid")
-
-    @pytest.fixture(autouse=True)
-    def mock_git_repo(self):
-        """Override the global autouse git mock so these tests exercise real git."""
-        return
-
-    @pytest.fixture(autouse=True)
-    def clear_ambient_git_env(self, monkeypatch):
-        """Drop git's per-command variables: a hook runner exports GIT_DIR for the outer repo."""
-        for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"):
-            monkeypatch.delenv(var, raising=False)
 
     @classmethod
     def _commit(cls, repo, path, message):
@@ -1527,6 +1517,15 @@ def _write_definitions(root, *relpaths):
         path.write_text("manufacturer: Test\nmodel: Test\n")
 
 
+def _commit_library(root):
+    """Commit everything under *root*, so the device index describes the checkout."""
+    git_repo = GitRepo.init(root, initial_branch="master")
+    git_repo.git.add("-A")
+    git_repo.index.commit("library", author=Actor("t", "t@example.com"), committer=Actor("t", "t@example.com"))
+    return git_repo
+
+
+@pytest.mark.real_git
 class TestResolveSlugFiles:
     """Tests for the pickle-based slug fast path."""
 
@@ -1549,6 +1548,7 @@ class TestResolveSlugFiles:
 
     def test_returns_none_when_pickle_missing(self, tmp_path):
         """Returns None gracefully when the device pickle doesn't exist."""
+        _commit_library(tmp_path)
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
@@ -1566,6 +1566,7 @@ class TestResolveSlugFiles:
         (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(known))
         _write_definitions(tmp_path, "device-types/Nokia/7750-SR-7s.yaml")
 
+        _commit_library(tmp_path)
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
@@ -1591,6 +1592,7 @@ class TestResolveSlugFiles:
         (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(known))
         _write_definitions(tmp_path, *(relpath for _, relpath in known))
 
+        _commit_library(tmp_path)
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
@@ -1611,6 +1613,7 @@ class TestResolveSlugFiles:
         known = {("cisco-catalyst-9200", "device-types/Cisco/Catalyst-9200.yaml")}
         (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(known))
 
+        _commit_library(tmp_path)
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
@@ -1625,6 +1628,7 @@ class TestResolveSlugFiles:
         tests_dir.mkdir()
         (tests_dir / "known-slugs.pickle").write_bytes(b"not-a-pickle")
 
+        _commit_library(tmp_path)
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
@@ -1638,6 +1642,7 @@ class TestResolveSlugFiles:
         tests_dir.mkdir()
         (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps({("nokia-7750-sr-7s", "device-types/Nokia.yaml")}))
 
+        _commit_library(tmp_path)
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
@@ -1685,6 +1690,7 @@ class TestIndexLoaders:
         assert _safe_index_load(str(pickle_path)) == {("p", "q")}
 
 
+@pytest.mark.real_git
 class TestResolveSlugFilesJson:
     """Tests for the JSON slug fast path (current upstream format)."""
 
@@ -1702,6 +1708,7 @@ class TestResolveSlugFilesJson:
         self._write_json(tests_dir, "known-slugs", [("nokia-7750-sr-7s", "device-types/Nokia/7750-SR-7s.yaml")])
         _write_definitions(tmp_path, "device-types/Nokia/7750-SR-7s.yaml")
 
+        _commit_library(tmp_path)
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
@@ -1724,6 +1731,7 @@ class TestResolveSlugFilesJson:
         )
         _write_definitions(tmp_path, "device-types/Nokia/7750-SR-7s.yaml")
 
+        _commit_library(tmp_path)
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
@@ -1736,11 +1744,83 @@ class TestResolveSlugFilesJson:
         tests_dir.mkdir()
         (tests_dir / "known-slugs.json").write_text("{not valid json")
 
+        _commit_library(tmp_path)
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
 
         assert repo.resolve_slug_files(["nokia"]) is None
+
+
+@pytest.mark.real_git
+class TestDeviceIndexAgainstTheCheckout:
+    """The device index describes the commit that last wrote it, so later changes must be parsed."""
+
+    def _library(self, root):
+        import json
+
+        (root / "tests").mkdir(parents=True)
+        (root / "tests" / "known-slugs.json").write_text(
+            json.dumps(
+                [["acme-old-box", "device-types/Acme/old-box.yaml"], ["acme-other", "device-types/Acme/other.yaml"]]
+            )
+        )
+        for name, slug in (("old-box", "acme-old-box"), ("other", "acme-other")):
+            path = root / "device-types" / "Acme" / f"{name}.yaml"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"manufacturer: Acme\nmodel: {name}\nslug: {slug}\n")
+        return _commit_library(root)
+
+    def _resolve(self, root, slugs):
+        repo = TestResolveSlugFiles._make_repo(self)
+        repo.repo_path = str(root)
+        repo.cwd = ""
+        return repo.resolve_slug_files(slugs)
+
+    def test_an_unchanged_indexed_file_that_does_not_match_is_not_selected(self, tmp_path):
+        self._library(tmp_path)
+
+        assert self._resolve(tmp_path, ["old-box"]) == {"acme": [str(tmp_path / "device-types/Acme/old-box.yaml")]}
+
+    def test_an_uncommitted_slug_change_is_selected(self, tmp_path):
+        self._library(tmp_path)
+        (tmp_path / "device-types/Acme/old-box.yaml").write_text("manufacturer: Acme\nmodel: Box\nslug: acme-new\n")
+
+        assert self._resolve(tmp_path, ["acme-new"]) == {"acme": [str(tmp_path / "device-types/Acme/old-box.yaml")]}
+
+    def test_a_slug_change_committed_after_the_index_is_selected(self, tmp_path):
+        git_repo = self._library(tmp_path)
+        (tmp_path / "device-types/Acme/other.yaml").write_text("manufacturer: Acme\nmodel: Other\nslug: acme-new\n")
+        git_repo.git.commit("-am", "fork edit", "--author", "t <t@example.com>")
+
+        assert self._resolve(tmp_path, ["acme-new"]) == {"acme": [str(tmp_path / "device-types/Acme/other.yaml")]}
+
+    def test_an_index_that_differs_from_its_commit_is_not_used(self, tmp_path):
+        self._library(tmp_path)
+        (tmp_path / "tests" / "known-slugs.json").write_text("[]")
+
+        assert self._resolve(tmp_path, ["old-box"]) is None
+
+    def test_a_checkout_that_is_not_a_git_work_tree_is_not_compared(self, tmp_path):
+        self._library(tmp_path)
+        import shutil
+
+        shutil.rmtree(tmp_path / ".git")
+
+        assert self._resolve(tmp_path, ["old-box"]) is None
+
+    def test_a_local_library_runs_no_git_and_does_not_use_the_index(self, tmp_path):
+        self._library(tmp_path)
+        repo = _dtl_repo(MagicMock(repo_url="local", repo_branch="master"), str(tmp_path), LogHandler(False))
+
+        with patch("core.repo.Repo", side_effect=AssertionError("git must not run")):
+            assert repo.resolve_slug_files(["old-box"]) is None
+
+    def test_a_repo_path_with_glob_characters_lists_its_files(self, tmp_path):
+        root = tmp_path / "lib[local]"
+        self._library(root)
+
+        assert self._resolve(root, ["old-box"]) == {"acme": [str(root / "device-types/Acme/old-box.yaml")]}
 
 
 class TestAnExplicitlyEmptyStanza:
