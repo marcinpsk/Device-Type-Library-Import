@@ -104,8 +104,7 @@ def _vendor_of(directory: str) -> str:
 
 def _reached_through_link(abs_path: str, real_root: str, relpath: str) -> bool:
     """Return True when *abs_path* does not resolve to *relpath* (POSIX separators) under *real_root*."""
-    expected = os.path.join(real_root, *relpath.split("/"))
-    return os.path.normcase(os.path.realpath(abs_path)) != os.path.normcase(expected)
+    return os.path.realpath(abs_path) != os.path.join(real_root, *relpath.split("/"))
 
 
 def _paths_changed_since_index(repo_root: str, index_path: str, type_dir: str) -> "set[str] | None":

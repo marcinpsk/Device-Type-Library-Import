@@ -1873,6 +1873,15 @@ class TestReachedThroughLink:
 
         assert _reached_through_link(r"C:\shared\other.yaml", r"C:\dtl", "device-types/Acme/other.yaml")
 
+    def test_a_windows_path_that_differs_only_in_case_is_a_link(self, monkeypatch):
+        """A case-sensitive directory can hold both names, so only an exact match is safe to trust."""
+        import ntpath
+
+        monkeypatch.setattr(os, "path", ntpath)
+        abs_path = r"C:\dtl\DEVICE-TYPES\Acme\other.yaml"
+
+        assert _reached_through_link(abs_path, r"C:\dtl", "device-types/Acme/other.yaml")
+
 
 class TestAnExplicitlyEmptyStanza:
     """`port-mappings: []` is an author saying "none", which is not the same as saying nothing."""
