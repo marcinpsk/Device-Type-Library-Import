@@ -365,8 +365,8 @@ def _retry_on_connection_error(func, *args, **kwargs):
 # Module type scalar properties that can be compared and updated.
 # Loaded from the cloned devicetype-library schema at runtime; the list below
 # serves as a fallback when the schema is not yet available (e.g. before the
-# first repo clone).  Identity fields (manufacturer, model) and complex objects
-# (attribute_data) are excluded by the schema reader.
+# first repo clone).  Identity fields (manufacturer, model) are excluded, and
+# profile and attribute_data are compared by NetBox._profile_changes.
 _MODULE_TYPE_PROPERTIES_FALLBACK = [
     "part_number",
     "description",
@@ -377,6 +377,29 @@ _MODULE_TYPE_PROPERTIES_FALLBACK = [
 ]
 
 _MODULE_TYPE_SCHEMA_EXCLUDE = {"manufacturer", "model", "attribute_data", "profile"}
+
+# The REST API names the attribute_data model field "attributes" and ignores the model name.
+_REST_ATTRIBUTES_FIELD = "attributes"
+
+
+def _with_rest_attributes(module_type):
+    """Return *module_type* with attribute_data under the name the REST API reads."""
+    if "attribute_data" not in module_type:
+        return module_type
+    payload = {k: v for k, v in module_type.items() if k != "attribute_data"}
+    payload[_REST_ATTRIBUTES_FIELD] = module_type["attribute_data"]
+    return payload
+
+
+def _json_equal(a, b) -> bool:
+    """Compare JSON values: numbers by value (400 equals 400.0), but a boolean never equals a number."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return type(a) is type(b) and a == b
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_json_equal(a[key], b[key]) for key in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_json_equal(x, y) for x, y in zip(a, b, strict=True))
+    return a == b
 
 
 @lru_cache(maxsize=1)
@@ -1591,6 +1614,7 @@ class NetBox:
                 if not values_equal(module_type[f], nb_val):
                     changed_fields_info.append((f, nb_val, module_type[f]))
 
+            changed_fields_info += self._profile_changes(module_type, existing_module)
             changed_fields_info += self._type_relation_changes(module_type, existing_module)
 
             component_changes = detector._compare_components(module_type, existing_module.id, parent_type="module")
@@ -1644,6 +1668,33 @@ class NetBox:
             f"Found {len(module_type_existing_images)} module type(s) with existing image attachments."
         )
         return module_type_existing_images
+
+    @staticmethod
+    def _profile_changes(module_type, existing_module):
+        """Return (field, current, wanted) for the profile and for each declared attribute that differs.
+
+        NetBox merges PATCHed attributes into the stored ones, so an attribute the YAML omits is
+        left alone, the same as an omitted property.
+        """
+        changes: list[tuple[str, Any, Any]] = []
+        if "profile" in module_type and hasattr(existing_module, "profile"):
+            wanted = module_type["profile"]["name"] if module_type["profile"] else None
+            current = existing_module.profile.name if existing_module.profile else None
+            if wanted != current:
+                changes.append(("profile", current, wanted))
+        if "attribute_data" in module_type and hasattr(existing_module, "attribute_data"):
+            declared = module_type["attribute_data"] or {}
+            stored = existing_module.attribute_data
+            if not declared:
+                # NetBox replaces, not merges, the stored attributes with an empty value.
+                if stored:
+                    changes.append(("attribute_data", stored, {}))
+                return changes
+            stored = stored if isinstance(stored, dict) else {}
+            for key, wanted in declared.items():
+                if not _json_equal(stored.get(key, _MISSING), wanted):
+                    changes.append((f"attribute_data.{key}", stored.get(key), wanted))
+        return changes
 
     def _type_relation_changes(self, module_type, existing_module):
         """Return (field, current, wanted) for each of the type's own relations that differs.
@@ -1713,6 +1764,11 @@ class NetBox:
                 continue
             if not values_equal(curr_mt[field], current_value):
                 updates[field] = curr_mt[field]
+        for field, _current, _wanted in self._profile_changes(curr_mt, module_type_res):
+            if field == "profile":
+                updates["profile"] = curr_mt["profile"]
+            else:
+                updates[_REST_ATTRIBUTES_FIELD] = curr_mt["attribute_data"] or {}
         if self.module_bay_types:
             from core.module_bay_types import ModuleBayTypeError
 
@@ -1920,7 +1976,7 @@ class NetBox:
                 from core.module_bay_types import ModuleBayTypeError
 
                 try:
-                    payload = self._resolve_type_relations(curr_mt)
+                    payload = self._resolve_type_relations(_with_rest_attributes(curr_mt))
                 except ModuleBayTypeError as exc:
                     self.handle.log(f"Error creating Module Type: {exc} (Context: {src_file})")
                     self._record_failure(

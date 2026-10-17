@@ -1,5 +1,6 @@
 """Shared test utilities for the NetBox device-type importer test suite."""
 
+import copy
 import json
 import re
 import threading
@@ -58,6 +59,15 @@ def recording_handle():
     return handle, console
 
 
+class _Refused(Exception):
+    """A request NetBox answers with 400 and *body*."""
+
+    def __init__(self, body):
+        """Keep the body to answer with."""
+        super().__init__(body)
+        self.body = body
+
+
 class FakeNetBox:
     """A local HTTP server answering the slice of the NetBox REST API the importer uses.
 
@@ -77,6 +87,9 @@ class FakeNetBox:
 
     # GraphQL collections are named "<thing>_list"; the client asks for one per query.
     _LIST_KEY = re.compile(r"\b(\w+_list)\b")
+
+    # A nested reference NetBox looks up by its attributes, keyed by field name.
+    _NESTED_REFERENCES = (("manufacturer", "manufacturers"), ("profile", "module_type_profiles"))
 
     def __init__(self, errors=None, netbox_version="4.7.0", **collections):
         """Start the server with *collections* seeded, keyed by collection name.
@@ -152,16 +165,39 @@ class FakeNetBox:
             return [self._create_one(name, item) for item in payload]
         return self._create_one(name, payload)
 
+    def _resolve_references(self, payload):
+        """Replace each nested reference with the object it names, as NetBox does.
+
+        Raises _Refused with NetBox's own 400 body when no object matches.
+        """
+        for field, collection in self._NESTED_REFERENCES:
+            wanted = payload.get(field)
+            if not isinstance(wanted, dict):
+                continue
+            match = next((r for r in self.collection(collection) if wanted.items() <= r.items()), None)
+            if match is None:
+                raise _Refused({field: [f"Related object not found using the provided attributes: {wanted}"]})
+            payload[field] = {"id": match["id"], "name": match.get("name")}
+        return payload
+
     def _create_one(self, name, payload):
         """Store one new record and return it as NetBox would echo it back."""
         collection = self.collection(name)
-        record = {"id": 1000 + len(collection), **payload}
+        record = {"id": 1000 + len(collection), **self._resolve_references(payload)}
         # NetBox echoes a foreign key back as a nested object, not the id it was given.
         if isinstance(record.get("manufacturer"), int):
             owner = next((m for m in self.collection("manufacturers") if m["id"] == record["manufacturer"]), {})
             record["manufacturer"] = {"id": record["manufacturer"], "name": owner.get("name")}
         collection.append(record)
         return record
+
+    @staticmethod
+    def _answer(status, produce):
+        """Return (status, body) for what *produce* returns, or the 400 it raises."""
+        try:
+            return status, produce()
+        except _Refused as refusal:
+            return 400, refusal.body
 
     def _patch(self, name, payload):
         """Merge a bulk update into the stored records and return the updated ones."""
@@ -170,7 +206,7 @@ class FakeNetBox:
             record = next((r for r in self.collection(name) if r["id"] == entry.get("id")), None)
             if record is None:
                 continue
-            record.update(entry)
+            record.update(self._resolve_references(entry))
             updated.append(record)
         return updated
 
@@ -224,7 +260,7 @@ class FakeNetBox:
                 state.requests.append(("POST", name, payload))
                 if self._refused(name):
                     return
-                self._reply(201, state._create(name, payload))
+                self._reply(*state._answer(201, lambda: state._create(name, copy.deepcopy(payload))))
 
             def do_PATCH(self):
                 name = self._collection_name()
@@ -232,7 +268,7 @@ class FakeNetBox:
                 state.requests.append(("PATCH", name, payload))
                 if self._refused(name):
                     return
-                self._reply(200, state._patch(name, payload))
+                self._reply(*state._answer(200, lambda: state._patch(name, copy.deepcopy(payload))))
 
             def log_message(self, *args):
                 """Silence the default stderr access log."""

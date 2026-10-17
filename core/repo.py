@@ -421,6 +421,14 @@ def normalize_port_mappings(data):
     return None
 
 
+def _is_strict_json(value) -> bool:
+    """Return True when *value* survives a strict JSON round trip unchanged, as NetBox will store it."""
+    try:
+        return json.loads(json.dumps(value, allow_nan=False)) == value
+    except (TypeError, ValueError):
+        return False
+
+
 def parse_single_file(file):
     """Load a YAML device mapping, convert its `manufacturer` to a slug dictionary, and record the source path.
 
@@ -440,8 +448,17 @@ def parse_single_file(file):
             # Use only slug for manufacturer lookup - more resilient to case mismatches
             # (e.g., RuggedCOM vs RuggedCom in upstream data)
             data["manufacturer"] = {"slug": re_sub(r"\W+", "-", manufacturer.lower())}
-            if "profile" in data and isinstance(data["profile"], str):
-                data["profile"] = {"name": data["profile"]}
+            profile = data.get("profile")
+            if isinstance(profile, str):
+                data["profile"] = {"name": profile}
+            elif profile is not None and not (isinstance(profile, dict) and isinstance(profile.get("name"), str)):
+                return f"Error: profile must be a name or a mapping with a name, not {profile!r}"
+            attribute_data = data.get("attribute_data")
+            if attribute_data is not None and not isinstance(attribute_data, dict):
+                return f"Error: attribute_data must be a mapping, not {attribute_data!r}"
+            for field in ("profile", "attribute_data"):
+                if not _is_strict_json(data.get(field)):
+                    return f"Error: {field} must hold JSON values only (string keys, finite numbers): {data[field]!r}"
             data["src"] = file
             err = normalize_port_mappings(data)
             if err:
