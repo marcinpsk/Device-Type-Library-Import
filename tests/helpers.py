@@ -206,6 +206,14 @@ class FakeNetBox:
             record = next((r for r in self.collection(name) if r["id"] == entry.get("id")), None)
             if record is None:
                 continue
+            if "attributes" in entry:
+                # NetBox's AttributesField merges a non-empty value into the stored attributes.
+                attributes = entry.pop("attributes")
+                stored = record.get("attribute_data")
+                merge = attributes and isinstance(stored, dict)
+                record["attribute_data"] = {**stored, **attributes} if merge else attributes
+            if "profile" in entry and entry["profile"] is None:
+                record["attribute_data"] = None  # ModuleType.clean() drops the attributes of a type without a profile
             record.update(self._resolve_references(entry))
             updated.append(record)
         return updated

@@ -189,6 +189,25 @@ class TestUpdate:
             {"id": 7, "profile": {"name": "Transceiver"}, "attributes": SFP_ATTRIBUTES}
         ]
 
+    @pytest.mark.parametrize("stored", [{"rpm": 3000}, {**SFP_ATTRIBUTES, "rpm": 3000}])
+    def test_a_changed_profile_drops_the_old_profile_attributes(self, netbox, server, definition, stored):
+        nb, _ = netbox
+        record = existing(server, {"id": 4, "name": "Fan"}, stored)
+
+        assert nb._try_update_module_type(definition(), record, "cisco/SFP-10G-SR.yaml") == (True, True)
+
+        [stored_type] = server.collection("module_types")
+        assert stored_type["profile"] == {"id": 3, "name": "Transceiver"}
+        assert stored_type["attribute_data"] == SFP_ATTRIBUTES
+
+    def test_an_unchanged_profile_keeps_attributes_the_yaml_omits(self, netbox, server, definition):
+        nb, _ = netbox
+        record = existing(server, {"id": 3, "name": "Transceiver"}, {**SFP_ATTRIBUTES, "reach": 300, "rpm": 3000})
+
+        assert nb._try_update_module_type(definition(), record, "cisco/SFP-10G-SR.yaml") == (True, True)
+
+        assert server.collection("module_types")[0]["attribute_data"] == {**SFP_ATTRIBUTES, "rpm": 3000}
+
     def test_an_unknown_profile_fails_the_module_type(self, netbox, server, definition):
         nb, console = netbox
         record = existing(server, {"id": 4, "name": "Fan"})

@@ -1674,7 +1674,7 @@ class NetBox:
         """Return (field, current, wanted) for the profile and for each declared attribute that differs.
 
         NetBox merges PATCHed attributes into the stored ones, so an attribute the YAML omits is
-        left alone, the same as an omitted property.
+        left alone, the same as an omitted property. A profile change drops the old attributes.
         """
         changes: list[tuple[str, Any, Any]] = []
         if "profile" in module_type and hasattr(existing_module, "profile"):
@@ -1764,9 +1764,15 @@ class NetBox:
                 continue
             if not values_equal(curr_mt[field], current_value):
                 updates[field] = curr_mt[field]
+        stale_attributes = False
         for field, _current, _wanted in self._profile_changes(curr_mt, module_type_res):
             if field == "profile":
                 updates["profile"] = curr_mt["profile"]
+                stored = getattr(module_type_res, "attribute_data", None)
+                declared = curr_mt.get("attribute_data") or {}
+                stale_attributes = bool(stored) and (not isinstance(stored, dict) or bool(stored.keys() - declared))
+                if stale_attributes and declared:
+                    updates[_REST_ATTRIBUTES_FIELD] = declared
             else:
                 updates[_REST_ATTRIBUTES_FIELD] = curr_mt["attribute_data"] or {}
         if self.module_bay_types:
@@ -1784,6 +1790,12 @@ class NetBox:
         if not updates:
             return True, False
         try:
+            if stale_attributes:
+                # NetBox merges PATCHed attributes into the stored ones; dropping the profile clears them.
+                _retry_on_connection_error(
+                    self.netbox.dcim.module_types.update,
+                    [{"id": module_type_res.id, "profile": None, _REST_ATTRIBUTES_FIELD: None}],
+                )
             _retry_on_connection_error(self.netbox.dcim.module_types.update, [{"id": module_type_res.id, **updates}])
             self.handle.verbose_log(
                 f"Module Type Updated: {module_type_res.manufacturer.name} - "

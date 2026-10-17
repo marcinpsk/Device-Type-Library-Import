@@ -618,11 +618,11 @@ def test_update_mode_module_profile() -> None:
     print("\n=== Scenario I: Update mode — module type profile and attributes ===")
     psu = get_one("/dcim/module-types/", model="Test Power Supply")
     fan = get_one("/dcim/module-type-profiles/", name="Fan")
-    api_patch(f"/dcim/module-types/{psu['id']}/", {"profile": fan["id"], "attributes": {"wattage": 100}})
+    api_patch(f"/dcim/module-types/{psu['id']}/", {"profile": fan["id"], "attributes": {"wattage": 100, "rpm": 1000}})
     changed = get_one("/dcim/module-types/", model="Test Power Supply")
     if changed["profile"]["name"] != "Fan" or changed["attributes"].get("wattage") != 100:
         fail(f"REST PATCH did not change the power supply: {changed['profile']!r} {changed['attributes']!r}")
-    ok("Changed profile to Fan and wattage to 100")
+    ok("Changed profile to Fan, wattage to 100, and added the Fan attribute rpm")
 
     result = run_importer("--update")
     if result.returncode != 0:
