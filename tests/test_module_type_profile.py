@@ -228,12 +228,18 @@ class TestUpdate:
         assert stored_type["profile"] == {"id": 4, "name": "Fan"}
         assert stored_type["attribute_data"] == {"rpm": 3000}
 
-    def test_a_truncated_clear_reply_restores_the_old_profile_and_attributes(self, netbox, server, definition):
+    @pytest.mark.parametrize(
+        ("reply", "error"),
+        [("truncated", requests.exceptions.ChunkedEncodingError), ("garbled", pynetbox.core.query.ContentError)],
+    )
+    def test_a_broken_clear_reply_restores_the_old_profile_and_attributes(
+        self, netbox, server, definition, reply, error
+    ):
         nb, _ = netbox
         record = existing(server, {"id": 4, "name": "Fan"}, {"rpm": 3000})
-        server.truncated_patch_responses = {1}
+        setattr(server, f"{reply}_patch_responses", {1})
 
-        with pytest.raises(requests.exceptions.ChunkedEncodingError):
+        with pytest.raises(error):
             nb._try_update_module_type(definition(), record, "cisco/SFP-10G-SR.yaml")
 
         [stored_type] = server.collection("module_types")

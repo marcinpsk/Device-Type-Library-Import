@@ -1827,13 +1827,13 @@ class NetBox:
         try:
             _retry_on_connection_error(update, [cleared])
             _retry_on_connection_error(update, [{"id": type_id, **updates}])
-        except (pynetbox.RequestError, requests.exceptions.RequestException):
+        except Exception:  # any failure after the clear leaves an unknown state; restore, then re-raise
             old_profile = {"name": module_type_res.profile.name} if module_type_res.profile else None
             restore = {"id": type_id, "profile": old_profile, _REST_ATTRIBUTES_FIELD: module_type_res.attribute_data}
             try:
                 _retry_on_connection_error(update, [cleared])
                 _retry_on_connection_error(update, [restore])
-            except (pynetbox.RequestError, requests.exceptions.RequestException) as restore_error:
+            except Exception as restore_error:  # noqa: BLE001  # logged; the original error is re-raised
                 self.handle.log(
                     f"Could not restore the profile and attributes of Module Type {type_id}: {restore_error}"
                 )

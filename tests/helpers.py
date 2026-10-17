@@ -102,9 +102,10 @@ class FakeNetBox:
         self.errors = dict(errors or {})
         self.netbox_version = netbox_version
         self.requests = []
-        # 1-based PATCH numbers that commit, then close the connection with no reply or a cut-off one.
+        # 1-based PATCH numbers that commit, then reply with nothing, a cut-off body, or invalid JSON.
         self.lost_patch_responses = set()
         self.truncated_patch_responses = set()
+        self.garbled_patch_responses = set()
         self._server = HTTPServer(("127.0.0.1", 0), self._handler())
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
 
@@ -228,10 +229,10 @@ class FakeNetBox:
         if number in self.lost_patch_responses:
             handler.close_connection = True
             return
-        if number in self.truncated_patch_responses:
+        if number in self.truncated_patch_responses | self.garbled_patch_responses:
             handler.send_response(answer[0])
             handler.send_header("Content-Type", "application/json")
-            handler.send_header("Content-Length", "1000")
+            handler.send_header("Content-Length", "1000" if number in self.truncated_patch_responses else "2")
             handler.end_headers()
             handler.wfile.write(b"[{")
             handler.close_connection = True
