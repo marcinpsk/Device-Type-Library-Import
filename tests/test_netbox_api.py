@@ -15,7 +15,6 @@ from core.netbox_api import (
     NetBox,
     NetBoxError,
     SSLVerificationError,
-    _delete_image_attachment,
     _FrontPortRecordWithMappings,
 )
 from core.outcomes import EntityKind, Outcome
@@ -80,7 +79,6 @@ def make_device_types(mock_settings, mock_handle, graphql_client):
             nb_api if nb_api is not None else MagicMock(),
             handle if handle is not None else mock_handle,
             counter if counter is not None else MagicMock(),
-            False,
             graphql=kwargs.pop("graphql", graphql_client),
             repo_path=kwargs.pop("repo_path", mock_settings.repo_path),
             **kwargs,
@@ -271,30 +269,6 @@ def test_redundant_image_upload(mock_settings, mock_pynetbox, mock_handle):
     # Expectation for FIX: upload_images should NOT be called because front_image exists on DT
     # If the bug exists (current state), this assertion will FAIL
     nb.device_types.upload_images.assert_not_called()
-
-
-def test_upload_images_success_logs_verbose_only(
-    mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path, mock_handle
-):
-    mock_nb_api = mock_pynetbox.api.return_value
-
-    image_file = tmp_path / "front.jpg"
-    image_file.write_bytes(b"fake")
-
-    dt = make_device_types(nb_api=mock_nb_api)
-    mock_handle.log.reset_mock()
-    mock_handle.verbose_log.reset_mock()
-
-    with patch("core.netbox_api.requests.patch") as mock_patch:
-        response = MagicMock()
-        response.status_code = 200
-        response.raise_for_status.return_value = None
-        mock_patch.return_value = response
-
-        dt.upload_images("http://mock-netbox", "token", {"front_image": str(image_file)}, 123)
-
-    assert any("Images" in call.args[0] for call in mock_handle.verbose_log.call_args_list)
-    mock_handle.log.assert_not_called()
 
 
 def test_filter_new_module_types_returns_only_missing_items(mock_settings, mock_pynetbox):
@@ -1003,49 +977,6 @@ class TestCreateDeviceTypesNewDT:
         mock_nb_api.dcim.power_port_templates.create.assert_called_once()
 
 
-class TestUploadImageAttachment:
-    """Tests for TestUploadImageAttachment."""
-
-    def test_success_returns_true(self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path):
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        img_path = tmp_path / "img.png"
-        img_path.write_bytes(b"fake")
-
-        with patch("core.netbox_api.requests.post") as mock_post:
-            resp = MagicMock()
-            resp.status_code = 201
-            resp.raise_for_status.return_value = None
-            mock_post.return_value = resp
-            result = dt.upload_image_attachment("http://nb", "token", str(img_path), "dcim.moduletype", 42)
-
-        assert result is True
-
-    def test_request_error_returns_false(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path
-    ):
-        import requests as req_lib
-
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        img_path = tmp_path / "img.png"
-        img_path.write_bytes(b"fake")
-
-        with patch("core.netbox_api.requests.post") as mock_post:
-            mock_post.side_effect = req_lib.RequestException("timeout")
-            result = dt.upload_image_attachment("http://nb", "token", str(img_path), "dcim.moduletype", 42)
-
-        assert result is False
-
-    def test_os_error_returns_false(self, mock_settings, mock_pynetbox, graphql_client, make_device_types):
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-        result = dt.upload_image_attachment("http://nb", "token", "/nonexistent/img.png", "dcim.moduletype", 42)
-        assert result is False
-
-
 class TestImageDirForYaml:
     """Tests for the _image_dir_for_yaml module-level helper."""
 
@@ -1471,39 +1402,6 @@ class TestCreateDeviceTypesImagePaths:
         dt.upload_images = MagicMock()
         # Existing front_image present → verbose_log called, no re-upload
         mock_handle.verbose_log.assert_any_call(f"Front image already exists for {existing_dt.model}, skipping upload.")
-
-
-class TestUploadImagesProgress:
-    """Tests for TestUploadImagesProgress."""
-
-    def test_image_progress_callback_called(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path
-    ):
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        img_path = tmp_path / "front.jpg"
-        img_path.write_bytes(b"fake")
-
-        progress_calls = []
-        dt._image_progress = lambda n: progress_calls.append(n)
-
-        with patch("core.netbox_api.requests.patch") as mock_patch:
-            resp = MagicMock()
-            resp.status_code = 200
-            resp.raise_for_status.return_value = None
-            mock_patch.return_value = resp
-            dt.upload_images("http://nb", "token", {"front_image": str(img_path)}, 1)
-
-        assert progress_calls == [1]
-
-    def test_upload_images_os_error_logged(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, mock_handle
-    ):
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-        dt.upload_images("http://nb", "token", {"front_image": "/nonexistent/img.jpg"}, 1)
-        mock_handle.log.assert_called()
 
 
 class TestCountDeviceTypeImagesEdge:
@@ -4066,93 +3964,6 @@ class TestCreateModuleRearPorts:
 
 
 # ---------------------------------------------------------------------------
-# upload_images RequestException and file-close exception (lines 2039-2046)
-# ---------------------------------------------------------------------------
-
-
-class TestUploadImagesErrors:
-    """Tests for error branches in upload_images."""
-
-    def test_request_exception_logged(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path, mock_handle
-    ):
-        """requests.RequestException during upload is caught and logged."""
-        import requests as _req2
-
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        img = tmp_path / "front.jpg"
-        img.write_bytes(b"fake")
-        mock_handle.log.reset_mock()
-
-        with patch("core.netbox_api.requests") as mock_req:
-            mock_req.RequestException = _req2.RequestException
-            mock_req.patch.side_effect = _req2.RequestException("timeout")
-            dt.upload_images("http://nb", "token", {"front_image": str(img)}, 1)
-
-        assert mock_handle.log.called
-
-    def test_file_close_exception_swallowed(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path, mock_handle
-    ):
-        """Exception from fh.close() in the finally block is silently swallowed."""
-        import requests as _req2
-
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        img = tmp_path / "front.jpg"
-        img.write_bytes(b"fake")
-        mock_handle.log.reset_mock()
-
-        # Make the file object's close() raise an exception
-        fake_fh = MagicMock()
-        fake_fh.close.side_effect = OSError("cannot close")
-
-        with patch("builtins.open", return_value=fake_fh), patch("core.netbox_api.requests") as mock_req:
-            mock_req.RequestException = _req2.RequestException
-            mock_req.patch.side_effect = _req2.RequestException("server error")
-            # Should NOT raise despite close() raising
-            dt.upload_images("http://nb", "token", {"front_image": str(img)}, 1)
-
-        # The RequestException log should still have been called
-        assert mock_handle.log.called
-
-
-# ---------------------------------------------------------------------------
-# upload_image_attachment: _image_progress callback, OSError (lines 2090, 2095-2097)
-# ---------------------------------------------------------------------------
-
-
-class TestUploadImageAttachmentProgress:
-    """Tests for upload_image_attachment _image_progress and error paths."""
-
-    def test_image_progress_callback_called_on_success(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path
-    ):
-        """_image_progress is called with 1 on a successful upload."""
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        img = tmp_path / "img.png"
-        img.write_bytes(b"fake")
-
-        progress_calls = []
-        dt._image_progress = lambda n: progress_calls.append(n)
-
-        with patch("core.netbox_api.requests.post") as mock_post:
-            resp = MagicMock()
-            resp.status_code = 201
-            resp.raise_for_status.return_value = None
-            mock_post.return_value = resp
-            result = dt.upload_image_attachment("http://nb", "token", str(img), "dcim.moduletype", 42)
-
-        assert result is True
-        assert progress_calls == [1]
-
-
-# ---------------------------------------------------------------------------
 # Corner-case tests for high-complexity functions (cognitive complexity > 15)
 # ---------------------------------------------------------------------------
 
@@ -4373,56 +4184,7 @@ class TestModulePowerOutletWithoutPowerPortKey:
         call_args = mock_nb_api.dcim.power_outlet_templates.create.call_args[0][0]
         assert call_args[0]["name"] == "PO1"
 
-
-class TestUploadImageAttachmentExceptions:
-    """Tests for exception paths in upload_image_attachment."""
-
-    def test_request_exception_returns_false(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path, mock_handle
-    ):
-        """requests.RequestException during POST returns False (lines 2095-2097)."""
-        import requests as _req3
-
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        img = tmp_path / "img.png"
-        img.write_bytes(b"fake")
-
-        with patch("core.netbox_api.requests") as mock_req:
-            mock_req.RequestException = _req3.RequestException
-            mock_req.post.side_effect = _req3.RequestException("conn error")
-            result = dt.upload_image_attachment("http://nb", "token", str(img), "dcim.moduletype", 42)
-
-        assert result is False
-        assert mock_handle.log.called
-
         # "other_endpoint" was dropped; no exception raised
-
-
-class TestUploadImagesRequestException:
-    """Dedicated tests to ensure upload_images RequestException path is covered."""
-
-    def test_upload_images_request_exception_lines_covered(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path, mock_handle
-    ):
-        """Verify lines 2039-2040 (RequestException catch in upload_images) are executed."""
-        import requests as _req4
-
-        mock_nb_api = mock_pynetbox.api.return_value
-        dt = make_device_types(nb_api=mock_nb_api)
-
-        img = tmp_path / "front2.jpg"
-        img.write_bytes(b"data")
-        mock_handle.log.reset_mock()
-
-        # Patch the whole requests namespace so except clause matches
-        with patch("core.netbox_api.requests") as mock_req:
-            mock_req.RequestException = _req4.RequestException
-            mock_req.patch.side_effect = _req4.RequestException("network error")
-            dt.upload_images("http://nb", "tok", {"front_image": str(img)}, 99)
-
-        assert mock_handle.log.called
 
 
 # ---------------------------------------------------------------------------
@@ -4950,18 +4712,18 @@ class TestTryUpdateModuleTypeErrors:
         module_type_res = self._make_module_type_res()
         module_type_res.part_number = "OLD-123"
 
-        with patch("core.netbox_api.time.sleep") as mock_sleep:
+        with patch("core.retry.time.sleep") as mock_sleep:
             ok, updated = nb._try_update_module_type(curr_mt, module_type_res, "test.yaml")
 
         assert ok is False
         assert updated is False
         mock_handle.log.assert_called()
         # Prove the retry loop actually ran the full budget with the correct backoff.
-        from core.netbox_api import _MAX_RETRIES, _RETRY_BACKOFF
+        from core.retry import MAX_RETRIES, RETRY_BACKOFF
 
-        assert nb.netbox.dcim.module_types.update.call_count == _MAX_RETRIES + 1
-        assert mock_sleep.call_count == _MAX_RETRIES
-        assert [call.args[0] for call in mock_sleep.call_args_list] == list(_RETRY_BACKOFF[:_MAX_RETRIES])
+        assert nb.netbox.dcim.module_types.update.call_count == MAX_RETRIES + 1
+        assert mock_sleep.call_count == MAX_RETRIES
+        assert [call.args[0] for call in mock_sleep.call_args_list] == list(RETRY_BACKOFF[:MAX_RETRIES])
 
 
 # ---------------------------------------------------------------------------
@@ -4989,6 +4751,7 @@ class TestProcessSingleModuleTypeCreateRetryable:
         mock_handle.log.reset_mock()
 
         mock_nb_api.dcim.module_types.create.side_effect = requests.exceptions.ConnectionError("network down")
+        mock_nb_api.dcim.module_types.get.return_value = None  # no earlier attempt committed
 
         curr_mt = {
             "manufacturer": {"slug": "cisco"},
@@ -4996,7 +4759,7 @@ class TestProcessSingleModuleTypeCreateRetryable:
             "slug": "cm-retryable",
         }
 
-        with patch("core.netbox_api.time.sleep") as mock_sleep:
+        with patch("core.retry.time.sleep") as mock_sleep:
             result = nb._process_single_module_type(
                 curr_mt,
                 "test.yaml",
@@ -5008,11 +4771,11 @@ class TestProcessSingleModuleTypeCreateRetryable:
         assert result is False
         mock_handle.log.assert_called()
         # Prove the retry loop actually ran the full budget with the correct backoff.
-        from core.netbox_api import _MAX_RETRIES, _RETRY_BACKOFF
+        from core.retry import MAX_RETRIES, RETRY_BACKOFF
 
-        assert mock_nb_api.dcim.module_types.create.call_count == _MAX_RETRIES + 1
-        assert mock_sleep.call_count == _MAX_RETRIES
-        assert [call.args[0] for call in mock_sleep.call_args_list] == list(_RETRY_BACKOFF[:_MAX_RETRIES])
+        assert mock_nb_api.dcim.module_types.create.call_count == MAX_RETRIES + 1
+        assert mock_sleep.call_count == MAX_RETRIES
+        assert [call.args[0] for call in mock_sleep.call_args_list] == list(RETRY_BACKOFF[:MAX_RETRIES])
 
 
 # ---------------------------------------------------------------------------
@@ -5597,28 +5360,6 @@ class TestNetBoxImageHelperFunctions:
         assert str(good) in cache
         assert str(missing) not in cache
 
-    def test_delete_image_attachment_success(self, mock_settings, mock_handle):
-        from core.netbox_api import _delete_image_attachment
-
-        response = MagicMock()
-        response.raise_for_status = MagicMock()
-        with patch("core.netbox_api.requests.delete", return_value=response) as mock_delete:
-            result = _delete_image_attachment("http://nb", mock_settings.netbox_token, 12, False, mock_handle)
-            assert result is True
-
-        mock_delete.assert_called_once()
-
-    def test_delete_image_attachment_logs_request_errors(self, mock_settings, mock_handle):
-        import requests
-
-        from core.netbox_api import _delete_image_attachment
-
-        with patch("core.netbox_api.requests.delete", side_effect=requests.RequestException("boom")):
-            result = _delete_image_attachment("http://nb", mock_settings.netbox_token, 12, False, mock_handle)
-            assert result is False
-
-        assert any("Error deleting image attachment 12" in str(call) for call in mock_handle.log.call_args_list)
-
     def test_load_module_type_properties_falls_back_without_a_schema(self, tmp_path):
         """A checkout with no schema directory yields the hardcoded list, with nothing swallowed."""
         from core.netbox_api import _MODULE_TYPE_PROPERTIES_FALLBACK, _load_module_type_properties
@@ -5825,7 +5566,7 @@ class TestUploadModuleTypeImagesVerify:
 
         with (
             patch("core.netbox_api._check_image_url", return_value="missing"),
-            patch("core.netbox_api._delete_image_attachment", return_value=False),
+            patch.object(nb.device_types, "delete_image_attachment", return_value=False),
         ):
             nb._upload_module_type_images(mt_res, str(src), existing_images)
 
@@ -5873,7 +5614,7 @@ class TestUploadModuleTypeImagesVerify:
         with (
             patch("core.netbox_api._check_image_url", return_value="present"),
             patch("core.netbox_api._is_image_hash_changed", return_value=True),
-            patch("core.netbox_api._delete_image_attachment", return_value=True),
+            patch.object(nb.device_types, "delete_image_attachment", return_value=True),
             patch("core.netbox_api._save_image_hash_cache"),
         ):
             nb._upload_module_type_images(mt_res, str(src), existing_images)
@@ -6046,7 +5787,7 @@ class TestAdditionalNetBoxCoverage:
         nb = NetBox(mock_settings, mock_handle)
         nb.netbox.dcim.manufacturers.create.side_effect = requests.exceptions.ConnectionError("offline")
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             nb.create_manufacturers([{"name": "Cisco", "slug": "cisco"}])
 
         assert any("Connection error creating manufacturers" in str(c) for c in mock_handle.log.call_args_list)
@@ -6145,7 +5886,7 @@ class TestAdditionalNetBoxCoverage:
 
         with (
             patch("core.netbox_api.classify_device_type_update_failure", return_value=resolution),
-            patch("core.netbox_api.time.sleep"),
+            patch("core.retry.time.sleep"),
         ):
             ok, returned = nb._try_resolve_and_retry_device_type_update(dt, {}, {"slug": "m1"}, MagicMock())
 
@@ -6231,7 +5972,7 @@ class TestAdditionalNetBoxCoverage:
             component_changes=[],
         )
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             nb._handle_existing_device_type(dt, {}, "cisco", {}, False, dt_change, False)
 
         assert any("Connection error updating device type Router" in str(c) for c in mock_handle.log.call_args_list)
@@ -6245,8 +5986,9 @@ class TestAdditionalNetBoxCoverage:
         mock_pynetbox.api.return_value.version = "4.3"
         nb = NetBox(mock_settings, mock_handle)
         nb.netbox.dcim.device_types.create.side_effect = requests.exceptions.ConnectionError("offline")
+        nb.netbox.dcim.device_types.get.return_value = None  # no earlier attempt committed
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             dt, should_continue = nb._create_new_device_type(
                 {"manufacturer": {"slug": "cisco"}, "model": "Router"},
                 "router.yaml",
@@ -6446,7 +6188,7 @@ class TestAdditionalDeviceTypesCoverage:
         dcim = mock_pynetbox.api.return_value.dcim
         dcim.interface_templates.create.side_effect = requests.exceptions.ConnectionError("offline")
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             dt._create_generic(BY_YAML_KEY["interfaces"], [{"name": "eth0"}], 1)
 
         assert any("Connection error creating Interface" in str(c) for c in mock_handle.log.call_args_list)
@@ -6473,7 +6215,7 @@ class TestAdditionalDeviceTypesCoverage:
             )
         ]
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             dt._apply_updates_for_type("interfaces", changes, {}, 1, "device")
 
         assert any("Connection error updating interfaces (ID: 9)" in str(c) for c in mock_handle.log.call_args_list)
@@ -6493,7 +6235,7 @@ class TestAdditionalDeviceTypesCoverage:
         dt.netbox.dcim.interface_templates.delete.side_effect = requests.exceptions.ConnectionError("offline")
         changes = [ComponentChange("interfaces", "eth0", ChangeType.COMPONENT_REMOVED)]
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             dt.remove_components(1, changes)
 
         assert any("Connection error removing interfaces (ID: 9)" in str(c) for c in mock_handle.log.call_args_list)
@@ -6513,7 +6255,7 @@ class TestAdditionalDeviceTypesCoverage:
         dt.netbox.dcim.interface_templates.update.side_effect = requests.exceptions.ConnectionError("offline")
         interfaces = [{"name": "eth0", "type": "virtual", "bridge": "eth1"}, {"name": "eth1", "type": "virtual"}]
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             dt.create_components("interfaces", interfaces, 1, context="ctx.yaml")
 
         assert any("Connection error bridging interfaces" in str(c) for c in mock_handle.log.call_args_list)
@@ -6545,7 +6287,7 @@ class TestRemainingCoverageBranches:
         nb = NetBox(mock_settings, mock_handle)
         existing = DotDict({"id": 5, "model": "AR1300", "u_height": 40})
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             nb.create_rack_types(
                 [{"manufacturer": {"slug": "apc"}, "model": "AR1300", "u_height": 42, "src": "rack.yaml"}],
                 all_rack_types={"apc": {"AR1300": existing}},
@@ -6562,9 +6304,10 @@ class TestRemainingCoverageBranches:
         mock_pynetbox.api.return_value.dcim.rack_types.create.side_effect = requests.exceptions.ConnectionError(
             "offline"
         )
+        mock_pynetbox.api.return_value.dcim.rack_types.get.return_value = None  # no earlier attempt committed
         nb = NetBox(mock_settings, mock_handle)
 
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             nb.create_rack_types(
                 [{"manufacturer": {"slug": "apc"}, "model": "AR1300", "slug": "apc-ar1300", "src": "rack.yaml"}],
                 all_rack_types={},
@@ -6594,7 +6337,7 @@ class TestRemainingCoverageBranches:
 
         with (
             patch("core.netbox_api._check_image_url", return_value="missing"),
-            patch("core.netbox_api._delete_image_attachment", return_value=True),
+            patch.object(nb.device_types, "delete_image_attachment", return_value=True),
         ):
             nb._upload_module_type_images(mt_res, str(src), existing_images)
 
@@ -6623,7 +6366,7 @@ class TestRemainingCoverageBranches:
         with (
             patch("core.netbox_api._check_image_url", return_value="present"),
             patch("core.netbox_api._is_image_hash_changed", return_value=True),
-            patch("core.netbox_api._delete_image_attachment", return_value=False),
+            patch.object(nb.device_types, "delete_image_attachment", return_value=False),
         ):
             nb._upload_module_type_images(mt_res, str(src), existing_images)
 
@@ -6633,9 +6376,7 @@ class TestRemainingCoverageBranches:
 
 
 # ---------------------------------------------------------------------------
-# Image-upload failures must surface NetBox's HTTP status and response body.
-# Exercised against a real local HTTP server so requests, raise_for_status and
-# response parsing all run for real; only NetBox itself is substituted.
+# A real local HTTP server with one canned reply, for the image-URL checks above.
 # ---------------------------------------------------------------------------
 
 
@@ -6675,127 +6416,6 @@ def _netbox_returning(status, body, content_type="application/json"):
 
 
 # The real 400 NetBox >= 4.6.5 returns for an image above its 25 MP cap.
-_OVERSIZE_BODY = (
-    '{"front_image":["Upload a valid image. The file you uploaded was either not an image or a corrupted image."]}'
-)
-
-
-class TestImageUploadErrorDetail:
-    """Failed uploads must log NetBox's status code and response body, not just str(exc)."""
-
-    def test_upload_images_logs_status_and_response_body(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path, mock_handle
-    ):
-        """A 400 from NetBox surfaces the field-level reason it returned."""
-        dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
-        img = tmp_path / "front.jpg"
-        img.write_bytes(b"not-really-a-jpeg")
-        mock_handle.log.reset_mock()
-
-        with _netbox_returning(400, _OVERSIZE_BODY) as url:
-            dt.upload_images(url, "token", {"front_image": str(img)}, 42)
-
-        logged = " ".join(str(c.args[0]) for c in mock_handle.log.call_args_list)
-        assert "400" in logged
-        assert "not an image or a corrupted image" in logged
-
-    def test_upload_images_logs_body_for_server_error(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path, mock_handle
-    ):
-        """A 500 surfaces the body too — this is the case issue #102 could not diagnose."""
-        dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
-        img = tmp_path / "front.jpg"
-        img.write_bytes(b"fake")
-        mock_handle.log.reset_mock()
-
-        with _netbox_returning(500, "PermissionError: [Errno 13] Permission denied: '/opt/netbox/netbox/media'") as url:
-            dt.upload_images(url, "token", {"front_image": str(img)}, 30)
-
-        logged = " ".join(str(c.args[0]) for c in mock_handle.log.call_args_list)
-        assert "500" in logged
-        assert "Permission denied" in logged
-
-    def test_upload_image_attachment_logs_status_and_response_body(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path, mock_handle
-    ):
-        """The image-attachment path (module types) reports the same detail."""
-        dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
-        img = tmp_path / "module.png"
-        img.write_bytes(b"fake")
-        mock_handle.log.reset_mock()
-
-        with _netbox_returning(400, '{"image":["Upload a valid image."]}') as url:
-            ok = dt.upload_image_attachment(url, "token", str(img), "dcim.moduletype", 7)
-
-        assert ok is False
-        logged = " ".join(str(c.args[0]) for c in mock_handle.log.call_args_list)
-        assert "400" in logged
-        assert "Upload a valid image." in logged
-
-    def test_upload_images_success_is_unaffected(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path, mock_handle
-    ):
-        """A 200 still counts the upload and logs nothing at error level."""
-        counter = {"images": 0}
-        dt = make_device_types(nb_api=mock_pynetbox.api.return_value, counter=counter)
-        img = tmp_path / "front.jpg"
-        img.write_bytes(b"fake")
-        mock_handle.log.reset_mock()
-
-        with _netbox_returning(200, "{}") as url:
-            dt.upload_images(url, "token", {"front_image": str(img)}, 1)
-
-        assert counter["images"] == 1
-        assert not mock_handle.log.called
-
-    def test_delete_image_attachment_logs_response_body(self):
-        """Attachment deletion reports NetBox's reason rather than a bare status line."""
-        handle = MagicMock()
-
-        with _netbox_returning(409, '{"detail":"Attachment is in use."}') as url:
-            ok = _delete_image_attachment(url, "token", 5, False, handle)
-
-        assert ok is False
-        logged = " ".join(str(c.args[0]) for c in handle.log.call_args_list)
-        assert "409" in logged
-        assert "Attachment is in use." in logged
-
-    def test_long_error_body_is_truncated(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path, mock_handle
-    ):
-        """A DEBUG-mode HTML traceback page is capped instead of flooding the log."""
-        dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
-        img = tmp_path / "front.jpg"
-        img.write_bytes(b"fake")
-        mock_handle.log.reset_mock()
-
-        with _netbox_returning(500, "<html>" + ("x" * 5000) + "</html>") as url:
-            dt.upload_images(url, "token", {"front_image": str(img)}, 1)
-
-        logged = " ".join(str(c.args[0]) for c in mock_handle.log.call_args_list)
-        assert "truncated" in logged
-        assert len(logged) < 1000
-
-    def test_control_characters_in_body_are_escaped(
-        self, mock_settings, mock_pynetbox, graphql_client, make_device_types, tmp_path, mock_handle
-    ):
-        """A response body cannot inject line breaks that forge additional log records."""
-        dt = make_device_types(nb_api=mock_pynetbox.api.return_value)
-        img = tmp_path / "front.jpg"
-        img.write_bytes(b"fake")
-        mock_handle.log.reset_mock()
-
-        forged = '{"detail":"boom"}\r\n[12:34:56] Device Type Created: FORGED - 999\x1b[31m'
-        with _netbox_returning(400, forged) as url:
-            dt.upload_images(url, "token", {"front_image": str(img)}, 1)
-
-        logged = " ".join(str(c.args[0]) for c in mock_handle.log.call_args_list)
-        assert "\n" not in logged
-        assert "\r" not in logged
-        assert "\x1b" not in logged
-        # The text is still reported, just neutralised.
-        assert "\\r\\n" in logged
-        assert "FORGED" in logged
 
 
 @pytest.mark.real_http
@@ -6841,7 +6461,6 @@ class TestPreloadIntegrityGuard:
             MagicMock(),
             handle,
             MagicMock(),
-            False,
             graphql=NetBoxGraphQLClient(url, "token", page_size=10),
             repo_path="/tmp/repo",
             max_threads=2,
@@ -7417,7 +7036,7 @@ class TestComponentFailureReasonReachesTheReport:
             "interfaces": [{"name": "LAN", "type": "2.5gbase-t", "description": "uplink"}],
             "src": "/repo/device-types/TP-Link/EAP670.yaml",
         }
-        with patch("core.netbox_api.time.sleep"):
+        with patch("core.retry.time.sleep"):
             nb.create_device_types(
                 [device_type], update=True, change_report=ChangeReport(modified_device_types=[change])
             )
@@ -7447,7 +7066,7 @@ class TestComponentFailureReasonReachesTheReport:
         dt.components.record("interface_templates", "device", 6119, {"OLD": stale})
         mock_nb_api.dcim.interface_templates.delete.side_effect = requests.exceptions.ConnectionError("network down")
 
-        with patch("core.netbox_api.time.sleep"), dt.collect_component_errors() as errors:
+        with patch("core.retry.time.sleep"), dt.collect_component_errors() as errors:
             dt.remove_components(
                 6119,
                 [ComponentChange("interfaces", "OLD", ChangeType.COMPONENT_REMOVED)],
