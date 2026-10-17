@@ -142,8 +142,13 @@ def _fmt_connection_error(url: str, exc: Exception) -> str:
     )
 
 
-# Transient connection errors that warrant a retry
-_RETRYABLE_EXCEPTIONS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
+# Transient errors that warrant a retry: no reply, a cut-off reply, or a reply that is not JSON
+_RETRYABLE_EXCEPTIONS = (
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.ChunkedEncodingError,
+    pynetbox.core.query.ContentError,
+)
 
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = (2, 5, 10)  # seconds to wait before each retry attempt
@@ -348,7 +353,7 @@ def _retry_on_connection_error(func, *args, **kwargs):
     """Call *func* with retries on transient connection errors.
 
     Retries up to ``_MAX_RETRIES`` times with exponential-ish backoff
-    for ``ConnectionError`` and ``Timeout`` from requests/urllib3.
+    for each error in ``_RETRYABLE_EXCEPTIONS``.
     Non-retryable exceptions propagate immediately.
     """
     for attempt in range(_MAX_RETRIES + 1):

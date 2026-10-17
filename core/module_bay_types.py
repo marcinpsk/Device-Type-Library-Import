@@ -208,8 +208,8 @@ class ModuleBayTypeCatalog:
             return action()
         except pynetbox.RequestError as exc:
             raise ModuleBayTypeError(f"NetBox rejected {description}: {exc}") from exc
-        except requests.exceptions.RequestException as exc:
-            raise ModuleBayTypeError(f"NetBox could not be reached for {description}: {exc}") from exc
+        except (requests.exceptions.RequestException, pynetbox.core.query.ContentError) as exc:
+            raise ModuleBayTypeError(f"NetBox gave no usable reply for {description}: {exc}") from exc
 
     def _netbox_id(self, entry):
         """Return the id of the NetBox object for *entry*, creating it if absent."""

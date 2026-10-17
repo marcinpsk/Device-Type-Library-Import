@@ -8,7 +8,6 @@ GraphQL client builds it.
 
 import pynetbox
 import pytest
-import requests
 from helpers import FakeNetBox, recording_handle
 
 from core.graphql_client import _to_dotdict
@@ -212,15 +211,16 @@ class TestUpdate:
         assert stored_type["profile"] == {"id": 4, "name": "Fan"}
         assert stored_type["attribute_data"] == {"rpm": 3000}
 
-    @pytest.mark.parametrize("lost", [{1, 2, 3, 4}, {2, 3, 4, 5}], ids=["clear", "write"])
-    def test_a_profile_change_with_lost_responses_keeps_the_old_profile_and_attributes(
-        self, netbox, server, definition, monkeypatch, lost
+    @pytest.mark.parametrize("reply", ["lost", "truncated", "garbled"])
+    @pytest.mark.parametrize("broken", [{1, 2, 3, 4}, {2, 3, 4, 5}], ids=["clear", "write"])
+    def test_a_profile_change_with_broken_replies_keeps_the_old_profile_and_attributes(
+        self, netbox, server, definition, monkeypatch, broken, reply
     ):
-        """Each PATCH commits but its reply never arrives, so every retry is exhausted."""
+        """Each PATCH commits but its reply breaks, so every retry is exhausted."""
         monkeypatch.setattr("core.netbox_api.time.sleep", lambda _seconds: None)
         nb, _ = netbox
         record = existing(server, {"id": 4, "name": "Fan"}, {"rpm": 3000})
-        server.lost_patch_responses = lost
+        server.broken_replies = {("PATCH", number): reply for number in broken}
 
         assert nb._try_update_module_type(definition(), record, "cisco/SFP-10G-SR.yaml") == (False, False)
 
@@ -228,29 +228,52 @@ class TestUpdate:
         assert stored_type["profile"] == {"id": 4, "name": "Fan"}
         assert stored_type["attribute_data"] == {"rpm": 3000}
 
-    @pytest.mark.parametrize(
-        ("reply", "error"),
-        [("truncated", requests.exceptions.ChunkedEncodingError), ("garbled", pynetbox.core.query.ContentError)],
-    )
-    def test_a_broken_clear_reply_restores_the_old_profile_and_attributes(
-        self, netbox, server, definition, reply, error
-    ):
+    @pytest.mark.parametrize("reply", ["lost", "truncated", "garbled"])
+    @pytest.mark.parametrize("broken", [1, 2], ids=["clear", "write"])
+    def test_a_profile_change_retries_a_broken_reply(self, netbox, server, definition, monkeypatch, broken, reply):
+        monkeypatch.setattr("core.netbox_api.time.sleep", lambda _seconds: None)
         nb, _ = netbox
         record = existing(server, {"id": 4, "name": "Fan"}, {"rpm": 3000})
-        setattr(server, f"{reply}_patch_responses", {1})
+        server.broken_replies = {("PATCH", broken): reply}
 
-        with pytest.raises(error):
-            nb._try_update_module_type(definition(), record, "cisco/SFP-10G-SR.yaml")
+        assert nb._try_update_module_type(definition(), record, "cisco/SFP-10G-SR.yaml") == (True, True)
 
         [stored_type] = server.collection("module_types")
-        assert stored_type["profile"] == {"id": 4, "name": "Fan"}
-        assert stored_type["attribute_data"] == {"rpm": 3000}
+        assert stored_type["profile"] == {"id": 3, "name": "Transceiver"}
+        assert stored_type["attribute_data"] == SFP_ATTRIBUTES
+        assert len(server.sent("PATCH", "module_types")) == 3
+
+    @pytest.mark.parametrize("reply", ["truncated", "garbled"])
+    def test_an_update_retries_a_broken_reply(self, netbox, server, definition, monkeypatch, reply):
+        monkeypatch.setattr("core.netbox_api.time.sleep", lambda _seconds: None)
+        nb, _ = netbox
+        record = existing(server, {"id": 3, "name": "Transceiver"}, {})
+        server.broken_replies = {("PATCH", 1): reply}
+
+        assert nb._try_update_module_type(definition(), record, "cisco/SFP-10G-SR.yaml") == (True, True)
+
+        assert server.collection("module_types")[0]["attribute_data"] == SFP_ATTRIBUTES
+        assert len(server.sent("PATCH", "module_types")) == 2
+
+    @pytest.mark.parametrize("reply", ["truncated", "garbled"])
+    def test_an_update_whose_replies_stay_broken_fails_only_that_module_type(
+        self, netbox, server, definition, monkeypatch, reply
+    ):
+        monkeypatch.setattr("core.netbox_api.time.sleep", lambda _seconds: None)
+        nb, console = netbox
+        record = existing(server, {"id": 3, "name": "Transceiver"}, {})
+        server.broken_replies = {("PATCH", number): reply for number in range(1, 5)}
+
+        assert nb._try_update_module_type(definition(), record, "cisco/SFP-10G-SR.yaml") == (False, False)
+
+        assert len(server.sent("PATCH", "module_types")) == 4
+        assert any("after 3 retries" in line for line in console.lines)
 
     def test_a_failed_recovery_clear_still_restores_the_old_profile(self, netbox, server, definition):
         nb, console = netbox
         record = existing(server, {"id": 4, "name": "Fan"}, {"rpm": 3000})
         curr_mt = definition(SFP_YAML.replace("profile: Transceiver", "profile: No Such Profile"))
-        server.garbled_patch_responses = {3}
+        server.broken_replies = {("PATCH", number): "garbled" for number in range(3, 7)}
 
         assert nb._try_update_module_type(curr_mt, record, "cisco/SFP-10G-SR.yaml") == (False, False)
 

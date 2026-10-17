@@ -146,6 +146,14 @@ class TestRefusals:
         assert "mx304-re" in str(exc.value)
         assert not server.sent("POST", "module_bay_types")
 
+    @pytest.mark.parametrize("reply", ["truncated", "garbled"])
+    def test_a_broken_create_reply_fails_the_definition_not_the_run(self, catalog, reply):
+        cat, server = catalog()
+        server.broken_replies = {("POST", 1): reply}
+        with pytest.raises(ModuleBayTypeError) as exc:
+            cat.ids_for("juniper", ["MX304-RE"])
+        assert "MX304-RE" in str(exc.value)
+
 
 @pytest.mark.real_http
 class TestCatalogReading:

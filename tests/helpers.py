@@ -102,10 +102,8 @@ class FakeNetBox:
         self.errors = dict(errors or {})
         self.netbox_version = netbox_version
         self.requests = []
-        # 1-based PATCH numbers that commit, then reply with nothing, a cut-off body, or invalid JSON.
-        self.lost_patch_responses = set()
-        self.truncated_patch_responses = set()
-        self.garbled_patch_responses = set()
+        # (verb, 1-based number of that verb) -> "lost", "truncated" or "garbled": the write commits, the reply breaks.
+        self.broken_replies = {}
         self._server = HTTPServer(("127.0.0.1", 0), self._handler())
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
 
@@ -223,16 +221,17 @@ class FakeNetBox:
             updated.append(record)
         return updated
 
-    def _reply_to_patch(self, handler, answer):
-        """Send *answer*, or close the connection when the test chose to lose this PATCH's reply."""
-        number = sum(method == "PATCH" for method, _, _ in self.requests)
-        if number in self.lost_patch_responses:
+    def _reply_to(self, handler, verb, answer):
+        """Send *answer*, or break the reply the way the test chose for this request."""
+        number = sum(method == verb for method, name, _ in self.requests if name != "graphql")
+        broken = self.broken_replies.get((verb, number))
+        if broken == "lost":
             handler.close_connection = True
             return
-        if number in self.truncated_patch_responses | self.garbled_patch_responses:
+        if broken in ("truncated", "garbled"):
             handler.send_response(answer[0])
             handler.send_header("Content-Type", "application/json")
-            handler.send_header("Content-Length", "1000" if number in self.truncated_patch_responses else "2")
+            handler.send_header("Content-Length", "1000" if broken == "truncated" else "2")
             handler.end_headers()
             handler.wfile.write(b"[{")
             handler.close_connection = True
@@ -289,7 +288,7 @@ class FakeNetBox:
                 state.requests.append(("POST", name, payload))
                 if self._refused(name):
                     return
-                self._reply(*state._answer(201, lambda: state._create(name, copy.deepcopy(payload))))
+                state._reply_to(self, "POST", state._answer(201, lambda: state._create(name, copy.deepcopy(payload))))
 
             def do_PATCH(self):
                 name = self._collection_name()
@@ -297,7 +296,7 @@ class FakeNetBox:
                 state.requests.append(("PATCH", name, payload))
                 if self._refused(name):
                     return
-                state._reply_to_patch(self, state._answer(200, lambda: state._patch(name, copy.deepcopy(payload))))
+                state._reply_to(self, "PATCH", state._answer(200, lambda: state._patch(name, copy.deepcopy(payload))))
 
             def log_message(self, *args):
                 """Silence the default stderr access log."""
