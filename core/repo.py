@@ -6,7 +6,7 @@ import os
 import pickle
 import posixpath
 from collections.abc import Sequence
-from glob import glob
+from glob import escape, glob
 from re import sub as re_sub
 from urllib.parse import urlparse
 
@@ -121,6 +121,28 @@ def _resolve_index_path(base_dir: str, stem: str) -> "str | None":
 def _vendor_of(directory: str) -> str:
     """Return the vendor folder name of a definition directory such as ``device-types/Nokia``."""
     return directory.rsplit("/", 1)[-1]
+
+
+def _paths_changed_since_index(repo_root: str, index_path: str, type_dir: str) -> "set[str] | None":
+    """Return the repo-relative paths under *type_dir* that differ from the commit that last wrote *index_path*.
+
+    Returns ``None`` when the index cannot describe the checkout: *repo_root* is not a git work
+    tree, the index is not committed, or the index itself differs from that commit.
+    """
+    index_relpath = os.path.relpath(index_path, repo_root).replace("\\", "/")
+    try:
+        git = Repo(repo_root).git
+        git.update_environment(GIT_OPTIONAL_LOCKS="0")  # read-only: do not refresh .git/index
+        commit = git.log("-1", "--format=%H", "--", index_relpath)
+        if not commit:
+            return None
+        # A tree diff against the working tree catches fork edits, upstream merges and uncommitted edits.
+        changed = git.diff("--name-only", "--no-renames", "-z", commit, "--", type_dir, index_relpath)
+    except (exc.InvalidGitRepositoryError, exc.NoSuchPathError, exc.GitCommandError):
+        return None
+    paths = {path for path in changed.split("\0") if path}
+
+    return None if index_relpath in paths else paths
 
 
 def _validate_index_data(data, source: str):
@@ -661,7 +683,7 @@ class DTLRepo:
             if folder.casefold() != "testing":
                 discovered_vendors.append({"name": folder, "slug": self.slug_format(folder)})
                 for extension in self.yaml_extensions:
-                    files.extend(glob(os.path.join(base_path, folder, f"*.{extension}")))
+                    files.extend(glob(os.path.join(escape(os.path.join(base_path, folder)), f"*.{extension}")))
         return files, discovered_vendors
 
     def resolve_slug_files(self, slugs):
@@ -673,8 +695,9 @@ class DTLRepo:
         Matching uses the same case-insensitive substring check as :meth:`parse_files`.
 
         The index comes from upstream master, so a fork or branch can hold files it does not
-        list, and can lack files it lists. The files on disk are the source of truth: an indexed
-        file that is gone is dropped, and a file the index does not list is always selected.
+        list, can lack files it lists, and can change files it lists. The files on disk are the
+        source of truth: an indexed file that is gone is dropped, and a file that the index does
+        not list, or that differs from the commit that last wrote the index, is always selected.
 
         The module and rack indexes are not used: they record file stems, not models, so they
         cannot tell which files hold a matching model.
@@ -684,10 +707,17 @@ class DTLRepo:
 
         Returns:
             dict or None: ``{vendor_slug: [abs_path, ...]}``, to parse with *slugs*, or ``None``
-            when the device index is missing or unreadable.
+            when the device index is missing, unreadable, or cannot be compared with the checkout.
+            ``REPO_URL=local`` always gives ``None``, because that mode runs no git command.
         """
-        device_index = _resolve_index_path(os.path.join(self.get_absolute_path(), "tests"), "known-slugs")
+        if is_local_repo_url(self.url):
+            return None
+        repo_root = self.get_absolute_path()
+        device_index = _resolve_index_path(os.path.join(repo_root, "tests"), "known-slugs")
         if device_index is None:
+            return None
+        changed = _paths_changed_since_index(repo_root, device_index, "device-types")
+        if changed is None:
             return None
         try:
             known_slugs = _safe_index_load(device_index)
@@ -699,8 +729,8 @@ class DTLRepo:
         device_files: dict = {}  # vendor_slug -> [abs_path]
         for relpath, abs_path in self._definition_files(self.get_devices_path()):
             entry_slug = slug_by_relpath.get(relpath)
-            # An unindexed file can hold any slug, so the caller's parse_files filter decides.
-            if entry_slug is None or any(s in entry_slug.casefold() for s in slugs_lower):
+            # An unindexed or changed file can hold any slug, so the caller's parse_files filter decides.
+            if entry_slug is None or relpath in changed or any(s in entry_slug.casefold() for s in slugs_lower):
                 vendor_slug = self.slug_format(_vendor_of(posixpath.dirname(relpath)))
                 device_files.setdefault(vendor_slug, []).append(abs_path)
         return device_files
