@@ -73,7 +73,8 @@ def _relation_change(prop, yaml_comp, netbox_comp, catalog=None, manufacturer=No
     if not _is_relation_list(declared):
         if handle is not None:
             handle.log(
-                f"Ignored {prop} on {yaml_comp.get('name', 'Unknown')!r}: expected a list of names, got {declared!r}"
+                f"Ignored {prop} on {yaml_comp.get('name') or yaml_comp.get('model', 'Unknown')!r}: "
+                f"expected a list of names, got {declared!r}"
             )
         return None
     netbox_value = getattr(netbox_comp, prop, _MISSING)
@@ -113,6 +114,8 @@ def _relation_identities(value):
     A read path that returns only ``id`` and ``name`` cannot answer the scope question, so
     the caller falls back to comparing names rather than inventing an identity.
     """
+    from core.module_bay_types import manufacturer_slug
+
     identities = set()
     for item in value or []:
         slug = item.get("slug") if isinstance(item, dict) else getattr(item, "slug", None)
@@ -120,7 +123,7 @@ def _relation_identities(value):
         owner = manufacturer.get("slug") if isinstance(manufacturer, dict) else getattr(manufacturer, "slug", None)
         if not slug or not owner:
             return None
-        identities.add((owner, slug))
+        identities.add((manufacturer_slug(owner), slug))
     return frozenset(identities)
 
 

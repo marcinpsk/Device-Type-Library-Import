@@ -129,6 +129,29 @@ class TestModuleTypeOwnRelation:
 
         assert nb._type_relation_changes(module_type, existing) == []
 
+    def test_noncanonical_owner_slugs_do_not_make_relations_differ(self, netbox):
+        """NetBox may return the owner slug in another case; the catalog identity is canonical."""
+        nb, _ = netbox
+        assigned = related("MX304-RE", "mx304-re", "Juniper")
+        existing = NetBoxRecord(7, model="JNP304-RE", module_bay_types=[assigned])
+        nb.device_types.components.record(
+            "module_bay_templates",
+            "module",
+            7,
+            {"Slot 0": NetBoxRecord(55, name="Slot 0", module_bay_types=[assigned])},
+        )
+        module_type = {
+            "model": "JNP304-RE",
+            "manufacturer": {"slug": "juniper"},
+            "module_bay_types": ["MX304-RE"],
+            "module-bays": [{"name": "Slot 0", "module_bay_types": ["MX304-RE"]}],
+        }
+
+        actionable, _, changes = nb.filter_actionable_module_types([module_type], {"juniper": {"JNP304-RE": existing}})
+
+        assert changes == [], "owner slug case must not make module or component relations differ"
+        assert actionable == []
+
     def test_the_same_name_from_the_wrong_scope_is_corrected(self, netbox):
         """Juniper owns MX304-RE. A Generic object of that name is not the one referenced."""
         nb, _ = netbox
@@ -193,13 +216,22 @@ class TestModuleTypeOwnRelation:
 
         assert nb._type_relation_changes({"model": "JNP304-RE"}, existing) == []
 
-    def test_a_malformed_reference_leaves_the_relation_unmanaged(self, netbox):
-        """A bare key parses as None; clearing on it would drop a restriction nobody removed."""
-        nb, _ = netbox
-        existing = NetBoxRecord(7, module_bay_types=[related("MX304-RE", "mx304-re", "juniper")])
-        module_type = {"model": "JNP304-RE", "manufacturer": {"slug": "juniper"}, "module_bay_types": None}
+    @pytest.mark.parametrize("declared", [None, "QSFP", ["  "]], ids=["null", "string", "blank-name"])
+    def test_a_malformed_reference_leaves_the_relation_unmanaged(self, netbox, declared):
+        """Log malformed declarations without changing the existing restriction."""
+        nb, console = netbox
+        existing = NetBoxRecord(7, model="JNP304-RE", module_bay_types=[related("MX304-RE", "mx304-re", "juniper")])
+        module_type = {"model": "JNP304-RE", "manufacturer": {"slug": "juniper"}, "module_bay_types": declared}
 
         assert nb._type_relation_changes(module_type, existing) == []
+        actionable, _, changes = nb.filter_actionable_module_types([module_type], {"juniper": {"JNP304-RE": existing}})
+
+        assert actionable == []
+        assert changes == []
+        assert any(
+            "Ignored module_bay_types on 'JNP304-RE'" in line and f"expected a list of names, got {declared!r}" in line
+            for line in console.lines
+        ), "malformed module-type relations must be logged as ignored"
 
     def test_names_are_compared_when_the_definition_names_no_manufacturer(self, netbox):
         """Without an owning manufacturer there is no scope, so the name comparison stands."""

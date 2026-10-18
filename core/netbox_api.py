@@ -16,7 +16,7 @@ import pynetbox
 import requests
 from pynetbox.core.query import Request
 
-from core.change_detector import ChangeDetector, ChangeType
+from core.change_detector import ChangeDetector, ChangeType, _relation_change
 from core.compat import parse_netbox_version, supports_module_bay_types
 from core.component_cache import ComponentCache
 from core.component_registry import (
@@ -56,31 +56,6 @@ class SSLVerificationError(FatalError):
 
 # Oldest NetBox this importer is tested against; see the CI matrix and the README.
 MINIMUM_NETBOX_VERSION = (4, 3)
-
-
-def _relation_identities_differ(catalog, manufacturer, declared, related, *, names_differ):
-    """Return True when the assigned objects are not the ones the references resolve to.
-
-    Comparing names alone reports equality when NetBox holds a same-named class from
-    another manufacturer's scope, so the identity is compared where both sides can supply
-    one.  Where they cannot, the name comparison the caller already made stands.
-    """
-    from core.module_bay_types import ModuleBayTypeError, manufacturer_slug
-
-    if not catalog or not manufacturer:
-        return names_differ
-    current = set()
-    for item in related:
-        slug = getattr(item, "slug", None)
-        owner = getattr(getattr(item, "manufacturer", None), "slug", None)
-        if not slug or not owner:
-            return names_differ
-        current.add((manufacturer_slug(owner), slug))
-    try:
-        return catalog.identities_for(manufacturer, declared) != frozenset(current)
-    except ModuleBayTypeError:
-        # A matching name must not make an unresolvable reference look applied.
-        return True
 
 
 class NetBoxError(FatalError):
@@ -1676,26 +1651,16 @@ class NetBox:
         if not self.module_bay_types:
             return changes
         for field in MODULE_TYPE_RELATIONS:
-            if field not in module_type:
-                continue
-            netbox_value = getattr(existing_module, field, _MISSING)
-            if netbox_value is _MISSING:
-                continue
-            related = netbox_value if isinstance(netbox_value, (list, tuple)) else []
-            declared = module_type[field]
-            if not isinstance(declared, list) or any(not isinstance(x, str) or not x.strip() for x in declared):
-                # Malformed or bare key: leave the relation unmanaged rather than clear it.
-                continue
-            wanted = sorted(set(declared))
-            current = sorted({name for name in (getattr(item, "name", None) for item in related) if name})
-            if _relation_identities_differ(
+            change = _relation_change(
+                field,
+                module_type,
+                existing_module,
                 self.device_types.module_bay_type_catalog,
                 self.device_types._manufacturer_slug(module_type.get("manufacturer")),
-                declared,
-                related,
-                names_differ=wanted != current,
-            ):
-                changes.append((field, current, wanted))
+                self.handle,
+            )
+            if change is not None:
+                changes.append((change.property_name, change.old_value, change.new_value))
         return changes
 
     def _resolve_type_relations(self, payload):
