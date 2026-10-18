@@ -1818,6 +1818,17 @@ class TestDeviceIndexAgainstTheCheckout:
 
         assert self._resolve(tmp_path, ["acme-new"]) == {"acme": [str(tmp_path / "device-types/Acme/old-box.yaml")]}
 
+    def test_an_inherited_git_work_tree_does_not_hide_a_change(self, tmp_path, monkeypatch):
+        """A hook runner can export GIT_DIR and GIT_WORK_TREE for another checkout."""
+        target, foreign = tmp_path / "target", tmp_path / "foreign"
+        self._library(target)
+        self._library(foreign)
+        (target / "device-types/Acme/old-box.yaml").write_text("manufacturer: Acme\nmodel: Box\nslug: acme-new\n")
+        monkeypatch.setenv("GIT_DIR", str(foreign / ".git"))
+        monkeypatch.setenv("GIT_WORK_TREE", str(foreign))
+
+        assert self._resolve(target, ["acme-new"]) == {"acme": [str(target / "device-types/Acme/old-box.yaml")]}
+
     def test_a_slug_change_committed_after_the_index_is_selected(self, tmp_path):
         git_repo = self._library(tmp_path)
         (tmp_path / "device-types/Acme/other.yaml").write_text("manufacturer: Acme\nmodel: Other\nslug: acme-new\n")

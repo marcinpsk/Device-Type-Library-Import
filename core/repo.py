@@ -136,7 +136,7 @@ def _paths_changed_since_index(repo_root: str, index_path: str, type_dir: str) -
     """
     index_relpath = os.path.relpath(index_path, repo_root).replace("\\", "/")
     try:
-        git = Repo(repo_root).git
+        git = open_repo(repo_root).git
         git.update_environment(GIT_OPTIONAL_LOCKS="0")  # read-only: do not refresh .git/index
         # In a shallow clone, git log reports the shallow boundary, not the commit that wrote the index.
         if git.rev_parse("--is-shallow-repository") != "false":
