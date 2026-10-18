@@ -174,6 +174,27 @@ class TestRetries:
         [bay_type_id] = cat.ids_for("juniper", ["MX304-RE"])
         assert [r["id"] for r in server.collection("module_bay_types")] == [bay_type_id]
 
+    def test_a_competing_slug_is_not_recovered_after_a_dropped_create(self, catalog, monkeypatch):
+        """Reject a competing record whose name matches but whose slug differs from the catalog."""
+        cat, server = catalog()
+        competing = {"id": 88, "name": "MX304-RE", "slug": "mx304_re", "manufacturer": {"id": 1}}
+        server.broken_replies = {("POST", 1): "dropped"}
+        real_write = server._write
+
+        def write_with_competitor(handler, verb, name, payload, status, apply):
+            """Insert the competing record after lookup and before the first create fails."""
+            if verb == "POST" and name == "module_bay_types" and not server.collection(name):
+                server.collection(name).append(competing)
+            return real_write(handler, verb, name, payload, status, apply)
+
+        monkeypatch.setattr(server, "_write", write_with_competitor)
+
+        with pytest.raises(ModuleBayTypeError, match="NetBox rejected creating module bay type 'MX304-RE'"):
+            cat.ids_for("juniper", ["MX304-RE"])
+
+        assert server.collection("module_bay_types") == [competing]
+        assert len(server.sent("POST", "module_bay_types")) == 2
+
     @pytest.mark.parametrize("reply", ["lost", "truncated", "garbled"])
     def test_a_module_bay_type_create_with_a_broken_reply_is_not_repeated(self, catalog, reply):
         cat, server = catalog()
@@ -195,6 +216,35 @@ class TestRetries:
 @pytest.mark.real_http
 class TestCatalogReading:
     """The catalog is read from real files on disk, including the shapes that are rejected."""
+
+    def test_a_symlinked_manufacturer_directory_wins_over_generic(self, tmp_path, catalog):
+        """Resolve an entry from a linked manufacturer directory before the Generic fallback."""
+        root = tmp_path / "symlink-library"
+        linked = tmp_path / "linked"
+        write_module_bay_type(linked, "Juniper", "juniper-qsfp-dd", "QSFP-DD")
+        write_module_bay_type(root, "Generic", "qsfp-dd", "QSFP-DD")
+        (root / "module-bay-types" / "Juniper").symlink_to(
+            linked / "module-bay-types" / "Juniper", target_is_directory=True
+        )
+        cat, server = catalog(root=root)
+
+        assert cat.identities_for("juniper", ["QSFP-DD"]) == frozenset({("juniper", "juniper-qsfp-dd")})
+        assert len(cat.ids_for("juniper", ["QSFP-DD"])) == 1
+        assert server.sent("POST", "module_bay_types") == [
+            {"name": "QSFP-DD", "slug": "juniper-qsfp-dd", "manufacturer": 1}
+        ]
+
+    @pytest.mark.timeout(2)
+    def test_a_symlink_cycle_is_refused_at_load(self, tmp_path, catalog):
+        """Reject a linked directory cycle before catalog resolution can continue."""
+        write_module_bay_type(tmp_path, "Generic", "qsfp-dd", "QSFP-DD")
+        directory = tmp_path / "module-bay-types" / "Juniper"
+        directory.mkdir()
+        (directory / "cycle").symlink_to(directory, target_is_directory=True)
+        cat, _ = catalog(root=tmp_path)
+
+        with pytest.raises(ModuleBayCatalogError):
+            cat.identities_for("juniper", ["QSFP-DD"])
 
     def test_entry_without_a_description_is_created_without_one(self, tmp_path, catalog):
         write_module_bay_type(tmp_path, "Generic", "sfp", "SFP")

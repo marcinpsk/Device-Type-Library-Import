@@ -163,7 +163,12 @@ class ModuleBayTypeCatalog:
             ) from exc
 
         entries = {}
-        for root, _dirs, files in os.walk(self._catalog_dir, onerror=_unreadable):
+        visited_paths = set()
+        for root, _dirs, files in os.walk(self._catalog_dir, onerror=_unreadable, followlinks=True):
+            real_path = os.path.realpath(root)
+            if real_path in visited_paths:
+                raise ModuleBayCatalogError(f"Module bay type catalog directory {root!r} repeats a visited directory")
+            visited_paths.add(real_path)
             for filename in sorted(files):
                 if not filename.endswith((".yaml", ".yml")):
                     continue
@@ -240,7 +245,7 @@ class ModuleBayTypeCatalog:
             f"creating module bay type {entry['name']!r}",
             self._netbox.dcim.module_bay_types,
             payload,
-            "name",
+            "slug",
             manufacturer_id=manufacturer_id,
         )
         self._handle.verbose_log(f"Module Bay Type Created: {entry['name']} ({entry['manufacturer']}) - {created.id}")
