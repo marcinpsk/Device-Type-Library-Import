@@ -113,15 +113,23 @@ def _relation_identities(value):
 
     A read path that returns only ``id`` and ``name`` cannot answer the scope question, so
     the caller falls back to comparing names rather than inventing an identity.
+    An explicit null manufacturer identifies an unscoped object as ``(None, slug)``.
     """
     from core.module_bay_types import manufacturer_slug
 
     identities = set()
     for item in value or []:
         slug = item.get("slug") if isinstance(item, dict) else getattr(item, "slug", None)
-        manufacturer = item.get("manufacturer") if isinstance(item, dict) else getattr(item, "manufacturer", None)
+        manufacturer = (
+            item.get("manufacturer", _MISSING) if isinstance(item, dict) else getattr(item, "manufacturer", _MISSING)
+        )
+        if not slug or manufacturer is _MISSING:
+            return None
+        if manufacturer is None:
+            identities.add((None, slug))
+            continue
         owner = manufacturer.get("slug") if isinstance(manufacturer, dict) else getattr(manufacturer, "slug", None)
-        if not slug or not owner:
+        if not owner:
             return None
         identities.add((manufacturer_slug(owner), slug))
     return frozenset(identities)

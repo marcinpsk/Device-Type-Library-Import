@@ -6,8 +6,10 @@ its own, comparing names alone reports equality and the wrong object survives.
 """
 
 import pytest
+from pynetbox.core.response import Record
 
 from core.change_detector import ChangeDetector
+from core.graphql_client import DotDict
 from core.module_bay_types import ModuleBayTypeCatalog
 
 
@@ -78,6 +80,19 @@ def test_wrong_scope_assignment_is_detected(two_scope_catalog):
     assert [c.property_name for c in changes] == ["module_bay_types"], (
         "a bay owned by Acme holding Generic's X must be corrected to Acme's X"
     )
+
+
+@pytest.mark.parametrize("record_type", [dict, DotDict, Record], ids=["dict", "dotdict", "record"])
+def test_unscoped_assignment_is_detected(two_scope_catalog, record_type):
+    """A null manufacturer identifies an unscoped class even when its name and slug match."""
+    detector = _detector(ModuleBayTypeCatalog(None, two_scope_catalog, Handle()))
+    fields = {"id": 9, "url": None, "name": "X", "slug": "acme-x", "manufacturer": None}
+    assigned = Record(fields, None, None) if record_type is Record else record_type(fields)
+    netbox_comp = NetBoxBay("Slot 0", [assigned])
+
+    changes = _changes(detector, {"name": "Slot 0", "module_bay_types": ["X"]}, netbox_comp)
+
+    assert [(c.property_name, c.old_value, c.new_value) for c in changes] == [("module_bay_types", ["X"], ["X"])]
 
 
 def test_right_scope_assignment_is_left_alone(two_scope_catalog):
@@ -169,6 +184,16 @@ class TestUnmanagedRelations:
 
 class TestNameComparisonFallback:
     """Where an identity cannot be had, comparing names is still better than doing nothing."""
+
+    @pytest.mark.parametrize("record_type", [dict, DotDict, Record], ids=["dict", "dotdict", "record"])
+    def test_matching_names_are_left_alone_when_manufacturer_is_absent(self, two_scope_catalog, record_type):
+        """A missing manufacturer field leaves the scope unknown even when a slug was fetched."""
+        detector = _detector(ModuleBayTypeCatalog(None, two_scope_catalog, Handle()))
+        fields = {"id": 9, "url": None, "name": "X", "slug": "acme-x"}
+        assigned = Record(fields, None, None) if record_type is Record else record_type(fields)
+        netbox_comp = NetBoxBay("Slot 0", [assigned])
+
+        assert _changes(detector, {"name": "Slot 0", "module_bay_types": ["X"]}, netbox_comp) == []
 
     def test_names_are_compared_when_netbox_returned_no_slug(self, two_scope_catalog):
         """A read path returning only id and name cannot answer the scope question."""

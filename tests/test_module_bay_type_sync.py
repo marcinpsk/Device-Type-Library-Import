@@ -14,9 +14,9 @@ import pynetbox
 import pytest
 from helpers import FakeNetBox, recording_handle, write_module_bay_type
 
-from core.change_detector import ChangeType, ComponentChange, PropertyChange
+from core.change_detector import ChangeDetector, ChangeType, ComponentChange, PropertyChange
 from core.component_registry import BY_YAML_KEY
-from core.graphql_client import NetBoxGraphQLClient
+from core.graphql_client import NetBoxGraphQLClient, _to_dotdict
 from core.module_bay_types import ModuleBayTypeCatalog
 from core.netbox_api import DeviceTypes, NetBox
 from core.outcomes import EntityKind, Outcome
@@ -159,6 +159,39 @@ class TestModuleTypeOwnRelation:
         module_type = {"model": "JNP304-RE", "manufacturer": {"slug": "juniper"}, "module_bay_types": ["MX304-RE"]}
 
         assert nb._type_relation_changes(module_type, existing) == [("module_bay_types", ["MX304-RE"], ["MX304-RE"])]
+
+    def test_an_unscoped_class_is_reported_and_patched_as_catalog_ids(self, netbox, server):
+        """Replace an unscoped class with the catalog class that has the same name and slug."""
+        nb, _ = netbox
+        assigned = {"id": 9, "name": "MX304-RE", "slug": "mx304-re", "manufacturer": None}
+        server.collection("module_bay_types").append(assigned)
+        stored = {"id": 7, "model": "JNP304-RE", "manufacturer": JUNIPER, "module_bay_types": [assigned]}
+        server.collection("module_types").append(stored)
+        existing = _to_dotdict(stored)
+        module_type = {"model": "JNP304-RE", "manufacturer": {"slug": "juniper"}, "module_bay_types": ["MX304-RE"]}
+
+        actionable, _, changes = nb.filter_actionable_module_types([module_type], {"juniper": {"JNP304-RE": existing}})
+
+        assert actionable == [module_type]
+        assert changes[0][2] == [("module_bay_types", ["MX304-RE"], ["MX304-RE"])]
+        assert nb._try_update_module_type(module_type, existing, "juniper/jnp304-re.yaml") == (True, True)
+        [scoped] = [item for item in server.collection("module_bay_types") if item.get("manufacturer")]
+        assert scoped["manufacturer"]["slug"] == "juniper"
+        assert scoped["id"] != assigned["id"]
+        assert server.sent("PATCH", "module_types") == [{"id": 7, "module_bay_types": [scoped["id"]]}]
+        assert stored["module_bay_types"] == [scoped["id"]]
+
+    def test_matching_names_are_left_alone_when_manufacturer_is_absent(self, netbox):
+        """A relation without a manufacturer field still uses the name comparison."""
+        nb, _ = netbox
+        assigned = NetBoxRecord(9, name="MX304-RE", slug="mx304-re")
+        existing = NetBoxRecord(7, model="JNP304-RE", module_bay_types=[assigned])
+        module_type = {"model": "JNP304-RE", "manufacturer": {"slug": "juniper"}, "module_bay_types": ["MX304-RE"]}
+
+        actionable, _, changes = nb.filter_actionable_module_types([module_type], {"juniper": {"JNP304-RE": existing}})
+
+        assert actionable == []
+        assert changes == []
 
     def test_names_are_compared_when_netbox_returned_no_identity(self, netbox):
         """A record carrying only a name cannot answer the scope question; names still can."""
@@ -547,17 +580,29 @@ class TestComponentUpdatePayload:
         )
 
     def test_a_changed_restriction_is_patched_as_ids(self, make_device_types, server):
+        """Detect an unscoped class and replace it with the scoped catalog id."""
         device_types, _ = make_device_types()
-        server.collection("module_bay_templates").append({"id": 55, "name": "FPC 0"})
-        device_types.components.record("module_bay_templates", "device", 3, {"FPC 0": NetBoxRecord(55)})
+        assigned = {"id": 9, "name": "MX304-LMIC", "slug": "mx304-lmic", "manufacturer": None}
+        server.collection("module_bay_types").append(assigned)
+        stored = {"id": 55, "name": "FPC 0", "module_bay_types": [assigned]}
+        server.collection("module_bay_templates").append(stored)
+        device_types.components.record("module_bay_templates", "device", 3, {"FPC 0": _to_dotdict(stored)})
+        definition = {
+            "manufacturer": {"slug": "juniper"},
+            "module-bays": [{"name": "FPC 0", "module_bay_types": ["MX304-LMIC"]}],
+        }
 
-        device_types._apply_updates_for_type(
-            "module-bays", [self._change("FPC 0", ["MX304-LMIC"])], {"manufacturer": {"slug": "juniper"}}, 3, "device"
-        )
+        changes = ChangeDetector(device_types, device_types.handle)._compare_components(definition, 3)
 
-        assert server.sent("PATCH", "module_bay_templates") == [
-            {"id": 55, "module_bay_types": [created_id(server, "mx304-lmic")]}
-        ]
+        assert len(changes) == 1
+        assert changes[0].change_type == ChangeType.COMPONENT_CHANGED
+        device_types._apply_updates_for_type("module-bays", changes, definition, 3, "device")
+
+        [scoped] = [item for item in server.collection("module_bay_types") if item.get("manufacturer")]
+        assert scoped["manufacturer"]["slug"] == "juniper"
+        assert scoped["id"] != assigned["id"]
+        assert server.sent("PATCH", "module_bay_templates") == [{"id": 55, "module_bay_types": [scoped["id"]]}]
+        assert stored["module_bay_types"] == [scoped["id"]]
 
     def test_a_rejected_patch_is_collected_rather_than_raised(self, make_device_types, server):
         """The bay resolves; NetBox refuses the write. That must land in the entity's report."""
