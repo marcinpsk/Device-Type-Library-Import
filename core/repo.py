@@ -80,10 +80,24 @@ class _RestrictedUnpickler(pickle.Unpickler):
 _INDEX_MAX_BYTES = 10 * 1024 * 1024  # 10 MiB — DTL index files are typically <1 MiB
 
 
+# Variables that point git at a repository; a hook runner exports them for its own checkout.
+_GIT_LOCATION_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR")
+
+
 def open_repo(path) -> Repo:
-    """Open the repository at *path* with git bound to it over an inherited GIT_DIR or GIT_WORK_TREE."""
-    repo = Repo(path)
-    repo.git.update_environment(GIT_DIR=repo.git_dir, GIT_WORK_TREE=os.path.abspath(path))
+    """Open the repository at *path* with git bound to it over inherited ``_GIT_LOCATION_VARS``."""
+    inherited = {name: os.environ.pop(name) for name in _GIT_LOCATION_VARS if name in os.environ}
+    try:
+        repo = Repo(path)  # GitPython reads these variables from os.environ here
+    finally:
+        os.environ.update(inherited)
+    repo.git.update_environment(
+        GIT_DIR=repo.git_dir,
+        GIT_WORK_TREE=os.path.abspath(path),
+        GIT_INDEX_FILE=os.path.join(repo.git_dir, "index"),
+        GIT_COMMON_DIR=repo.common_dir,
+        GIT_OBJECT_DIRECTORY=os.path.join(repo.common_dir, "objects"),
+    )
     return repo
 
 

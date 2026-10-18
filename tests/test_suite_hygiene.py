@@ -130,9 +130,12 @@ def test_a_fake_netbox_create_never_reuses_a_stored_id():
     import pynetbox
     from helpers import FakeNetBox
 
-    server = FakeNetBox(manufacturers=[{"id": 1000, "name": "Juniper", "slug": "juniper"}])
+    server = FakeNetBox(
+        manufacturers=[{"id": 1000, "name": "Juniper", "slug": "juniper"}, {"id": 1001, "name": "HP", "slug": "hp"}]
+    )
     try:
         api = pynetbox.api(server.url, token="test-token")
+        api.dcim.manufacturers.delete([1001])
         first = api.dcim.manufacturers.create(name="Cisco", slug="cisco")
         second = api.dcim.manufacturers.create(name="Nokia", slug="nokia")
         api.dcim.manufacturers.delete([first.id])
@@ -140,7 +143,7 @@ def test_a_fake_netbox_create_never_reuses_a_stored_id():
     finally:
         server.close()
 
-    ids = [1000, first.id, second.id, third.id]
+    ids = [1000, 1001, first.id, second.id, third.id]
     assert len(set(ids)) == len(ids), ids
 
 

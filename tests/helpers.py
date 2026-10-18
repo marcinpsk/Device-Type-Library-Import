@@ -116,7 +116,8 @@ class FakeNetBox:
         ``/api/status/`` reports, which is how the export side decides what it may select.
         """
         self.collections = {name: [dict(r) for r in records] for name, records in collections.items()}
-        self._last_ids = {}  # collection name -> highest id a create assigned
+        # Collection name -> highest id seeded or assigned, so a deleted id is never handed out again.
+        self._last_ids = {name: max([999, *(r["id"] for r in records)]) for name, records in self.collections.items()}
         self.errors = dict(errors or {})
         self.netbox_version = netbox_version
         # A GET whose request target is longer than this gets 414, as from a proxy URL limit.
@@ -200,7 +201,7 @@ class FakeNetBox:
             # A bulk create is atomic: one duplicate refuses the whole batch.
             raise _Refused(errors if isinstance(payload, list) else errors[0])
         collection = self.collection(name)
-        # Ids stay above every seeded, stored and deleted id, as NetBox's sequences do.
+        # A test can also append records directly, so stored ids count too.
         last = max([self._last_ids.get(name, 999), *(r["id"] for r in collection)])
         for record in records:
             last += 1

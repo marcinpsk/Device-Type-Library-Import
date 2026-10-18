@@ -335,14 +335,19 @@ class TestDTLRepoRealGit:
         foreign_head = self._make_source_repo(foreign).head.commit.hexsha
         (source / "device-types" / "TestVendor" / "second.yaml").write_text("manufacturer: TestVendor\nmodel: Second\n")
         self._commit(source_repo, "device-types/TestVendor/second.yaml", "second device")
+        foreign_index = (foreign / ".git" / "index").read_bytes()
         monkeypatch.setenv("GIT_DIR", str(foreign / ".git"))
         monkeypatch.setenv("GIT_WORK_TREE", str(foreign))
+        monkeypatch.setenv("GIT_INDEX_FILE", str(foreign / ".git" / "index"))
+        monkeypatch.setenv("GIT_COMMON_DIR", str(foreign / ".git"))
+        monkeypatch.setenv("GIT_OBJECT_DIRECTORY", str(foreign / ".git" / "objects"))
 
         self._init_dtl(source, target)
 
         assert (target / "device-types" / "TestVendor" / "second.yaml").is_file()
         assert not (foreign / "device-types" / "TestVendor" / "second.yaml").exists()
         assert GitRepo(foreign).head.commit.hexsha == foreign_head
+        assert (foreign / ".git" / "index").read_bytes() == foreign_index
 
     def test_pulls_when_target_is_a_git_worktree(self, tmp_path):
         """A worktree holds .git as a file, so testing for a .git directory would clone over it."""
