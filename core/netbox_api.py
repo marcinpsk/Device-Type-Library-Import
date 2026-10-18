@@ -1627,12 +1627,12 @@ class NetBox:
             if wanted != current:
                 changes.append(("profile", current, wanted))
         if "attribute_data" in module_type and hasattr(existing_module, "attribute_data"):
-            declared = module_type["attribute_data"] or {}
+            declared = module_type["attribute_data"]
             stored = existing_module.attribute_data
             if not declared:
                 # NetBox replaces, not merges, the stored attributes with an empty value.
                 if stored:
-                    changes.append(("attribute_data", stored, {}))
+                    changes.append(("attribute_data", stored, declared))
                 return changes
             stored = stored if isinstance(stored, dict) else {}
             for key, wanted in declared.items():
@@ -1703,7 +1703,7 @@ class NetBox:
             if field == "profile":
                 updates["profile"] = curr_mt["profile"]
                 stored = getattr(module_type_res, "attribute_data", None)
-                declared = curr_mt.get("attribute_data") or {}
+                declared = curr_mt.get("attribute_data")
                 if "attribute_data" in curr_mt:
                     updates[_REST_ATTRIBUTES_FIELD] = declared
                 # A non-empty PATCH keeps every stored key; an undeclared set must end as no attributes, as on create.
@@ -1712,7 +1712,7 @@ class NetBox:
                     or (bool(declared) and (not isinstance(stored, dict) or bool(stored.keys() - declared)))
                 )
             else:
-                updates[_REST_ATTRIBUTES_FIELD] = curr_mt["attribute_data"] or {}
+                updates[_REST_ATTRIBUTES_FIELD] = curr_mt["attribute_data"]
         if self.module_bay_types:
             from core.module_bay_types import ModuleBayTypeError
 

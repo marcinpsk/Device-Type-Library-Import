@@ -163,17 +163,42 @@ class TestChangeDetection:
 
         assert log[0][2] == [("attribute_data.hot_swap", 1, True)]
 
-    @pytest.mark.parametrize("declared", ["{}", "null"])
-    def test_explicit_empty_attributes_clear_the_stored_ones(self, netbox, server, definition, declared):
+    @pytest.mark.parametrize(("declared", "wanted"), [("{}", {}), ("null", None)], ids=["object", "null"])
+    def test_explicit_empty_attributes_clear_the_stored_ones(self, netbox, server, definition, declared, wanted):
+        """Preserve the declared empty value in the PATCH and avoid another update after clearing."""
         nb, _ = netbox
         record = existing(server, {"id": 4, "name": "Fan"}, {"rpm": 3000})
         curr_mt = definition(f"manufacturer: Cisco\nmodel: SFP-10G-SR\nattribute_data: {declared}\n")
 
-        _, _, log = nb.filter_actionable_module_types([curr_mt], {"cisco": {"SFP-10G-SR": record}})
-        assert log[0][2] == [("attribute_data", {"rpm": 3000}, {})]
+        actionable, _, log = nb.filter_actionable_module_types([curr_mt], {"cisco": {"SFP-10G-SR": record}})
 
-        nb._try_update_module_type(curr_mt, record, "cisco/SFP-10G-SR.yaml")
-        assert server.sent("PATCH", "module_types") == [{"id": 7, "attributes": {}}]
+        assert actionable == [curr_mt]
+        assert nb._try_update_module_type(curr_mt, record, "cisco/SFP-10G-SR.yaml") == (True, True)
+        assert server.sent("PATCH", "module_types") == [{"id": 7, "attributes": wanted}]
+        assert log[0][2] == [("attribute_data", {"rpm": 3000}, wanted)]
+        [stored_type] = server.collection("module_types")
+        assert stored_type["attribute_data"] == wanted
+
+        actionable, _, log = nb.filter_actionable_module_types(
+            [curr_mt], {"cisco": {"SFP-10G-SR": _to_dotdict(stored_type)}}
+        )
+
+        assert actionable == []
+        assert log == []
+
+    @pytest.mark.parametrize("declared", ["{}", "null"])
+    def test_empty_attributes_match_stored_null(self, netbox, server, definition, declared):
+        """An empty object or null declaration leaves stored null attributes unchanged."""
+        nb, _ = netbox
+        record = existing(server, {"id": 3, "name": "Transceiver"})
+        curr_mt = definition(SFP_YAML.split("attribute_data")[0] + f"attribute_data: {declared}\n")
+
+        actionable, _, log = nb.filter_actionable_module_types([curr_mt], {"cisco": {"SFP-10G-SR": record}})
+
+        assert actionable == []
+        assert log == []
+        assert nb._try_update_module_type(curr_mt, record, "cisco/SFP-10G-SR.yaml") == (True, False)
+        assert not server.sent("PATCH", "module_types")
 
 
 class TestUpdate:
@@ -282,16 +307,31 @@ class TestUpdate:
         assert stored_type["attribute_data"] == {"rpm": 3000}
         assert any("Could not clear" in line for line in console.lines)
 
-    def test_a_profile_change_keeps_explicit_empty_attributes(self, netbox, server, definition):
+    @pytest.mark.parametrize("stored", [{}, {"rpm": 3000}], ids=["empty", "populated"])
+    @pytest.mark.parametrize(("declared", "wanted"), [("{}", {}), ("null", None)], ids=["object", "null"])
+    def test_a_profile_change_keeps_explicit_empty_attributes(
+        self, netbox, server, definition, stored, declared, wanted
+    ):
+        """An explicit empty value replaces old attributes in one PATCH when the profile changes."""
         nb, _ = netbox
-        record = existing(server, {"id": 4, "name": "Fan"}, {})
-        curr_mt = definition(SFP_YAML.split("attribute_data")[0] + "attribute_data: {}\n")
+        record = existing(server, {"id": 4, "name": "Fan"}, stored)
+        curr_mt = definition(SFP_YAML.split("attribute_data")[0] + f"attribute_data: {declared}\n")
 
         assert nb._try_update_module_type(curr_mt, record, "x.yaml") == (True, True)
 
+        assert server.sent("PATCH", "module_types") == [
+            {"id": 7, "profile": {"name": "Transceiver"}, "attributes": wanted}
+        ]
         [stored_type] = server.collection("module_types")
         assert stored_type["profile"] == {"id": 3, "name": "Transceiver"}
-        assert stored_type["attribute_data"] == {}
+        assert stored_type["attribute_data"] == wanted
+
+        actionable, _, log = nb.filter_actionable_module_types(
+            [curr_mt], {"cisco": {"SFP-10G-SR": _to_dotdict(stored_type)}}
+        )
+
+        assert actionable == []
+        assert log == []
 
     def test_a_profile_only_change_drops_empty_old_attributes(self, netbox, server, definition):
         """A new profile can reject {} (required keys) but accepts no attributes, as on create."""
