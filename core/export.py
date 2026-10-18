@@ -190,6 +190,7 @@ def _repo_supersedes(repo_yaml: dict, nb_serialized: dict) -> bool:
     Lists of named components are matched element-wise by ``name``: each NB
     component must be present in the repo with the same fields/values, but the
     repo may carry additional components or extra per-component fields.
+    Relation-name lists are sorted without removing duplicates.
     """
 
     # Normalize manufacturer to canonical slug so dict-form repo values
@@ -216,8 +217,21 @@ def _repo_supersedes(repo_yaml: dict, nb_serialized: dict) -> bool:
         fields = ("front_port", "front_port_position", "rear_port", "rear_port_position")
         return {**d, "port-mappings": sorted(mappings, key=lambda m: tuple(str(m.get(field)) for field in fields))}
 
-    nrepo = _sort_port_mappings(_normalize_for_compare(_default_positions(_norm_mfr(repo_yaml))))
-    nnb = _sort_port_mappings(_normalize_for_compare(_default_positions(_norm_mfr(nb_serialized))))
+    relations = _relation_names()
+
+    def _sort_relations(d: dict) -> dict:
+        """Sort relation-name lists on the type and its components, keeping duplicates."""
+        result = dict(d)
+        for key, value in d.items():
+            if key in relations:
+                if isinstance(value, list) and all(isinstance(name, str) for name in value):
+                    result[key] = sorted(value)
+            elif isinstance(value, list):
+                result[key] = [_sort_relations(item) if isinstance(item, dict) else item for item in value]
+        return result
+
+    nrepo = _sort_relations(_sort_port_mappings(_normalize_for_compare(_default_positions(_norm_mfr(repo_yaml)))))
+    nnb = _sort_relations(_sort_port_mappings(_normalize_for_compare(_default_positions(_norm_mfr(nb_serialized)))))
     return _is_subset(nnb, nrepo)
 
 

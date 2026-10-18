@@ -277,6 +277,45 @@ module-bays:
         assert populated["module-bays"][0]["module_bay_types"] == ["Control"]
         assert not _repo_supersedes(repo, populated), "a new restriction must trigger export"
 
+    def test_module_bay_relation_order_does_not_trigger_export(self):
+        """Relation order is cosmetic, but different names and duplicate counts must differ."""
+        from core.nb_serializer import serialize_device_type
+
+        record = _make_dt()
+        bay = _Stub(name="Slot 0", position="0", module_bay_types=[_Stub(name="A"), _Stub(name="B")])
+        serialized = serialize_device_type(record, {record.id: {"module_bay_templates": [bay]}})
+        assert serialized["module-bays"][0]["module_bay_types"] == ["A", "B"]
+        repo = {
+            **serialized,
+            "module-bays": [{"name": "Slot 0", "position": "0", "module_bay_types": ["B", "A"]}],
+        }
+
+        assert _repo_supersedes(repo, serialized), "relation order must not trigger export"
+        assert _repo_supersedes(serialized, repo), "normalize relation order on both sides"
+
+        for changed in (["A", "C"], ["B", "A", "A"], ["A"], "A", ["A", 1], ["A", {"name": "B"}]):
+            repo["module-bays"][0]["module_bay_types"] = changed
+            assert not _repo_supersedes(repo, serialized)
+            assert not _repo_supersedes(serialized, repo)
+
+    def test_module_type_relation_order_does_not_trigger_export(self):
+        """A module type relation ignores order and preserves real differences."""
+        from core.nb_serializer import serialize_module_type
+
+        record = _make_mt()
+        record.module_bay_types = [_Stub(name="A"), _Stub(name="B")]
+        serialized = serialize_module_type(record, {})
+        assert serialized["module_bay_types"] == ["A", "B"]
+        repo = {**serialized, "module_bay_types": ["B", "A"]}
+
+        assert _repo_supersedes(repo, serialized), "relation order must not trigger export"
+        assert _repo_supersedes(serialized, repo), "normalize relation order on both sides"
+
+        for changed in (["A", "C"], ["B", "A", "A"], ["A"], "A", ["A", 1], ["A", {"name": "B"}]):
+            repo["module_bay_types"] = changed
+            assert not _repo_supersedes(repo, serialized)
+            assert not _repo_supersedes(serialized, repo)
+
     def test_a_default_positions_does_not_make_every_front_port_differ(self):
         """The export writes the schema-required positions; it must not re-export the library.
 
