@@ -3205,8 +3205,9 @@ class DeviceTypes:
         """Upload an image as an Image Attachment to a NetBox object.
 
         Attaches an image to any NetBox object type (e.g. module types, which lack built-in
-        image fields).  After a transient error the attachment is looked up by name on that
-        object before the upload is sent again, so a lost reply does not create a second one.
+        image fields).  Record matching attachment IDs before uploading because names are not
+        unique.  After a transient error, accept only a new matching attachment.  Multiple
+        new matches are ambiguous and fail the upload instead of reporting success.
 
         Args:
             image_path (str): Local file path of the image to upload.
@@ -3231,9 +3232,20 @@ class DeviceTypes:
         }
         with f:
             try:
-                create_with_retry(
-                    self.netbox.extras.image_attachments, payload, "name", object_type=object_type, object_id=object_id
-                )
+                endpoint = self.netbox.extras.image_attachments
+                filters = {"object_type": object_type, "object_id": object_id, "name": payload["name"]}
+                existing_ids = call_with_retry(lambda: {attachment.id for attachment in endpoint.filter(**filters)})
+
+                def find_created():
+                    """Return the sole matching attachment created after the initial lookup."""
+                    matches = [
+                        attachment for attachment in endpoint.filter(**filters) if attachment.id not in existing_ids
+                    ]
+                    if len(matches) > 1:
+                        raise ValueError("Multiple new image attachments match the upload")
+                    return matches[0] if matches else None
+
+                call_with_retry(endpoint.create, payload, find_existing=find_created)
             except pynetbox.RequestError as e:
                 self.handle.log(f"Error uploading image attachment for {target}: {_format_request_error(e)}")
                 return False
@@ -3241,7 +3253,6 @@ class DeviceTypes:
                 self.handle.log(f"Error uploading image attachment for {target} after {MAX_RETRIES} retries: {e}")
                 return False
             except ValueError as e:
-                # Endpoint.get raises this when the lookup before a retry matches more than one attachment.
                 self.handle.log(f"Cannot tell if the image attachment for {target} was created: {e}")
                 return False
         self.handle.verbose_log(f"Image attachment '{filename}' uploaded for {target}")

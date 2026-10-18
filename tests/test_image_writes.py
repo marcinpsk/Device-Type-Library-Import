@@ -11,6 +11,7 @@ from helpers import FakeNetBox, recording_handle
 
 from core.graphql_client import NetBoxGraphQLClient
 from core.netbox_api import DeviceTypes, NetBox
+from core.retry import MAX_RETRIES
 
 # The suite patches requests.Session by default, which would stop every request below.
 pytestmark = pytest.mark.real_http
@@ -98,13 +99,21 @@ class TestUploadImageAttachment:
         assert console.lines == []
 
     @pytest.mark.parametrize("reply", REPLIES)
-    def test_a_broken_reply_does_not_create_a_second_attachment(self, device_types, server, image, reply):
+    @pytest.mark.parametrize("old_count", [0, 1, 2])
+    def test_a_broken_reply_does_not_create_a_second_attachment(self, device_types, server, image, reply, old_count):
+        """A lost reply recovers the new attachment even when its name already exists."""
         dt, console, progress = device_types
+        old = {"object_type": "dcim.moduletype", "object_id": "42", "name": "c9300.front"}
+        server.collection("image_attachments").extend({**old, "id": index + 1} for index in range(old_count))
         server.broken_replies = {("POST", 1): reply}
 
         assert dt.upload_image_attachment(image, "dcim.moduletype", 42) is True
 
-        assert len(server.collection("image_attachments")) == 1
+        stored = server.collection("image_attachments")
+        assert len(stored) == old_count + 1
+        [created] = [attachment for attachment in stored if attachment["id"] > old_count]
+        assert created["image"] == "/media/c9300.front.png"
+        assert server.uploads == [("image", "c9300.front.png", IMAGE_BYTES)]
         assert requests_to(server, "POST", "image_attachments") == 1
         assert dt.counter["images"] == 1
         assert progress == [1]
@@ -119,6 +128,26 @@ class TestUploadImageAttachment:
 
         assert [data for _field, _name, data in server.uploads] == [IMAGE_BYTES, IMAGE_BYTES]
         assert len(server.collection("image_attachments")) == 1
+
+    def test_a_retry_does_not_take_an_old_attachment(self, device_types, server, image):
+        """An old duplicate cannot stand in for an upload that did not commit."""
+        dt, console, progress = device_types
+        old = {"object_type": "dcim.moduletype", "object_id": "42", "name": "c9300.front"}
+        server.collection("image_attachments").extend([{**old, "id": 1}, {**old, "id": 2}])
+        assert dt.delete_image_attachment(1) is True
+        server.broken_replies = {("POST", 1): "dropped"}
+
+        assert dt.upload_image_attachment(image, "dcim.moduletype", 42) is True
+
+        assert requests_to(server, "POST", "image_attachments") == 2
+        stored = server.collection("image_attachments")
+        assert len(stored) == 2
+        [created] = [attachment for attachment in stored if attachment["id"] != 2]
+        assert created["image"] == "/media/c9300.front.png"
+        assert [data for _field, _name, data in server.uploads] == [IMAGE_BYTES, IMAGE_BYTES]
+        assert dt.counter["images"] == 1
+        assert progress == [1]
+        assert console.lines == []
 
     def test_a_rejected_upload_returns_false_and_logs_netbox_reason(self, device_types, server, image):
         dt, console, progress = device_types
@@ -143,11 +172,42 @@ class TestUploadImageAttachment:
         assert dt.upload_image_attachment(image, "dcim.moduletype", 43) is True
         assert [r["object_id"] for r in server.collection("image_attachments")] == ["43"]
 
-    def test_an_ambiguous_lookup_after_a_lost_reply_fails_that_upload(self, device_types, server, image):
-        """Two attachments with the name: nothing tells which one the lost reply created."""
+    @pytest.mark.parametrize("reply", REPLIES)
+    def test_a_broken_initial_lookup_is_retried(self, device_types, server, image, reply):
+        """One transport error in the initial lookup is retried, then the upload goes ahead."""
+        dt, _, _ = device_types
+        break_every(server, "GET", 1, reply)
+
+        assert dt.upload_image_attachment(image, "dcim.moduletype", 42) is True
+
+        assert requests_to(server, "POST", "image_attachments") == 1
+        assert len(server.collection("image_attachments")) == 1
+
+    @pytest.mark.parametrize("reply", REPLIES)
+    def test_a_broken_initial_lookup_fails_before_uploading(self, device_types, server, image, reply):
+        """An initial lookup that fails on every attempt logs a failure and sends no upload."""
+        dt, console, progress = device_types
+        break_every(server, "GET", MAX_RETRIES + 1, reply)
+
+        assert dt.upload_image_attachment(image, "dcim.moduletype", 42) is False
+
+        assert f"Error uploading image attachment for dcim.moduletype 42 after {MAX_RETRIES} retries" in logged(console)
+        assert requests_to(server, "POST", "image_attachments") == 0
+        assert dt.counter["images"] == 0
+        assert progress == []
+
+    def test_an_ambiguous_lookup_after_a_lost_reply_fails_that_upload(self, device_types, server, image, monkeypatch):
+        """Two new attachments with the same name leave the committed upload ambiguous."""
         dt, console, _ = device_types
-        old = {"object_type": "dcim.moduletype", "object_id": "42", "name": "c9300.front"}
-        server.collection("image_attachments").append({**old, "id": 1})
+        reply_to = server._reply_to
+
+        def reply_after_another_create(handler, verb, answer):
+            """Simulate another writer that commits before the upload reply is lost."""
+            if verb == "POST":
+                server.collection("image_attachments").append({**answer[1], "id": 1})
+            reply_to(handler, verb, answer)
+
+        monkeypatch.setattr(server, "_reply_to", reply_after_another_create)
         server.broken_replies = {("POST", 1): "lost"}
 
         assert dt.upload_image_attachment(image, "dcim.moduletype", 42) is False
