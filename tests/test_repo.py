@@ -17,6 +17,7 @@ from core.repo import (
     GitInvalidRepositoryError,
     InvalidGitURLError,
     InvalidRepoPathError,
+    _reached_through_link,
     _resolve_index_path,
     _safe_index_load,
     _safe_json_load,
@@ -250,22 +251,12 @@ class TestDTLRepoLocalMode:
         mock_git_repo.assert_not_called()
 
 
+@pytest.mark.real_git
 class TestDTLRepoRealGit:
     """Clone/pull branching driven against a real local Git repository (no git mocks)."""
 
     # Pinned so the fixture never depends on ambient git config or on getpass.getuser().
     ACTOR = Actor("DTL test", "dtl-test@example.invalid")
-
-    @pytest.fixture(autouse=True)
-    def mock_git_repo(self):
-        """Override the global autouse git mock so these tests exercise real git."""
-        return
-
-    @pytest.fixture(autouse=True)
-    def clear_ambient_git_env(self, monkeypatch):
-        """Drop git's per-command variables: a hook runner exports GIT_DIR for the outer repo."""
-        for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"):
-            monkeypatch.delenv(var, raising=False)
 
     @classmethod
     def _commit(cls, repo, path, message):
@@ -1546,6 +1537,23 @@ class TestRestrictedPickleLoading:
             _safe_pickle_load(str(path))
 
 
+def _write_definitions(root, *relpaths):
+    """Create the definition files an index entry points at, so the disk agrees with it."""
+    for relpath in relpaths:
+        path = root / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("manufacturer: Test\nmodel: Test\n")
+
+
+def _commit_library(root):
+    """Commit everything under *root*, so the device index describes the checkout."""
+    git_repo = GitRepo.init(root, initial_branch="master")
+    git_repo.git.add("-A")
+    git_repo.index.commit("library", author=Actor("t", "t@example.com"), committer=Actor("t", "t@example.com"))
+    return git_repo
+
+
+@pytest.mark.real_git
 class TestResolveSlugFiles:
     """Tests for the pickle-based slug fast path."""
 
@@ -1568,6 +1576,7 @@ class TestResolveSlugFiles:
 
     def test_returns_none_when_pickle_missing(self, tmp_path):
         """Returns None gracefully when the device pickle doesn't exist."""
+        _commit_library(tmp_path)
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
@@ -1583,10 +1592,9 @@ class TestResolveSlugFiles:
         tests_dir.mkdir()
         known = {("nokia-7750-sr-7s", "device-types/Nokia/7750-SR-7s.yaml")}
         (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(known))
-        # Create an empty module/rack pickle so those code paths don't crash
-        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
+        _write_definitions(tmp_path, "device-types/Nokia/7750-SR-7s.yaml")
 
+        _commit_library(tmp_path)
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
@@ -1594,9 +1602,9 @@ class TestResolveSlugFiles:
         result = repo.resolve_slug_files(["nokia-7750-sr-7s"])
 
         assert result is not None
-        assert "nokia" in result["device_files"]
+        assert "nokia" in result
         expected_path = str(tmp_path / "device-types" / "Nokia" / "7750-SR-7s.yaml")
-        assert expected_path in result["device_files"]["nokia"]
+        assert expected_path in result["nokia"]
 
     def test_substring_match(self, tmp_path):
         """Partial slug matches (substring) are found."""
@@ -1610,9 +1618,9 @@ class TestResolveSlugFiles:
             ("cisco-catalyst-9200", "device-types/Cisco/Catalyst-9200.yaml"),
         }
         (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(known))
-        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
+        _write_definitions(tmp_path, *(relpath for _, relpath in known))
 
+        _commit_library(tmp_path)
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
@@ -1620,21 +1628,20 @@ class TestResolveSlugFiles:
         result = repo.resolve_slug_files(["7750-sr"])
 
         assert result is not None
-        assert "nokia" in result["device_files"]
-        assert len(result["device_files"]["nokia"]) == 2
-        assert "cisco" not in result["device_files"]
+        assert "nokia" in result
+        assert len(result["nokia"]) == 2
+        assert "cisco" not in result
 
     def test_no_match_returns_empty_dict(self, tmp_path):
-        """No matching slug returns empty device_files (not None)."""
+        """No matching slug returns an empty dict (not None)."""
         import pickle
 
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
         known = {("cisco-catalyst-9200", "device-types/Cisco/Catalyst-9200.yaml")}
         (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(known))
-        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
 
+        _commit_library(tmp_path)
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
@@ -1642,14 +1649,14 @@ class TestResolveSlugFiles:
         result = repo.resolve_slug_files(["nokia-7750-sr-7s"])
 
         assert result is not None
-        assert result["device_files"] == {}
-        assert result["module_vendors"] == set()
+        assert result == {}
 
     def test_corrupted_device_pickle_returns_none(self, tmp_path):
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
         (tests_dir / "known-slugs.pickle").write_bytes(b"not-a-pickle")
 
+        _commit_library(tmp_path)
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
@@ -1662,91 +1669,15 @@ class TestResolveSlugFiles:
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
         (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps({("nokia-7750-sr-7s", "device-types/Nokia.yaml")}))
-        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
 
+        _commit_library(tmp_path)
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
 
         result = repo.resolve_slug_files(["7750-sr"])
 
-        assert result["device_files"] == {}
-
-    def test_corrupted_module_pickle_is_ignored(self, tmp_path):
-        import pickle
-
-        tests_dir = tmp_path / "tests"
-        tests_dir.mkdir()
-        (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-modules.pickle").write_bytes(b"bad-module-pickle")
-        (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
-
-        repo = self._make_repo()
-        repo.repo_path = str(tmp_path)
-        repo.cwd = ""
-
-        result = repo.resolve_slug_files(["module"])
-
-        assert result["module_vendors"] is None
-
-    def test_matching_module_pickle_adds_vendor_slug(self, tmp_path):
-        import pickle
-
-        tests_dir = tmp_path / "tests"
-        tests_dir.mkdir()
-        (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps({("7750 line card", "module-types/Nokia")}))
-        (tests_dir / "known-racks.pickle").write_bytes(pickle.dumps(set()))
-
-        repo = self._make_repo()
-        repo.repo_path = str(tmp_path)
-        repo.cwd = ""
-
-        result = repo.resolve_slug_files(["7750"])
-
-        assert result["module_vendors"] == {"nokia"}
-
-    def test_corrupted_rack_pickle_is_ignored(self, tmp_path):
-        import pickle
-
-        tests_dir = tmp_path / "tests"
-        tests_dir.mkdir()
-        (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-racks.pickle").write_bytes(b"bad-rack-pickle")
-
-        repo = self._make_repo()
-        repo.repo_path = str(tmp_path)
-        repo.cwd = ""
-
-        result = repo.resolve_slug_files(["rack"])
-
-        assert result["rack_vendors"] is None
-
-    def test_rack_pickle_only_uses_rack_type_entries(self, tmp_path):
-        import pickle
-
-        tests_dir = tmp_path / "tests"
-        tests_dir.mkdir()
-        (tests_dir / "known-slugs.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-modules.pickle").write_bytes(pickle.dumps(set()))
-        (tests_dir / "known-racks.pickle").write_bytes(
-            pickle.dumps(
-                {
-                    ("42U Rack", "rack-types/APC"),
-                    ("Not A Rack", "module-types/Nokia"),
-                }
-            )
-        )
-
-        repo = self._make_repo()
-        repo.repo_path = str(tmp_path)
-        repo.cwd = ""
-
-        result = repo.resolve_slug_files(["rack"])
-
-        assert result["rack_vendors"] == {"apc"}
+        assert result == {}
 
 
 class TestIndexLoaders:
@@ -1787,6 +1718,7 @@ class TestIndexLoaders:
         assert _safe_index_load(str(pickle_path)) == {("p", "q")}
 
 
+@pytest.mark.real_git
 class TestResolveSlugFilesJson:
     """Tests for the JSON slug fast path (current upstream format)."""
 
@@ -1802,9 +1734,9 @@ class TestResolveSlugFilesJson:
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
         self._write_json(tests_dir, "known-slugs", [("nokia-7750-sr-7s", "device-types/Nokia/7750-SR-7s.yaml")])
-        self._write_json(tests_dir, "known-modules", [])
-        self._write_json(tests_dir, "known-racks", [])
+        _write_definitions(tmp_path, "device-types/Nokia/7750-SR-7s.yaml")
 
+        _commit_library(tmp_path)
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
@@ -1813,22 +1745,7 @@ class TestResolveSlugFilesJson:
 
         assert result is not None
         expected_path = str(tmp_path / "device-types" / "Nokia" / "7750-SR-7s.yaml")
-        assert expected_path in result["device_files"]["nokia"]
-
-    def test_matching_module_json_adds_vendor_slug(self, tmp_path):
-        tests_dir = tmp_path / "tests"
-        tests_dir.mkdir()
-        self._write_json(tests_dir, "known-slugs", [])
-        self._write_json(tests_dir, "known-modules", [("7750 line card", "module-types/Nokia")])
-        self._write_json(tests_dir, "known-racks", [])
-
-        repo = self._make_repo()
-        repo.repo_path = str(tmp_path)
-        repo.cwd = ""
-
-        result = repo.resolve_slug_files(["7750"])
-
-        assert result["module_vendors"] == {"nokia"}
+        assert expected_path in result["nokia"]
 
     def test_json_preferred_over_pickle(self, tmp_path):
         """When both formats exist, JSON wins — pickle here would yield a different match."""
@@ -1838,30 +1755,170 @@ class TestResolveSlugFilesJson:
         tests_dir.mkdir()
         self._write_json(tests_dir, "known-slugs", [("nokia-7750-sr-7s", "device-types/Nokia/7750-SR-7s.yaml")])
         (tests_dir / "known-slugs.pickle").write_bytes(
-            pickle.dumps({("cisco-catalyst-9200", "device-types/Cisco/Catalyst-9200.yaml")})
+            pickle.dumps({("other-slug", "device-types/Nokia/7750-SR-7s.yaml")})
         )
-        self._write_json(tests_dir, "known-modules", [])
-        self._write_json(tests_dir, "known-racks", [])
+        _write_definitions(tmp_path, "device-types/Nokia/7750-SR-7s.yaml")
 
+        _commit_library(tmp_path)
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
 
-        result = repo.resolve_slug_files(["nokia"])
-
-        assert "nokia" in result["device_files"]
-        assert "cisco" not in result["device_files"]
+        assert "nokia" in repo.resolve_slug_files(["nokia"])
+        assert repo.resolve_slug_files(["other-slug"]) == {}
 
     def test_corrupted_device_json_returns_none(self, tmp_path):
         tests_dir = tmp_path / "tests"
         tests_dir.mkdir()
         (tests_dir / "known-slugs.json").write_text("{not valid json")
 
+        _commit_library(tmp_path)
         repo = self._make_repo()
         repo.repo_path = str(tmp_path)
         repo.cwd = ""
 
         assert repo.resolve_slug_files(["nokia"]) is None
+
+
+@pytest.mark.real_git
+class TestDeviceIndexAgainstTheCheckout:
+    """The device index describes the commit that last wrote it, so later changes must be parsed."""
+
+    def _library(self, root):
+        import json
+
+        (root / "tests").mkdir(parents=True)
+        (root / "tests" / "known-slugs.json").write_text(
+            json.dumps(
+                [["acme-old-box", "device-types/Acme/old-box.yaml"], ["acme-other", "device-types/Acme/other.yaml"]]
+            )
+        )
+        for name, slug in (("old-box", "acme-old-box"), ("other", "acme-other")):
+            path = root / "device-types" / "Acme" / f"{name}.yaml"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.is_symlink():
+                continue
+            path.write_text(f"manufacturer: Acme\nmodel: {name}\nslug: {slug}\n")
+        return _commit_library(root)
+
+    def _resolve(self, root, slugs):
+        repo = TestResolveSlugFiles._make_repo(self)
+        repo.repo_path = str(root)
+        repo.cwd = ""
+        return repo.resolve_slug_files(slugs)
+
+    def test_an_unchanged_indexed_file_that_does_not_match_is_not_selected(self, tmp_path):
+        self._library(tmp_path)
+
+        assert self._resolve(tmp_path, ["old-box"]) == {"acme": [str(tmp_path / "device-types/Acme/old-box.yaml")]}
+
+    def test_an_uncommitted_slug_change_is_selected(self, tmp_path):
+        self._library(tmp_path)
+        (tmp_path / "device-types/Acme/old-box.yaml").write_text("manufacturer: Acme\nmodel: Box\nslug: acme-new\n")
+
+        assert self._resolve(tmp_path, ["acme-new"]) == {"acme": [str(tmp_path / "device-types/Acme/old-box.yaml")]}
+
+    def test_an_inherited_git_work_tree_does_not_hide_a_change(self, tmp_path, monkeypatch):
+        """A hook runner can export GIT_DIR and GIT_WORK_TREE for another checkout."""
+        target, foreign = tmp_path / "target", tmp_path / "foreign"
+        self._library(target)
+        self._library(foreign)
+        (target / "device-types/Acme/old-box.yaml").write_text("manufacturer: Acme\nmodel: Box\nslug: acme-new\n")
+        monkeypatch.setenv("GIT_DIR", str(foreign / ".git"))
+        monkeypatch.setenv("GIT_WORK_TREE", str(foreign))
+
+        assert self._resolve(target, ["acme-new"]) == {"acme": [str(target / "device-types/Acme/old-box.yaml")]}
+
+    def test_a_slug_change_committed_after_the_index_is_selected(self, tmp_path):
+        git_repo = self._library(tmp_path)
+        (tmp_path / "device-types/Acme/other.yaml").write_text("manufacturer: Acme\nmodel: Other\nslug: acme-new\n")
+        git_repo.index.add(["device-types/Acme/other.yaml"])
+        git_repo.index.commit("fork edit", author=Actor("t", "t@example.com"), committer=Actor("t", "t@example.com"))
+
+        assert self._resolve(tmp_path, ["acme-new"]) == {"acme": [str(tmp_path / "device-types/Acme/other.yaml")]}
+
+    def test_an_index_that_differs_from_its_commit_is_not_used(self, tmp_path):
+        self._library(tmp_path)
+        (tmp_path / "tests" / "known-slugs.json").write_text("[]")
+
+        assert self._resolve(tmp_path, ["old-box"]) is None
+
+    def test_a_checkout_that_is_not_a_git_work_tree_is_not_compared(self, tmp_path):
+        self._library(tmp_path)
+        import shutil
+
+        shutil.rmtree(tmp_path / ".git")
+
+        assert self._resolve(tmp_path, ["old-box"]) is None
+
+    def test_a_shallow_clone_is_not_compared(self, tmp_path):
+        self._library(tmp_path / "source")
+        GitRepo.clone_from(f"file://{tmp_path / 'source'}", tmp_path / "shallow", depth=1)
+
+        assert self._resolve(tmp_path / "shallow", ["old-box"]) is None
+
+    def test_a_symlinked_definition_is_always_selected(self, tmp_path):
+        target = tmp_path / "shared" / "other.yaml"
+        target.parent.mkdir()
+        target.write_text("manufacturer: Acme\nmodel: Other\nslug: acme-other\n")
+        (tmp_path / "device-types/Acme").mkdir(parents=True)
+        (tmp_path / "device-types/Acme/other.yaml").symlink_to("../../shared/other.yaml")
+        self._library(tmp_path)
+        target.write_text("manufacturer: Acme\nmodel: Other\nslug: acme-new\n")
+
+        assert self._resolve(tmp_path, ["acme-new"]) == {"acme": [str(tmp_path / "device-types/Acme/other.yaml")]}
+
+    def test_a_definition_under_a_symlinked_directory_is_always_selected(self, tmp_path):
+        shared = tmp_path / "shared" / "Acme"
+        shared.mkdir(parents=True)
+        (tmp_path / "device-types").mkdir()
+        (tmp_path / "device-types/Acme").symlink_to("../shared/Acme")
+        self._library(tmp_path)
+        (shared / "other.yaml").write_text("manufacturer: Acme\nmodel: Other\nslug: acme-new\n")
+
+        selected = self._resolve(tmp_path, ["acme-new"])["acme"]
+        assert sorted(selected) == [str(tmp_path / f"device-types/Acme/{n}.yaml") for n in ("old-box", "other")]
+
+    def test_a_local_library_runs_no_git_and_does_not_use_the_index(self, tmp_path):
+        self._library(tmp_path)
+        repo = _dtl_repo(MagicMock(repo_url="local", repo_branch="master"), str(tmp_path), LogHandler(False))
+
+        with patch("core.repo.Repo", side_effect=AssertionError("git must not run")):
+            assert repo.resolve_slug_files(["old-box"]) is None
+
+    def test_a_repo_path_with_glob_characters_lists_its_files(self, tmp_path):
+        root = tmp_path / "lib[local]"
+        self._library(root)
+
+        assert self._resolve(root, ["old-box"]) == {"acme": [str(root / "device-types/Acme/old-box.yaml")]}
+
+
+class TestReachedThroughLink:
+    """The link check compares native paths, so a POSIX index relpath matches on Windows too."""
+
+    def test_a_plain_windows_path_is_not_a_link(self, monkeypatch):
+        import ntpath
+
+        monkeypatch.setattr(os, "path", ntpath)
+        abs_path = r"C:\dtl\device-types\Acme\other.yaml"
+
+        assert not _reached_through_link(abs_path, r"C:\dtl", "device-types/Acme/other.yaml")
+
+    def test_a_windows_path_that_resolves_elsewhere_is_a_link(self, monkeypatch):
+        import ntpath
+
+        monkeypatch.setattr(os, "path", ntpath)
+
+        assert _reached_through_link(r"C:\shared\other.yaml", r"C:\dtl", "device-types/Acme/other.yaml")
+
+    def test_a_windows_path_that_differs_only_in_case_is_a_link(self, monkeypatch):
+        """A case-sensitive directory can hold both names, so only an exact match is safe to trust."""
+        import ntpath
+
+        monkeypatch.setattr(os, "path", ntpath)
+        abs_path = r"C:\dtl\DEVICE-TYPES\Acme\other.yaml"
+
+        assert _reached_through_link(abs_path, r"C:\dtl", "device-types/Acme/other.yaml")
 
 
 class TestAnExplicitlyEmptyStanza:
