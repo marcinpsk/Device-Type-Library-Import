@@ -212,6 +212,7 @@ def _repo_supersedes(repo_yaml: dict, nb_serialized: dict) -> bool:
         mappings = d.get("port-mappings")
         if not isinstance(mappings, list) or not all(isinstance(mapping, dict) for mapping in mappings):
             return d
+        mappings = [{"front_port_position": 1, "rear_port_position": 1, **mapping} for mapping in mappings]
         fields = ("front_port", "front_port_position", "rear_port", "rear_port_position")
         return {**d, "port-mappings": sorted(mappings, key=lambda m: tuple(str(m.get(field)) for field in fields))}
 

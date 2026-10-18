@@ -297,6 +297,46 @@ module-bays:
 
         assert _repo_supersedes(repo, nb), "an omitted positions is the default, not a difference"
 
+    def test_default_port_mapping_positions_do_not_trigger_export(self):
+        """A stanza entry that omits a mapping position means the default 1, not a difference."""
+        from core.graphql_client import DotDict
+        from core.nb_serializer import serialize_device_type
+
+        repo = {
+            "manufacturer": "Acme",
+            "model": "Panel",
+            "slug": "acme-panel",
+            "u_height": 1,
+            "is_full_depth": False,
+            "front-ports": [{"name": "FP1", "type": "lc-upc", "positions": 2}],
+            "port-mappings": [
+                {"front_port": "FP1", "rear_port": "RP1"},
+                {"front_port": "FP1", "front_port_position": 2, "rear_port": "RP2"},
+            ],
+        }
+        record = DotDict(
+            id=1, manufacturer=DotDict(name="Acme"), model="Panel", slug="acme-panel", u_height=1, is_full_depth=False
+        )
+        port = DotDict(
+            name="FP1",
+            type="lc-upc",
+            positions=2,
+            mappings=[
+                DotDict(rear_port=DotDict(name="RP2"), front_port_position=2, rear_port_position=1),
+                DotDict(rear_port=DotDict(name="RP1"), front_port_position=1, rear_port_position=1),
+            ],
+        )
+        serialized = serialize_device_type(record, {1: {"front_port_templates": [port]}})
+
+        assert serialized["port-mappings"] == [
+            {"front_port": "FP1", "front_port_position": 1, "rear_port": "RP1", "rear_port_position": 1},
+            {"front_port": "FP1", "front_port_position": 2, "rear_port": "RP2", "rear_port_position": 1},
+        ]
+        assert _repo_supersedes(repo, serialized), "omitted mapping positions must use the default before sorting"
+
+        repo["port-mappings"][0]["rear_port_position"] = 2
+        assert not _repo_supersedes(repo, serialized), "a real mapping position change must trigger export"
+
     def test_a_non_default_positions_still_differs(self):
         """Only the default may be treated as absent, or a real change would be suppressed."""
         repo = {"model": "PP", "front-ports": [{"name": "FP1", "type": "8p8c"}]}
