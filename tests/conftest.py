@@ -125,6 +125,16 @@ def mock_graphql_requests(request):
         yield mock_session.post
 
 
+@pytest.fixture(autouse=True)
+def no_write_retry_backoff(request):
+    """Skip the 2+5+10 s wait between NetBox write retries; integration tests keep it."""
+    if request.node.get_closest_marker("integration"):
+        yield
+        return
+    with patch("core.retry.time.sleep"):
+        yield
+
+
 @pytest.fixture
 def no_retry_backoff():
     """Drop the client's 1+2+4s retry back-off, leaving the retry count and error type intact."""

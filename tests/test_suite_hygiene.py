@@ -8,6 +8,8 @@ import subprocess
 import sys
 import tomllib
 
+import pytest
+
 _TESTS_DIR = pathlib.Path(__file__).resolve().parent
 _ROOT = _TESTS_DIR.parent
 
@@ -120,3 +122,40 @@ def test_no_test_function_contains_an_orphaned_docstring():
     assert not offenders, "Bare string statement inside a test function, likely a lost `def` header:\n" + "\n".join(
         offenders
     )
+
+
+@pytest.mark.real_http
+def test_a_fake_netbox_create_never_reuses_a_stored_id():
+    """The fake must not give a new record the id of a seeded or still-stored one."""
+    import pynetbox
+    from helpers import FakeNetBox
+
+    server = FakeNetBox(manufacturers=[{"id": 1000, "name": "Juniper", "slug": "juniper"}])
+    try:
+        api = pynetbox.api(server.url, token="test-token")
+        first = api.dcim.manufacturers.create(name="Cisco", slug="cisco")
+        second = api.dcim.manufacturers.create(name="Nokia", slug="nokia")
+        api.dcim.manufacturers.delete([first.id])
+        third = api.dcim.manufacturers.create(name="Arista", slug="arista")
+    finally:
+        server.close()
+
+    ids = [1000, first.id, second.id, third.id]
+    assert len(set(ids)) == len(ids), ids
+
+
+def test_the_suite_skips_the_write_retry_backoff():
+    """A test that drives write retries must not wait 2+5+10 s of real backoff."""
+    import time
+
+    import requests
+
+    from core.retry import call_with_retry
+
+    def offline():
+        raise requests.exceptions.ConnectionError("offline")
+
+    started = time.monotonic()
+    with pytest.raises(requests.exceptions.ConnectionError):
+        call_with_retry(offline)
+    assert time.monotonic() - started < 1
