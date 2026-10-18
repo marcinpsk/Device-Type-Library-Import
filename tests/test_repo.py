@@ -322,6 +322,28 @@ class TestDTLRepoRealGit:
 
         assert (target / "device-types" / "TestVendor" / "second.yaml").is_file()
 
+    def test_a_pull_ignores_an_inherited_git_work_tree(self, tmp_path, monkeypatch):
+        """An exported GIT_DIR or GIT_WORK_TREE for another checkout must not receive the checkout."""
+        source = tmp_path / "source"
+        source.mkdir()
+        source_repo = self._make_source_repo(source)
+        target = tmp_path / "repo"
+        target.mkdir()
+        self._init_dtl(source, target)
+        foreign = tmp_path / "foreign"
+        foreign.mkdir()
+        foreign_head = self._make_source_repo(foreign).head.commit.hexsha
+        (source / "device-types" / "TestVendor" / "second.yaml").write_text("manufacturer: TestVendor\nmodel: Second\n")
+        self._commit(source_repo, "device-types/TestVendor/second.yaml", "second device")
+        monkeypatch.setenv("GIT_DIR", str(foreign / ".git"))
+        monkeypatch.setenv("GIT_WORK_TREE", str(foreign))
+
+        self._init_dtl(source, target)
+
+        assert (target / "device-types" / "TestVendor" / "second.yaml").is_file()
+        assert not (foreign / "device-types" / "TestVendor" / "second.yaml").exists()
+        assert GitRepo(foreign).head.commit.hexsha == foreign_head
+
     def test_pulls_when_target_is_a_git_worktree(self, tmp_path):
         """A worktree holds .git as a file, so testing for a .git directory would clone over it."""
         source = tmp_path / "source"

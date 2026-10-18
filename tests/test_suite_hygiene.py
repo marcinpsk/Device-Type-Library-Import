@@ -159,3 +159,30 @@ def test_the_suite_skips_the_write_retry_backoff():
     with pytest.raises(requests.exceptions.ConnectionError):
         call_with_retry(offline)
     assert time.monotonic() - started < 1
+
+
+def _bare_repo_calls(tree):
+    """Yield the line of each ``Repo(...)`` call outside ``open_repo``."""
+    allowed = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "open_repo":
+            allowed.update(id(inner) for inner in ast.walk(node))
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "Repo"
+            and id(node) not in allowed
+        ):
+            yield node.lineno
+
+
+def test_core_opens_git_repositories_only_through_open_repo():
+    """A bare Repo(path) inherits GIT_DIR and GIT_WORK_TREE, so git can act on another checkout."""
+    offenders = [
+        f"{path.relative_to(_ROOT)}:{lineno}"
+        for path in sorted((_ROOT / "core").rglob("*.py"))
+        for lineno in _bare_repo_calls(ast.parse(path.read_text(encoding="utf-8")))
+    ]
+
+    assert not offenders, "Use core.repo.open_repo instead of Repo():\n" + "\n".join(offenders)

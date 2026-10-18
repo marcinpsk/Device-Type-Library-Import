@@ -80,6 +80,13 @@ class _RestrictedUnpickler(pickle.Unpickler):
 _INDEX_MAX_BYTES = 10 * 1024 * 1024  # 10 MiB — DTL index files are typically <1 MiB
 
 
+def open_repo(path) -> Repo:
+    """Open the repository at *path* with git bound to it over an inherited GIT_DIR or GIT_WORK_TREE."""
+    repo = Repo(path)
+    repo.git.update_environment(GIT_DIR=repo.git_dir, GIT_WORK_TREE=os.path.abspath(path))
+    return repo
+
+
 def _resolve_index_path(base_dir: str, stem: str) -> "str | None":
     """Return the path to a DTL index file, preferring the JSON form over the legacy pickle.
 
@@ -591,7 +598,7 @@ class DTLRepo:
             self.handle.log(
                 "Package devicetype-library is already installed, " + f"updating {self.get_absolute_path()}"
             )
-            self.repo = Repo(self.repo_path)
+            self.repo = open_repo(self.repo_path)
             origin_url = self.repo.remotes.origin.url
             remote_label = origin_url
 
