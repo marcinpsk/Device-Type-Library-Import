@@ -2,6 +2,37 @@
 
 <!-- version list -->
 
+## v1.9.1 (2026-10-23)
+
+### Bug Fixes
+
+- **deps**: Bump certifi from 2025.11.12 to 2026.10.19 (#153, [`782131d`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/782131d7742167b965dfccc0093f411f2eabc7f0))
+
+
+### Chores
+
+- **deps**: Bump virtualenv from 21.7.13 to 21.14.9 (#155, [`4b8ad90`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/4b8ad90df2a39a8cc7de4f89159dc979d6466a30))
+- **deps**: Bump gitpython from 3.2.0 to 3.2.1 (#154, [`c571a8d`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/c571a8de690923dea52580d56dd5640d10bf1906))
+- **deps**: Bump the python-deps group with 3 updates (#152, [`c2ac139`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/c2ac1390f7c0747a047b7b368c00b568d633e906))
+- **deps**: Bump the github-actions group with 2 updates (#151, [`3056a39`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/3056a39e74109e66d7da14ad6d5eb6b11db9eca9))
+- **deps**: Bump the python-deps group with 4 updates (#147, [`01d06bb`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/01d06bb14a03bd3af57c3b91cd2cdfc58b7cce0e))
+- **deps**: Bump virtualenv from 20.36.1 to 21.7.13 (#146, [`74084ec`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/74084ec4e9cb9bfe587308ed4dff805eb281fefb))
+- **deps**: Bump urllib3 from 2.7.0 to 2.8.0 (#145, [`cdcac30`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/cdcac308ca7488a4c2e242adfd32c9c7700da834))
+- **deps-dev**: Bump the python-deps group with 2 updates (#144, [`004e36c`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/004e36c0a28ff60e0f69aad9dde31587bf21f073))
+- **deps-dev**: Bump ruff in the python-deps group (#143, [`0e90d96`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/0e90d96002f5a2e1c09868e53b73036ee583a7a6))
+- **deps**: Bump the github-actions group with 4 updates (#142, [`6b6ccc6`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/6b6ccc682ac634bfb1b7a731fedade4c77bf6d08))
+- **deps-dev**: Bump the python-deps group with 2 updates (#141, [`fa83809`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/fa83809b87998e1b2e34df3cb2c1444421fddc20))
+- **deps**: Bump astral-sh/setup-uv in the github-actions group (#140, [`e585915`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/e58591507b72f6e3c84c1b53fb1ec14446b78ce6))
+- **deps**: Bump the python-deps group with 3 updates (#139, [`cefe0bd`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/cefe0bd3db0fc2b42bea6e4d26c62e45ea5471f1))
+- **deps**: Bump docker/setup-qemu-action in the github-actions group (#138, [`47b4ddc`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/47b4ddcf9e48a2c19b7ad9d331e36d681be56160))
+- **deps**: Bump the python-deps group with 3 updates (#131, [`93735be`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/93735be108b635b14927623716ef0f24ed74fc35))
+
+
+
+### Contributors
+
+@dependabot[bot]
+
 ## v1.9.0 (2026-09-03)
 
 ### Bug Fixes
