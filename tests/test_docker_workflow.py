@@ -4,7 +4,6 @@ from pathlib import Path
 
 import yaml
 
-
 _WORKFLOW = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "docker.yml"
 
 
