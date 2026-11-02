@@ -74,6 +74,12 @@ jobs:
           path: netbox
           ref: ${{ matrix.netbox_ref }}
 
+      # NetBox 4.3 pins strawberry-graphql 0.281, which fails to import on Python 3.14.
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.netbox_ref == 'v4.3.7' && '3.12' || '3.14' }}
+
       - name: Install NetBox dependencies
         run: pip install -r netbox/requirements.txt
 
