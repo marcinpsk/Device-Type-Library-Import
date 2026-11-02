@@ -24,7 +24,7 @@ jobs:
         # Weekly runs track the moving target (main) only; released tags are
         # immutable, so the full supported matrix (latest patch of each line)
         # runs on pull requests and on demand instead.
-        netbox_ref: ${{ github.event_name == 'schedule' && fromJSON('["main"]') || fromJSON('["main", "v4.5.10", "v4.4.10", "v4.3.7"]') }}
+        netbox_ref: ${{ github.event_name == 'schedule' && fromJSON('["main"]') || fromJSON('["main", "v4.7.4", "v4.5.10", "v4.3.7"]') }}
 
     services:
       postgres:
@@ -73,6 +73,12 @@ jobs:
           repository: netbox-community/netbox
           path: netbox
           ref: ${{ matrix.netbox_ref }}
+
+      # NetBox 4.3 supports Python 3.10-3.12; 4.5 and later support 3.12-3.14.
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ startsWith(matrix.netbox_ref, 'v4.3.') && '3.12' || '3.14' }}
 
       - name: Install NetBox dependencies
         run: pip install -r netbox/requirements.txt
