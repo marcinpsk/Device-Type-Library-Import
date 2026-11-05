@@ -128,10 +128,18 @@ class TestDerivedGraphQLTables:
                 "label",
                 "description",
                 "color",
+                "positions",
                 _FRONT_PORT_MAPPINGS,
             ],
             "device_bay_templates": ["id", "name", "label", "description"],
-            "module_bay_templates": ["id", "name", "position", "label", "description"],
+            "module_bay_templates": [
+                "id",
+                "name",
+                "position",
+                "label",
+                "description",
+                "module_bay_types { id name slug manufacturer { slug } }",
+            ],
         }
 
     def test_only_the_front_port_query_selects_a_nested_block(self):
@@ -146,13 +154,17 @@ class TestDerivedComparisonAndExport:
     @pytest.mark.parametrize("component", COMPONENT_TYPES, ids=lambda c: c.yaml_key)
     def test_every_compared_property_is_fetched(self, component):
         """A property compared but never queried reads as missing and is skipped in silence."""
-        queried = set(component.graphql_fields) | {"_mappings"}
+        # A relation is selected as a nested block, so take the field name each selection
+        # opens with.  Adding component.relations here instead would make the assertion
+        # hold even if the query stopped selecting them.
+        queried = {selection.split(None, 1)[0] for selection in component.graphql_fields} | {"_mappings"}
         assert set(component.compare_properties) <= queried
 
     @pytest.mark.parametrize("component", COMPONENT_TYPES, ids=lambda c: c.yaml_key)
     def test_the_export_writes_every_scalar_the_query_reads(self, component):
         """Export fields are the query's scalars: an unexported scalar drops out of a round trip."""
-        scalars = [name for name in component.graphql_fields if name != "id" and name not in component.graphql_extra]
+        non_scalar = set(component.graphql_extra) | set(component.graphql_relation_fields)
+        scalars = [name for name in component.graphql_fields if name != "id" and name not in non_scalar]
         assert list(component.fields) == scalars
 
     def test_front_ports_compare_the_mapping_the_query_selects(self):

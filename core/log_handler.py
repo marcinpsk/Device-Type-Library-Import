@@ -19,7 +19,7 @@ class LogHandler:
 
     def _timestamp(self):
         """Return the current time formatted as HH:MM:SS."""
-        return datetime.now().strftime("%H:%M:%S")
+        return datetime.now().astimezone().strftime("%H:%M:%S")
 
     def set_console(self, console):
         """Set the Rich Console instance used for output, or None to fall back to print()."""
@@ -74,6 +74,6 @@ class LogHandler:
         for port in created_ports:
             self.verbose_log(
                 f"{port_type} Template Created: {port.name} - "
-                + f"{port.type if hasattr(port, 'type') else ''} - {getattr(port, parent_attribute).id} - "
-                + f"{port.id}"
+                f"{port.type if hasattr(port, 'type') else ''} - {getattr(port, parent_attribute).id} - "
+                f"{port.id}"
             )

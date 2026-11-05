@@ -1,6 +1,7 @@
 import os
-import pytest
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from core.config import RunConfig
 
@@ -66,6 +67,13 @@ def mock_git_repo(request):
     if request.node.get_closest_marker("integration"):
         yield None
         return
+    if request.node.get_closest_marker("real_git"):
+        # A hook runner exports GIT_DIR and friends for the outer repo.
+        monkeypatch = request.getfixturevalue("monkeypatch")
+        for var in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"):
+            monkeypatch.delenv(var, raising=False)
+        yield None
+        return
     with patch("core.repo.Repo") as mock_repo:
         mock_remote = MagicMock()
         mock_remote.url = "https://example.com/repo.git"
@@ -76,8 +84,14 @@ def mock_git_repo(request):
 
 @pytest.fixture
 def mock_pynetbox():
-    """Mock pynetbox to prevent API calls."""
+    """Mock pynetbox to prevent API calls.
+
+    Defaults the reported version to the oldest supported release, so a test that does not
+    care about version gating still constructs a NetBox; the importer refuses anything
+    older. Individual tests override it to exercise a specific release.
+    """
     with patch("core.netbox_api.pynetbox") as mock_nb:
+        mock_nb.api.return_value.version = "4.3"
         yield mock_nb
 
 
@@ -108,7 +122,24 @@ def mock_graphql_requests(request):
             }
         }
         mock_session.post.return_value = response
+        # /api/status/ is a GET; without this the probe reads a synthesized MagicMock and
+        # any shape check on the payload sees something no NetBox would ever return.
+        status = MagicMock()
+        status.status_code = 200
+        status.raise_for_status = MagicMock()
+        status.json.return_value = {"netbox-version": "4.7.0"}
+        mock_session.get.return_value = status
         yield mock_session.post
+
+
+@pytest.fixture(autouse=True)
+def no_write_retry_backoff(request):
+    """Skip the 2+5+10 s wait between NetBox write retries; integration tests keep it."""
+    if request.node.get_closest_marker("integration"):
+        yield
+        return
+    with patch("core.retry.time.sleep"):
+        yield
 
 
 @pytest.fixture

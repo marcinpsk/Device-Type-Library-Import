@@ -4,15 +4,18 @@ import concurrent.futures
 import json
 import os
 import pickle
-from glob import glob
+import posixpath
+from collections.abc import Sequence
+from glob import escape, glob
 from re import sub as re_sub
-from typing import Optional, Sequence
 from urllib.parse import urlparse
-from git import Repo, exc
+
 import yaml
+from git import Repo, exc
 
 from core.config import LOCAL_REPO_URL, is_local_repo_url
 from core.errors import FatalError, UnknownError
+from core.normalization import is_explicit_list
 
 # Top-level directories that make a checkout a device-type library.
 LIBRARY_TYPE_DIRS = ("device-types", "module-types", "rack-types")
@@ -78,7 +81,28 @@ class _RestrictedUnpickler(pickle.Unpickler):
 _INDEX_MAX_BYTES = 10 * 1024 * 1024  # 10 MiB — DTL index files are typically <1 MiB
 
 
-def _resolve_index_path(base_dir: str, stem: str) -> "Optional[str]":
+# Variables that point git at a repository; a hook runner exports them for its own checkout.
+_GIT_LOCATION_VARS = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR")
+
+
+def open_repo(path) -> Repo:
+    """Open the repository at *path* with git bound to it over inherited ``_GIT_LOCATION_VARS``."""
+    inherited = {name: os.environ.pop(name) for name in _GIT_LOCATION_VARS if name in os.environ}
+    try:
+        repo = Repo(path)  # GitPython reads these variables from os.environ here
+    finally:
+        os.environ.update(inherited)
+    repo.git.update_environment(
+        GIT_DIR=repo.git_dir,
+        GIT_WORK_TREE=os.path.abspath(path),
+        GIT_INDEX_FILE=os.path.join(repo.git_dir, "index"),
+        GIT_COMMON_DIR=repo.common_dir,
+        GIT_OBJECT_DIRECTORY=os.path.join(repo.common_dir, "objects"),
+    )
+    return repo
+
+
+def _resolve_index_path(base_dir: str, stem: str) -> "str | None":
     """Return the path to a DTL index file, preferring the JSON form over the legacy pickle.
 
     Upstream DTL replaced ``tests/known-*.pickle`` with ``tests/known-*.json`` (GHSA-492p-5wp7-2w7c).
@@ -94,37 +118,39 @@ def _resolve_index_path(base_dir: str, stem: str) -> "Optional[str]":
     return None
 
 
-def _vendor_slugs_from_index(
-    index_path: "Optional[str]", slugs_lower: list, slug_format, subdir_filter: "Optional[str]" = None
-) -> "Optional[set]":
-    """Load a (model_name, vendor_dir) index and return the set of vendor slugs matching *slugs_lower*.
+def _vendor_of(directory: str) -> str:
+    """Return the vendor folder name of a definition directory such as ``device-types/Nokia``."""
+    return directory.rsplit("/", 1)[-1]
 
-    *index_path* may point at a ``.json`` (current) or ``.pickle`` (legacy) file; the loader is
-    chosen by extension.  *subdir_filter*, if given, requires the vendor_dir to contain that
-    substring.  Returns ``None`` when the index is unavailable (missing or unreadable), so callers
-    can distinguish "no matches" (empty set) from "hint unavailable" (None).
+
+def _reached_through_link(abs_path: str, real_root: str, relpath: str) -> bool:
+    """Return True when *abs_path* does not resolve to *relpath* (POSIX separators) under *real_root*."""
+    return os.path.realpath(abs_path) != os.path.join(real_root, *relpath.split("/"))
+
+
+def _paths_changed_since_index(repo_root: str, index_path: str, type_dir: str) -> "set[str] | None":
+    """Return the repo-relative paths under *type_dir* that differ from the commit that last wrote *index_path*.
+
+    Returns ``None`` when the index cannot describe the checkout: *repo_root* is not a git work
+    tree, its history is shallow, the index is not committed, or the index differs from that commit.
     """
-    if index_path is None:
-        return None
+    index_relpath = os.path.relpath(index_path, repo_root).replace("\\", "/")
     try:
-        entries = _safe_index_load(index_path)
-    except Exception:
+        git = open_repo(repo_root).git
+        git.update_environment(GIT_OPTIONAL_LOCKS="0")  # read-only: do not refresh .git/index
+        # In a shallow clone, git log reports the shallow boundary, not the commit that wrote the index.
+        if git.rev_parse("--is-shallow-repository") != "false":
+            return None
+        commit = git.log("-1", "--format=%H", "--", index_relpath)
+        if not commit:
+            return None
+        # A tree diff against the working tree catches fork edits, upstream merges and uncommitted edits.
+        changed = git.diff("--name-only", "--no-renames", "-z", commit, "--", type_dir, index_relpath)
+    except (exc.InvalidGitRepositoryError, exc.NoSuchPathError, exc.GitCommandError):
         return None
-    result = set()
-    for model_name, vendor_dir in entries:
-        if subdir_filter and subdir_filter not in vendor_dir.replace("\\", "/"):
-            continue
-        if not any(s in model_name.casefold() for s in slugs_lower):
-            continue
-        vendor_name = vendor_dir.replace("\\", "/").split("/")[-1]
-        result.add(slug_format(vendor_name))
-    return result
+    paths = {path for path in changed.split("\0") if path}
 
-
-def _safe_abs_path(repo_root: str, relpath: str) -> "Optional[str]":
-    """Return the absolute path for *relpath* inside *repo_root*, or None if it escapes the root."""
-    abs_path = os.path.normpath(os.path.join(repo_root, *relpath.replace("\\", "/").split("/")))
-    return abs_path if abs_path.startswith(os.path.normpath(repo_root) + os.sep) else None
+    return None if index_relpath in paths else paths
 
 
 def _validate_index_data(data, source: str):
@@ -214,9 +240,7 @@ def validate_git_url(url):
     if url.startswith("https://"):
         parsed = urlparse(url)
         if parsed.scheme == "https" and parsed.hostname:
-            # Optional: enforce an allowlist if desired
-            # if parsed.hostname not in ("github.com", "gitlab.com"):
-            #     return False, f"Host not allowed: {parsed.hostname}"
+            # Any HTTPS host is accepted: the library is forked and self-hosted widely.
             return True, None
         return False, "Invalid HTTPS URL"
 
@@ -272,6 +296,59 @@ def validate_repo_path(repo_path):
     return True, ""
 
 
+def _collect_inline_mappings(front_ports, rear_by_name, rear_ports_declared):
+    """Return ``({front_port_name: [mapping, ...]}, error)`` for the pre-4.5 inline format.
+
+    The inline keys are removed from each entry as they are read, so the caller is left with
+    one representation to reason about.
+    """
+    inline_mappings: dict = {}
+    for fp in front_ports:
+        rp_name = fp.get("rear_port")
+        if rp_name is None:
+            continue
+        fp_name = fp.get("name")
+        if rear_ports_declared and rp_name not in rear_by_name:
+            return {}, f"Error: front-port '{fp_name}' references unknown rear_port '{rp_name}'"
+        rp_pos = fp.pop("rear_port_position", 1)
+        fp.pop("rear_port")
+        inline_mappings.setdefault(fp_name, []).append(
+            {"rear_port": rp_name, "front_port_position": 1, "rear_port_position": rp_pos}
+        )
+    return inline_mappings, None
+
+
+def _conflicting_mapping(inline_mappings, stanza_mappings):
+    """Return an error when the two formats cannot both be honoured.
+
+    Carrying both is allowed only while they agree, which is what a half-finished migration
+    looks like; disagreeing is the case where guessing a winner would silently pick one.
+    A stanza speaks for the whole file, so an inline linkage it omits cannot be honoured
+    either. A port the stanza alone names is not in question: it had no inline linkage.
+    """
+    if not (inline_mappings and stanza_mappings):
+        return None
+
+    def _shape(mappings):
+        return sorted((m["rear_port"], m["front_port_position"], m["rear_port_position"]) for m in mappings)
+
+    for name in sorted(inline_mappings):
+        if name not in stanza_mappings:
+            return (
+                f"Error: front port '{name}' declares an inline rear_port but the port-mappings "
+                f"stanza does not list it; the stanza is authoritative, so add '{name}' to it "
+                f"or remove the inline rear_port keys"
+            )
+        inline = _shape(inline_mappings[name])
+        stanza = _shape(stanza_mappings[name])
+        if inline != stanza:
+            return (
+                f"Error: front port '{name}' has conflicting mapping definitions "
+                f"(inline: {inline}, port-mappings stanza: {stanza})"
+            )
+    return None
+
+
 def normalize_port_mappings(data):
     """Normalize port mapping definitions in a parsed YAML device/module type dict.
 
@@ -309,9 +386,9 @@ def normalize_port_mappings(data):
     """
     front_ports = data.get("front-ports") or []
     port_mappings_stanza = data.get("port-mappings")
-
-    if not front_ports and "port-mappings" not in data:
-        return None
+    stanza_authoritative = is_explicit_list(port_mappings_stanza)
+    if port_mappings_stanza is not None and not stanza_authoritative:
+        return f"Error: port-mappings must be a list: {port_mappings_stanza!r}"
 
     front_by_name = {fp["name"]: fp for fp in front_ports if fp.get("name")}
     rear_ports_declared = "rear-ports" in data
@@ -320,28 +397,16 @@ def normalize_port_mappings(data):
 
     # --- Old inline format ---
     # Collect rear_port references declared directly on front-port entries.
-    inline_mappings: dict = {}  # {front_port_name: [mapping_dict, ...]}
-    for fp in front_ports:
-        rp_name = fp.get("rear_port")
-        if rp_name is None:
-            continue
-        fp_name = fp.get("name")
-        if rear_ports_declared and rp_name not in rear_by_name:
-            return f"Error: front-port '{fp_name}' references unknown rear_port '{rp_name}'"
-        rp_pos = fp.pop("rear_port_position", 1)
-        fp.pop("rear_port")
-        inline_mappings.setdefault(fp_name, []).append(
-            {
-                "rear_port": rp_name,
-                "front_port_position": 1,
-                "rear_port_position": rp_pos,
-            }
-        )
+    inline_mappings, error = _collect_inline_mappings(front_ports, rear_by_name, rear_ports_declared)
+    if error:
+        return error
 
     # --- New port-mappings stanza ---
     stanza_mappings: dict = {}  # {front_port_name: [mapping_dict, ...]}
-    if "port-mappings" in data:
+    if stanza_authoritative:
         for entry in port_mappings_stanza or []:
+            if not isinstance(entry, dict):
+                return f"Error: port-mappings entry must be a mapping: {entry!r}"
             fp_name = entry.get("front_port")
             rp_name = entry.get("rear_port")
             if not fp_name or not rp_name:
@@ -357,33 +422,35 @@ def normalize_port_mappings(data):
                     "rear_port_position": entry.get("rear_port_position", 1),
                 }
             )
-        del data["port-mappings"]
+    data.pop("port-mappings", None)
 
-    # --- Conflict detection ---
-    # Accept both formats simultaneously only when they describe identical mappings.
-    if inline_mappings and stanza_mappings:
-        all_names = set(inline_mappings) | set(stanza_mappings)
-        for name in all_names:
-            inline = sorted(
-                (m["rear_port"], m["front_port_position"], m["rear_port_position"])
-                for m in inline_mappings.get(name, [])
-            )
-            stanza = sorted(
-                (m["rear_port"], m["front_port_position"], m["rear_port_position"])
-                for m in stanza_mappings.get(name, [])
-            )
-            if inline != stanza:
-                return (
-                    f"Error: front port '{name}' has conflicting mapping definitions "
-                    f"(inline: {inline}, port-mappings stanza: {stanza})"
-                )
+    conflict = _conflicting_mapping(inline_mappings, stanza_mappings)
+    if conflict:
+        return conflict
 
-    effective = stanza_mappings if stanza_mappings else inline_mappings
-    for fp_name, mappings in effective.items():
+    if stanza_authoritative:
+        if not stanza_mappings and inline_mappings:
+            return (
+                "Error: port-mappings is empty but front port(s) "
+                f"{sorted(inline_mappings)} still declare an inline rear_port"
+            )
+        for fp in front_ports:
+            fp["_mappings"] = stanza_mappings.get(fp.get("name"), [])
+        return None
+
+    for fp_name, mappings in inline_mappings.items():
         if fp_name in front_by_name:
             front_by_name[fp_name]["_mappings"] = mappings
 
     return None
+
+
+def _is_strict_json(value) -> bool:
+    """Return True when *value* survives a strict JSON round trip unchanged, as NetBox will store it."""
+    try:
+        return json.loads(json.dumps(value, allow_nan=False)) == value
+    except (TypeError, ValueError):
+        return False
 
 
 def parse_single_file(file):
@@ -398,24 +465,33 @@ def parse_single_file(file):
             `src` set to the file path.
         str: Error string beginning with "Error:" describing YAML parsing or other failure.
     """
-    with open(file, "r") as stream:
-        try:
+    try:
+        with open(file) as stream:
             data = yaml.safe_load(stream)
-            manufacturer = data["manufacturer"]
-            # Use only slug for manufacturer lookup - more resilient to case mismatches
-            # (e.g., RuggedCOM vs RuggedCom in upstream data)
-            data["manufacturer"] = {"slug": re_sub(r"\W+", "-", manufacturer.lower())}
-            if "profile" in data and isinstance(data["profile"], str):
-                data["profile"] = {"name": data["profile"]}
-            data["src"] = file
-            err = normalize_port_mappings(data)
-            if err:
-                return err
-            return data
-        except yaml.YAMLError as excep:
-            return f"Error: {excep}"
-        except Exception as e:
-            return f"Error: {e}"
+        manufacturer = data["manufacturer"]
+        # Use only slug for manufacturer lookup - more resilient to case mismatches
+        # (e.g., RuggedCOM vs RuggedCom in upstream data)
+        data["manufacturer"] = {"slug": re_sub(r"\W+", "-", manufacturer.lower())}
+        profile = data.get("profile")
+        if isinstance(profile, str):
+            data["profile"] = {"name": profile}
+        elif profile is not None and not (isinstance(profile, dict) and isinstance(profile.get("name"), str)):
+            return f"Error: profile must be a name or a mapping with a name, not {profile!r}"
+        attribute_data = data.get("attribute_data")
+        if attribute_data is not None and not isinstance(attribute_data, dict):
+            return f"Error: attribute_data must be a mapping, not {attribute_data!r}"
+        for field in ("profile", "attribute_data"):
+            if not _is_strict_json(data.get(field)):
+                return f"Error: {field} must hold JSON values only (string keys, finite numbers): {data[field]!r}"
+        data["src"] = file
+        err = normalize_port_mappings(data)
+        if err:
+            return err
+        return data
+    except yaml.YAMLError as excep:
+        return f"Error: {excep}"
+    except Exception as e:  # an unreadable index or definition is skipped, not fatal  # noqa: BLE001
+        return f"Error: {e}"
 
 
 class DTLRepo:
@@ -539,7 +615,7 @@ class DTLRepo:
             self.handle.log(
                 "Package devicetype-library is already installed, " + f"updating {self.get_absolute_path()}"
             )
-            self.repo = Repo(self.repo_path)
+            self.repo = open_repo(self.repo_path)
             origin_url = self.repo.remotes.origin.url
             remote_label = origin_url
 
@@ -589,7 +665,7 @@ class DTLRepo:
         except Exception as git_error:
             raise UnknownError("Git Repository Error", cause=git_error) from git_error
 
-    def get_devices(self, base_path, vendors: Optional[Sequence[str]] = None):
+    def get_devices(self, base_path, vendors: Sequence[str] | None = None):
         """Discover device YAML files and vendor directories under a base path.
 
         Args:
@@ -615,84 +691,72 @@ class DTLRepo:
             if folder.casefold() != "testing":
                 discovered_vendors.append({"name": folder, "slug": self.slug_format(folder)})
                 for extension in self.yaml_extensions:
-                    files.extend(glob(os.path.join(base_path, folder, f"*.{extension}")))
+                    files.extend(glob(os.path.join(escape(os.path.join(base_path, folder)), f"*.{extension}")))
         return files, discovered_vendors
 
     def resolve_slug_files(self, slugs):
-        """Use the upstream slug indexes to resolve YAML file paths for slug/model matches.
+        """Use the upstream device index to select the device type files that can match *slugs*.
 
-        The DTL repo ships three index files under ``tests/``.  Upstream replaced the original
-        ``known-*.pickle`` files with ``known-*.json`` (GHSA-492p-5wp7-2w7c); both carry the same
-        data shape, and we prefer JSON, falling back to pickle for older pinned checkouts:
+        The DTL repo ships ``tests/known-slugs.json`` (``known-slugs.pickle`` in older checkouts,
+        GHSA-492p-5wp7-2w7c): a list of ``(manufacturer_prefixed_slug, relpath)`` for device
+        types, where ``relpath`` is relative to the repo root, e.g. ``device-types/Nokia/7750-SR-7s.yaml``.
+        Matching uses the same case-insensitive substring check as :meth:`parse_files`.
 
-        * ``known-slugs.json`` — list of ``(manufacturer_prefixed_slug, relpath)`` for
-          device types.  ``relpath`` is relative to the repo root, e.g.
-          ``device-types/Nokia/7750-SR-7s.yaml``.
-        * ``known-modules.json`` — list of ``(model_name, vendor_dir)`` for module
-          types.  Only the vendor directory is stored, not the file name.
-        * ``known-racks.json``  — same format as known-modules.
+        The index comes from upstream master, so a fork or branch can hold files it does not
+        list, can lack files it lists, and can change files it lists. The files on disk are the
+        source of truth: an indexed file that is gone is dropped, and a file that the index does
+        not list, or that differs from the commit that last wrote the index, is always selected.
 
-        Matching uses a **case-insensitive substring** check identical to the runtime
-        :meth:`parse_files` filter so that partial slug/model searches work the same way.
+        The module and rack indexes are not used: they record file stems, not models, so they
+        cannot tell which files hold a matching model.
 
         Args:
             slugs (list[str]): User-supplied slug/model substrings (``--slugs``).
 
         Returns:
-            dict or None: ``None`` when the device index is unavailable (caller falls back
-            to the normal glob path).  Otherwise a dict with the keys:
-
-            ``"device_files"``
-                ``{vendor_slug: [abs_path, ...]}`` for devices resolved via the index.
-            ``"module_vendors"``
-                ``{vendor_slug}`` — set of vendor slugs that may contain matching module
-                types, or ``None`` when the module index was unavailable (caller should
-                fall back to full glob+parse instead of skipping).
-            ``"rack_vendors"``
-                ``{vendor_slug}`` — same for rack types; ``None`` means unavailable.
+            dict or None: ``{vendor_slug: [abs_path, ...]}``, to parse with *slugs*, or ``None``
+            when the device index is missing, unreadable, or cannot be compared with the checkout.
+            ``REPO_URL=local`` always gives ``None``, because that mode runs no git command.
         """
+        if is_local_repo_url(self.url):
+            return None
         repo_root = self.get_absolute_path()
-        tests_dir = os.path.join(repo_root, "tests")
-        device_index = _resolve_index_path(tests_dir, "known-slugs")
-        module_index = _resolve_index_path(tests_dir, "known-modules")
-        rack_index = _resolve_index_path(tests_dir, "known-racks")
-
+        device_index = _resolve_index_path(os.path.join(repo_root, "tests"), "known-slugs")
         if device_index is None:
             return None
-
-        slugs_lower = [s.casefold() for s in slugs]
-
-        # --- device types --------------------------------------------------
-        device_files: dict = {}  # vendor_slug -> [abs_path]
+        changed = _paths_changed_since_index(repo_root, device_index, "device-types")
+        if changed is None:
+            return None
         try:
             known_slugs = _safe_index_load(device_index)
-        except Exception:
+        except Exception:  # an unreadable index is skipped, not fatal  # noqa: BLE001
             return None
+        slug_by_relpath = {relpath.replace("\\", "/"): entry_slug for entry_slug, relpath in known_slugs}
 
-        for entry_slug, relpath in known_slugs:
-            if not any(s in entry_slug.casefold() for s in slugs_lower):
-                continue
-            parts = relpath.replace("\\", "/").split("/")
-            if len(parts) < 3:
-                continue
-            vendor_name = parts[1]
-            vendor_slug = self.slug_format(vendor_name)
-            abs_path = _safe_abs_path(repo_root, relpath)
-            if abs_path is None:
-                continue
-            device_files.setdefault(vendor_slug, []).append(abs_path)
+        slugs_lower = [s.casefold() for s in slugs]
+        real_root = os.path.realpath(repo_root)
+        device_files: dict = {}  # vendor_slug -> [abs_path]
+        for relpath, abs_path in self._definition_files(self.get_devices_path()):
+            entry_slug = slug_by_relpath.get(relpath)
+            # An unindexed or changed file can hold any slug, so the caller's parse_files filter decides.
+            # A link target can change while the link blob does not, so a file reached through a link counts as changed.
+            if (
+                entry_slug is None
+                or relpath in changed
+                or _reached_through_link(abs_path, real_root, relpath)
+                or any(s in entry_slug.casefold() for s in slugs_lower)
+            ):
+                vendor_slug = self.slug_format(_vendor_of(posixpath.dirname(relpath)))
+                device_files.setdefault(vendor_slug, []).append(abs_path)
+        return device_files
 
-        # --- module types --------------------------------------------------
-        module_vendors = _vendor_slugs_from_index(module_index, slugs_lower, self.slug_format)
-
-        # --- rack types ----------------------------------------------------
-        rack_vendors = _vendor_slugs_from_index(rack_index, slugs_lower, self.slug_format, subdir_filter="rack-types")
-
-        return {
-            "device_files": device_files,
-            "module_vendors": module_vendors,
-            "rack_vendors": rack_vendors,
-        }
+    def _definition_files(self, type_root):
+        """Return ``(posix relpath, abs_path)`` for each definition file on disk under *type_root*."""
+        if not os.path.isdir(type_root):
+            return []
+        files, _ = self.get_devices(type_root)
+        repo_root = self.get_absolute_path()
+        return [(os.path.relpath(path, repo_root).replace("\\", "/"), path) for path in files]
 
     def discover_vendors(self, devices_path, modules_path, racks_path):
         """Discover all vendor directories across device-types/, module-types/, and rack-types/.
@@ -733,7 +797,7 @@ class DTLRepo:
         # Return sorted list by slug
         return sorted(vendors_dict.values(), key=lambda v: v["slug"])
 
-    def parse_files(self, files: list, slugs: Optional[Sequence[str]] = None, progress=None):
+    def parse_files(self, files: list, slugs: Sequence[str] | None = None, progress=None):
         """Parse YAML device files into device type dicts, optionally filtering and tracking progress.
 
         Args:
