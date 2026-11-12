@@ -443,7 +443,9 @@ least one of `device-types/`, `module-types/`, or `rack-types/`, and an import s
 error if it does not, rather than reporting an empty library as nothing to do.
 
 Nothing in an import writes to `REPO_PATH`, so a read-only mount works. `REPO_BRANCH` is
-ignored in this mode, and a run that sets both says so.
+ignored in this mode, and a run that sets both says so. `--slugs` parses every definition file
+in this mode: the device index in `tests/` is used only when git can show which files changed
+after the index was written.
 
 ```shell
 REPO_URL=local REPO_PATH=/srv/devicetype-library uv run nb-dt-import.py

@@ -1,21 +1,23 @@
 """NetBox REST and GraphQL API client for importing device and module type libraries."""
 
-from collections import Counter
-from contextlib import contextmanager
-from functools import lru_cache
+import glob
 import hashlib
 import json
-import re
+import os
 import tempfile
-import time
+from collections import Counter
+from contextlib import ExitStack, contextmanager, suppress
+from dataclasses import replace
+from functools import lru_cache
+from pathlib import Path
+from typing import Any
+
 import pynetbox
 import requests
-import os
-import glob
-from pathlib import Path
-from typing import Any, Optional
+from pynetbox.core.query import Request
 
-from core.change_detector import ChangeDetector, ChangeType
+from core.change_detector import ChangeDetector, ChangeType, _relation_change
+from core.compat import parse_netbox_version, supports_module_bay_types
 from core.component_cache import ComponentCache
 from core.component_registry import (
     BY_YAML_KEY,
@@ -24,12 +26,14 @@ from core.component_registry import (
     LINK_POWER_PORT,
     LINK_REAR_PORTS,
     MODULE_TYPE_COMPONENTS,
+    MODULE_TYPE_RELATIONS,
 )
-from core.formatting import log_property_diffs
 from core.errors import FatalError, UnknownError
+from core.formatting import log_property_diffs
 from core.graphql_client import GraphQLError, NetBoxGraphQLClient
 from core.normalization import values_equal
 from core.outcomes import EntityKind, Outcome, OutcomeRegistry
+from core.retry import MAX_RETRIES, RETRYABLE_EXCEPTIONS, call_with_retry, create_with_retry, delete_with_retry
 from core.schema_reader import load_properties_for_type
 from core.update_failure_resolver import (
     FailureKind,
@@ -48,6 +52,10 @@ class SSLVerificationError(FatalError):
             "Set IGNORE_SSL_ERRORS to True if you want to ignore this error. EXITING.",
             cause=cause,
         )
+
+
+# Oldest NetBox this importer is tested against; see the CI matrix and the README.
+MINIMUM_NETBOX_VERSION = (4, 3)
 
 
 class NetBoxError(FatalError):
@@ -70,23 +78,22 @@ _LOG_ESCAPES = {c: f"\\x{c:02x}" for c in [*range(0x20), 0x7F]}
 _LOG_ESCAPES.update({ord("\n"): "\\n", ord("\r"): "\\r", ord("\t"): "\\t"})
 
 
-def _format_request_error(exc) -> str:
-    """Return *exc* as text, with NetBox's response body appended when there is one.
+def _format_request_error(exc: pynetbox.RequestError) -> str:
+    """Return the status of a request NetBox refused, with its response body appended when there is one.
 
-    ``requests.HTTPError`` stringifies to only the status line, discarding the body where
-    NetBox reports the actual cause (e.g. ``{"front_image": ["Upload a valid image..."]}``
-    for an image above its pixel cap).  Without the body an operator sees nothing but
-    ``400 Client Error: Bad Request``.
+    The body holds the actual cause (e.g. ``{"front_image": ["Upload a valid image..."]}``
+    for an image above its pixel cap), and pynetbox drops a body that is not JSON from its message.
 
     The body is server-controlled, so control characters are escaped before truncation.
     """
-    body = (getattr(getattr(exc, "response", None), "text", "") or "").strip()
+    status = f"HTTP {exc.req.status_code} {exc.req.reason}"
+    body = (exc.error or "").strip()
     if not body:
-        return str(exc)
+        return status
     body = body.translate(_LOG_ESCAPES)
     if len(body) > _MAX_ERROR_BODY_CHARS:
         body = f"{body[:_MAX_ERROR_BODY_CHARS]}… (truncated)"
-    return f"{exc} — NetBox returned: {body}"
+    return f"{status} — NetBox returned: {body}"
 
 
 def _fmt_connection_error(url: str, exc: Exception) -> str:
@@ -110,15 +117,21 @@ def _fmt_connection_error(url: str, exc: Exception) -> str:
     )
 
 
-# Transient connection errors that warrant a retry
-_RETRYABLE_EXCEPTIONS = (requests.exceptions.ConnectionError, requests.exceptions.Timeout)
-
-_MAX_RETRIES = 3
-_RETRY_BACKOFF = (2, 5, 10)  # seconds to wait before each retry attempt
-
 # Sentinel used when a YAML record has no "src" key (e.g. synthesised entries).
 # _image_dir_for_yaml treats this value as "no path known" and returns None.
 _UNKNOWN_SRC = "Unknown"
+
+# (connect, read) seconds for each REST call; it stops a stalled server, not a slow bulk write.
+_REST_TIMEOUT = (30, 300)
+
+
+class _TimeoutSession(requests.Session):
+    """A requests session that gives each request ``_REST_TIMEOUT`` unless the caller sets one."""
+
+    def request(self, *args, **kwargs):
+        """Send the request with the default timeout when the caller gives none."""
+        kwargs.setdefault("timeout", _REST_TIMEOUT)
+        return super().request(*args, **kwargs)
 
 
 def _check_image_url(
@@ -216,7 +229,7 @@ def _is_image_hash_changed(local_path: str, hash_cache: dict, log_fn=None) -> bo
     return current != cached
 
 
-def _load_image_hash_cache(path: Optional[str], log_fn=None) -> dict:
+def _load_image_hash_cache(path: str | None, log_fn=None) -> dict:
     """Load the image-hash cache from *path* (JSON), returning an empty dict when it cannot be read.
 
     An absent file is the normal first run and stays quiet.  Anything else means the
@@ -267,10 +280,8 @@ def _save_image_hash_cache(path: str, cache: dict) -> bool:
         return True
     except OSError:
         if tmp_path is not None:
-            try:
+            with suppress(OSError):
                 os.unlink(tmp_path)
-            except OSError:
-                pass
         return False
 
 
@@ -290,52 +301,11 @@ def _store_image_hashes(cache: dict, images: dict, log_fn=None) -> None:
                 log_fn(f"[yellow]Cannot hash image {path}, so it will be re-uploaded next run: {exc}[/yellow]")
 
 
-def _delete_image_attachment(base_url: str, token: str, att_id: int, ignore_ssl: bool, handle) -> bool:
-    """Delete a NetBox image attachment by ID via DELETE /api/extras/image-attachments/{id}/.
-
-    Args:
-        base_url: NetBox base URL.
-        token: API token used for the Authorization header.
-        att_id: Numeric ID of the image attachment to delete.
-        ignore_ssl: When True, skip SSL certificate verification.
-        handle: Log handler with a ``log`` method for error reporting.
-
-    Returns:
-        bool: True on success, False on any HTTP or network error.
-    """
-    url = f"{base_url}/api/extras/image-attachments/{att_id}/"
-    headers = {"Authorization": _build_auth_header(token)}
-    try:
-        response = requests.delete(url, headers=headers, verify=(not ignore_ssl), timeout=30)
-        response.raise_for_status()
-        return True
-    except requests.RequestException as e:
-        handle.log(f"Error deleting image attachment {att_id}: {_format_request_error(e)}")
-        return False
-
-
-def _retry_on_connection_error(func, *args, **kwargs):
-    """Call *func* with retries on transient connection errors.
-
-    Retries up to ``_MAX_RETRIES`` times with exponential-ish backoff
-    for ``ConnectionError`` and ``Timeout`` from requests/urllib3.
-    Non-retryable exceptions propagate immediately.
-    """
-    for attempt in range(_MAX_RETRIES + 1):
-        try:
-            return func(*args, **kwargs)
-        except _RETRYABLE_EXCEPTIONS:
-            if attempt >= _MAX_RETRIES:
-                raise
-            wait = _RETRY_BACKOFF[attempt] if attempt < len(_RETRY_BACKOFF) else _RETRY_BACKOFF[-1]
-            time.sleep(wait)
-
-
 # Module type scalar properties that can be compared and updated.
 # Loaded from the cloned devicetype-library schema at runtime; the list below
 # serves as a fallback when the schema is not yet available (e.g. before the
-# first repo clone).  Identity fields (manufacturer, model) and complex objects
-# (attribute_data) are excluded by the schema reader.
+# first repo clone).  Identity fields (manufacturer, model) are excluded, and
+# profile and attribute_data are compared by NetBox._profile_changes.
 _MODULE_TYPE_PROPERTIES_FALLBACK = [
     "part_number",
     "description",
@@ -346,6 +316,29 @@ _MODULE_TYPE_PROPERTIES_FALLBACK = [
 ]
 
 _MODULE_TYPE_SCHEMA_EXCLUDE = {"manufacturer", "model", "attribute_data", "profile"}
+
+# The REST API names the attribute_data model field "attributes" and ignores the model name.
+_REST_ATTRIBUTES_FIELD = "attributes"
+
+
+def _with_rest_attributes(module_type):
+    """Return *module_type* with attribute_data under the name the REST API reads."""
+    if "attribute_data" not in module_type:
+        return module_type
+    payload = {k: v for k, v in module_type.items() if k != "attribute_data"}
+    payload[_REST_ATTRIBUTES_FIELD] = module_type["attribute_data"]
+    return payload
+
+
+def _json_equal(a, b) -> bool:
+    """Compare JSON values: numbers by value (400 equals 400.0), but a boolean never equals a number."""
+    if isinstance(a, bool) or isinstance(b, bool):
+        return type(a) is type(b) and a == b
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_json_equal(a[key], b[key]) for key in a)
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_json_equal(x, y) for x, y in zip(a, b, strict=True))
+    return a == b
 
 
 @lru_cache(maxsize=1)
@@ -401,7 +394,40 @@ def _image_dir_for_yaml(src_file: str, src_segment: str, dst_segment: str) -> "P
     return Path(*parts)
 
 
-# from pynetbox import RequestError as APIRequestError
+def _is_mapping_removal(prop_change):
+    """Return True when a ``_mappings`` change only takes mappings away."""
+    return (
+        prop_change.property_name == "_mappings"
+        and isinstance(prop_change.old_value, (set, frozenset))
+        and isinstance(prop_change.new_value, (set, frozenset))
+        and prop_change.new_value < prop_change.old_value
+    )
+
+
+def _without_gated_mapping_clears(changes, remove_components, handle=None):
+    """Drop mapping clears unless removal is enabled.
+
+    Clearing a front-to-rear linkage deletes data, but it reaches NetBox as a property
+    change rather than a COMPONENT_REMOVED, so it would otherwise ignore the flag and
+    contradict the "will not remove components" notice.  Filtering here rather than at the
+    write boundary keeps the actionable count and the applied changes in agreement.
+    """
+    if remove_components:
+        return changes
+    kept, gated = [], []
+    for change in changes:
+        remaining = [pc for pc in change.property_changes if not _is_mapping_removal(pc)]
+        if len(remaining) == len(change.property_changes):
+            kept.append(change)
+            continue
+        gated.append(change.component_name)
+        if remaining:
+            kept.append(replace(change, property_changes=remaining))
+    if gated and handle is not None:
+        handle.log(
+            f"Kept existing port mappings on {sorted(gated)}; use --remove-components with --update to clear them."
+        )
+    return kept
 
 
 def _count_actionable_component_changes(changes, remove_components):
@@ -462,10 +488,8 @@ class NetBox:
         self.handle = handle
         self.netbox: Any = None
         self.ignore_ssl = config.ignore_ssl_errors
-        self.modules = False
-        self.new_filters = False
+        self.module_bay_types = False
         self.m2m_front_ports = False  # True for NetBox >= 4.5 (M2M port mappings)
-        self.rack_types = False
         self.force_resolve_conflicts = config.force_resolve_conflicts
         self.remove_unmanaged_types = config.remove_unmanaged_types
         self.verify_images = config.verify_images
@@ -477,7 +501,7 @@ class NetBox:
         _cache_dir = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "nb-dt-import"
         try:
             _cache_dir.mkdir(parents=True, exist_ok=True)
-            self._image_hash_cache_path: Optional[str] = str(_cache_dir / "image-hashes.json")
+            self._image_hash_cache_path: str | None = str(_cache_dir / "image-hashes.json")
         except OSError as exc:
             self.handle.log(
                 "[yellow]Warning: could not create image hash cache directory "
@@ -495,6 +519,7 @@ class NetBox:
             self.ignore_ssl,
             handle=self.handle,
             page_size=config.graphql_page_size,
+            supports_module_bay_types=self.module_bay_types,
         )
         try:
             self.existing_manufacturers = self.get_manufacturers()
@@ -505,10 +530,9 @@ class NetBox:
                 self.netbox,
                 self.handle,
                 self.counter,
-                self.ignore_ssl,
-                self.new_filters,
                 graphql=self.graphql,
                 m2m_front_ports=self.m2m_front_ports,
+                module_bay_types_supported=self.module_bay_types,
                 repo_path=config.repo_path,
                 max_threads=config.preload_threads,
             )
@@ -560,6 +584,7 @@ class NetBox:
         """Connect to the NetBox API using the stored URL and token credentials."""
         try:
             self.netbox = pynetbox.api(self.url, token=self.token, threading=True)
+            self.netbox.http_session = _TimeoutSession()
             if self.ignore_ssl:
                 self.handle.verbose_log("IGNORE_SSL_ERRORS is True, catching exception and disabling SSL verification.")
                 import urllib3
@@ -570,10 +595,10 @@ class NetBox:
             raise UnknownError("NetBox API Error", cause=e) from e
 
     def verify_compatibility(self):
-        """Check the connected NetBox version and configure feature flags accordingly.
+        """Refuse a server below the supported floor and set the feature flags above it.
 
-        Sets ``self.modules = True`` for NetBox >= 3.2 and ``self.new_filters = True``
-        for >= 4.1. Logs the detected version when the new-filter flag is enabled.
+        Only the flags that still vary across supported releases are set here: the 4.3
+        floor makes everything introduced at or below 4.1 unconditional.
         """
         # nb.version should be the version in the form '3.2'
         # Strip non-numeric suffixes (e.g. "4.1-beta") before converting to int.
@@ -601,26 +626,26 @@ class NetBox:
                 msg += f"\nResponse body (may be from an intermediate proxy):\n{body}"
             msg += f"\nHint: Verify that {self.url} is reachable and not blocked by a proxy."
             raise NetBoxError(msg) from e
-        _raw = [int(re.sub(r"\D.*", "", x.strip()) or "0") for x in nb_version.split(".")]
-        version_split = (_raw + [0, 0])[:2]  # pad to (major, minor) to guard against single-component strings
+        version_split = parse_netbox_version(nb_version)
 
-        # Later than 3.2
-        # Might want to check for the module-types entry as well?
-        if version_split[0] > 3 or (version_split[0] == 3 and version_split[1] >= 2):
-            self.modules = True
-
-        # check if version >= 4.1 in order to use new filter names (https://github.com/netbox-community/netbox/issues/15410)
-        if version_split[0] > 4 or (version_split[0] == 4 and version_split[1] >= 1):
-            self.new_filters = True
-            self.rack_types = True
-            self.handle.log(f"Netbox version {self.netbox.version} found. Using new filters.")
+        # Below the floor the run dies later naming a schema field, not the real cause.
+        if tuple(version_split) < MINIMUM_NETBOX_VERSION:
+            minimum = ".".join(str(part) for part in MINIMUM_NETBOX_VERSION)
+            raise NetBoxError(
+                f"NetBox {nb_version} is not supported: this importer requires NetBox {minimum} or later. "
+                f"Older releases fail part way through with a GraphQL schema error rather than here."
+            )
 
         # NetBox 4.5 replaced FrontPortTemplate.rear_port (FK) + rear_port_position (int)
         # with a ManyToMany through table (PortMapping).  The creation and read APIs differ.
         # https://github.com/netbox-community/netbox/issues/20564
         if version_split[0] > 4 or (version_split[0] == 4 and version_split[1] >= 5):
             self.m2m_front_ports = True
-            self.handle.log(f"Netbox version {self.netbox.version} found. Using M2M front/rear port mappings.")
+            self.handle.log(f"Netbox version {nb_version} found. Using M2M front/rear port mappings.")
+
+        if supports_module_bay_types(nb_version):
+            self.module_bay_types = True
+            self.handle.log(f"Netbox version {nb_version} found. Module bay types are supported.")
 
     def get_manufacturers(self):
         """Fetch all manufacturers from NetBox via GraphQL and return them indexed by name."""
@@ -657,15 +682,15 @@ class NetBox:
         if to_create:
             self.handle.log(f"Creating {len(to_create)} new manufacturers...")
             try:
-                created_manufacturers = _retry_on_connection_error(self.netbox.dcim.manufacturers.create, to_create)
+                created_manufacturers = create_with_retry(self.netbox.dcim.manufacturers, to_create, "slug")
                 for manufacturer in created_manufacturers:
                     self.handle.verbose_log(f"Manufacturer Created: {manufacturer.name} - {manufacturer.id}")
                     self.counter.update({"manufacturer": 1})
             except pynetbox.RequestError as request_error:
                 # Log error with detailed API error message
                 self.handle.log(f"Error creating manufacturers: {request_error.error}")
-            except _RETRYABLE_EXCEPTIONS as e:
-                self.handle.log(f"Connection error creating manufacturers after {_MAX_RETRIES} retries: {e}")
+            except RETRYABLE_EXCEPTIONS as e:
+                self.handle.log(f"Connection error creating manufacturers after {MAX_RETRIES} retries: {e}")
         else:
             self.handle.verbose_log("No new manufacturers to create.")
 
@@ -733,9 +758,8 @@ class NetBox:
                 netbox=self.netbox,
                 device_type_id=dt.id,
                 device_type_yaml=device_type,
-                new_filters=self.new_filters,
             )
-        except Exception as exc:  # defensive: classifier must never break the run
+        except Exception as exc:  # defensive: classifier must never break the run  # noqa: BLE001
             self.handle.verbose_log(f"Failure classifier raised {type(exc).__name__}: {exc}")
             return False, None
 
@@ -768,13 +792,13 @@ class NetBox:
         try:
             for step in resolution.remediation_steps:
                 step()
-        except Exception as exc:
+        except Exception as exc:  # a failed remediation is reported, not raised  # noqa: BLE001
             self.handle.log(f"Auto-resolve failed for {dt.model}: {exc}")
             return False, resolution
 
         # Retry the original PATCH exactly once.
         try:
-            _retry_on_connection_error(
+            call_with_retry(
                 self.netbox.dcim.device_types.update,
                 [{"id": dt.id, **updates}],
             )
@@ -783,7 +807,7 @@ class NetBox:
         except pynetbox.RequestError as e:
             self.handle.log(f"Retry after auto-resolve still failed for {dt.model}: {e.error}")
             return False, resolution
-        except _RETRYABLE_EXCEPTIONS as e:
+        except RETRYABLE_EXCEPTIONS as e:
             self.handle.log(f"Connection error during retry after auto-resolve for {dt.model}: {e}")
             return False, resolution
 
@@ -990,8 +1014,7 @@ class NetBox:
         """
         if saved_images:
             self._filter_images_for_upload(dt, saved_images)
-            if saved_images:
-                self.device_types.upload_images(self.url, self.token, saved_images, dt.id)
+            if saved_images and self.device_types.upload_images(saved_images, dt.id):
                 _store_image_hashes(self._image_hash_cache, saved_images, log_fn=self.handle.log)
                 self._persist_hash_cache()
 
@@ -1019,7 +1042,7 @@ class NetBox:
                 if updates:
                     property_attempted = True
                     try:
-                        _retry_on_connection_error(self.netbox.dcim.device_types.update, [{"id": dt.id, **updates}])
+                        call_with_retry(self.netbox.dcim.device_types.update, [{"id": dt.id, **updates}])
                         dt.update(updates)  # keep local cache in sync
                         self.counter.update({"properties_updated": 1})
                         property_succeeded = True
@@ -1035,15 +1058,18 @@ class NetBox:
                             self.handle.verbose_log(
                                 f"Updated device type {dt.model} properties after auto-resolve: {list(updates.keys())}"
                             )
-                    except _RETRYABLE_EXCEPTIONS as e:
+                    except RETRYABLE_EXCEPTIONS as e:
                         self.handle.log(
-                            f"Connection error updating device type {dt.model} after {_MAX_RETRIES} retries: {e}"
+                            f"Connection error updating device type {dt.model} after {MAX_RETRIES} retries: {e}"
                         )
 
             # Apply component changes
             component_errors = []
             if dt_change.component_changes:
-                actionable_count = _count_actionable_component_changes(dt_change.component_changes, remove_components)
+                component_changes = _without_gated_mapping_clears(
+                    dt_change.component_changes, remove_components, self.handle
+                )
+                actionable_count = _count_actionable_component_changes(component_changes, remove_components)
                 before_components = (
                     self.counter["components_updated"],
                     self.counter["components_added"],
@@ -1053,11 +1079,11 @@ class NetBox:
                     self.device_types.update_components(
                         device_type,
                         dt.id,
-                        dt_change.component_changes,
+                        component_changes,
                         parent_type="device",
                     )
                     if remove_components:
-                        self.device_types.remove_components(dt.id, dt_change.component_changes, parent_type="device")
+                        self.device_types.remove_components(dt.id, component_changes, parent_type="device")
                 after_components = (
                     self.counter["components_updated"],
                     self.counter["components_added"],
@@ -1095,7 +1121,12 @@ class NetBox:
                 True when the caller should skip to the next iteration.
         """
         try:
-            dt = _retry_on_connection_error(self.netbox.dcim.device_types.create, device_type)
+            dt = create_with_retry(
+                self.netbox.dcim.device_types,
+                device_type,
+                "model",
+                manufacturer=device_type["manufacturer"]["slug"],
+            )
             self.counter.update({"added": 1})
             self.handle.verbose_log(f"Device Type Created: {dt.manufacturer.name} - " + f"{dt.model} - {dt.id}")
             return dt, False
@@ -1112,16 +1143,16 @@ class NetBox:
                 src_file,
             )
             return None, True
-        except _RETRYABLE_EXCEPTIONS as e:
+        except RETRYABLE_EXCEPTIONS as e:
             self.handle.log(
                 f"Connection error creating device type"
                 f" {device_type.get('manufacturer', {}).get('slug', '')} {device_type.get('model', '')}"
-                f" after {_MAX_RETRIES} retries: {e} (Context: {src_file})"
+                f" after {MAX_RETRIES} retries: {e} (Context: {src_file})"
             )
             self._record_failure(
                 EntityKind.DEVICE_TYPE,
                 self._yaml_identity(device_type),
-                f"Connection error after {_MAX_RETRIES} retries: {e}",
+                f"Connection error after {MAX_RETRIES} retries: {e}",
                 src_file,
             )
             return None, True
@@ -1160,9 +1191,13 @@ class NetBox:
                 yaml_key = component.yaml_key
                 if yaml_key not in device_type:
                     continue
-                if yaml_key == "module-bays" and not self.modules:
-                    continue
-                self.device_types.create_components(yaml_key, device_type[yaml_key], dt_id, context=src_file)
+                self.device_types.create_components(
+                    yaml_key,
+                    device_type[yaml_key],
+                    dt_id,
+                    context=src_file,
+                    manufacturer=device_type.get("manufacturer"),
+                )
         if component_errors:
             # The type exists but not all of its components do.
             self.outcomes.record(
@@ -1171,8 +1206,7 @@ class NetBox:
                 Outcome.PARTIAL,
                 reason=_summarise_component_errors(component_errors),
             )
-        if saved_images:
-            self.device_types.upload_images(self.url, self.token, saved_images, dt_id)
+        if saved_images and self.device_types.upload_images(saved_images, dt_id):
             _store_image_hashes(self._image_hash_cache, saved_images, log_fn=self.handle.log)
             self._persist_hash_cache()
 
@@ -1331,7 +1365,7 @@ class NetBox:
                 }
                 if updates:
                     try:
-                        _retry_on_connection_error(self.netbox.dcim.rack_types.update, [{"id": existing.id, **updates}])
+                        call_with_retry(self.netbox.dcim.rack_types.update, [{"id": existing.id, **updates}])
                         self.counter.update({"rack_type_updated": 1})
                         self.handle.verbose_log(
                             f"Rack Type Updated: {manufacturer_slug} - {model} - {existing.id} "
@@ -1342,22 +1376,24 @@ class NetBox:
                         self._record_failure(
                             EntityKind.RACK_TYPE, f"{manufacturer_slug}/{model}", str(e.error), src_file
                         )
-                    except _RETRYABLE_EXCEPTIONS as e:
+                    except RETRYABLE_EXCEPTIONS as e:
                         self.handle.log(
-                            f"Connection error updating Rack Type {model} after {_MAX_RETRIES} retries:"
+                            f"Connection error updating Rack Type {model} after {MAX_RETRIES} retries:"
                             f" {e} (Context: {src_file})"
                         )
                         self._record_failure(
                             EntityKind.RACK_TYPE,
                             f"{manufacturer_slug}/{model}",
-                            f"Connection error after {_MAX_RETRIES} retries: {e}",
+                            f"Connection error after {MAX_RETRIES} retries: {e}",
                             src_file,
                         )
                 else:
                     self.handle.verbose_log(f"Rack Type Unchanged: {manufacturer_slug} - {model} - {existing.id}")
             else:
                 try:
-                    rt = _retry_on_connection_error(self.netbox.dcim.rack_types.create, rack_type)
+                    rt = create_with_retry(
+                        self.netbox.dcim.rack_types, rack_type, "model", manufacturer=manufacturer_slug
+                    )
                     self.counter.update({"rack_type_added": 1})
                     all_rack_types.setdefault(manufacturer_slug, {})[model] = rt
                     self.handle.verbose_log(f"Rack Type Created: {manufacturer_slug} - {model} - {rt.id}")
@@ -1366,15 +1402,15 @@ class NetBox:
                     self._record_failure(
                         EntityKind.RACK_TYPE, f"{manufacturer_slug}/{model}", str(excep.error), src_file
                     )
-                except _RETRYABLE_EXCEPTIONS as e:
+                except RETRYABLE_EXCEPTIONS as e:
                     self.handle.log(
-                        f"Connection error creating Rack Type {model} after {_MAX_RETRIES} retries:"
+                        f"Connection error creating Rack Type {model} after {MAX_RETRIES} retries:"
                         f" {e} (Context: {src_file})"
                     )
                     self._record_failure(
                         EntityKind.RACK_TYPE,
                         f"{manufacturer_slug}/{model}",
-                        f"Connection error after {_MAX_RETRIES} retries: {e}",
+                        f"Connection error after {MAX_RETRIES} retries: {e}",
                         src_file,
                     )
 
@@ -1404,11 +1440,11 @@ class NetBox:
         Returns:
             list[dict]: Module types not found in *all_module_types*.
         """
-        new_module_types = []
-        for module_type in module_types:
-            if NetBox._find_existing_module_type(module_type, all_module_types) is None:
-                new_module_types.append(module_type)
-        return new_module_types
+        return [
+            module_type
+            for module_type in module_types
+            if NetBox._find_existing_module_type(module_type, all_module_types) is None
+        ]
 
     def _log_module_property_diffs(self, mfr_slug, model, fields_info, component_changes=None):
         """Emit diff-u style lines for changed module type properties and component changes.
@@ -1522,6 +1558,9 @@ class NetBox:
                 if not values_equal(module_type[f], nb_val):
                     changed_fields_info.append((f, nb_val, module_type[f]))
 
+            changed_fields_info += self._profile_changes(module_type, existing_module)
+            changed_fields_info += self._type_relation_changes(module_type, existing_module)
+
             component_changes = detector._compare_components(module_type, existing_module.id, parent_type="module")
 
             if changed_fields_info or component_changes:
@@ -1574,6 +1613,75 @@ class NetBox:
         )
         return module_type_existing_images
 
+    @staticmethod
+    def _profile_changes(module_type, existing_module):
+        """Return (field, current, wanted) for the profile and for each declared attribute that differs.
+
+        NetBox merges PATCHed attributes into the stored ones, so an attribute the YAML omits is
+        left alone, the same as an omitted property. A profile change drops the old attributes.
+        """
+        changes: list[tuple[str, Any, Any]] = []
+        if "profile" in module_type and hasattr(existing_module, "profile"):
+            wanted = module_type["profile"]["name"] if module_type["profile"] else None
+            current = existing_module.profile.name if existing_module.profile else None
+            if wanted != current:
+                changes.append(("profile", current, wanted))
+        if "attribute_data" in module_type and hasattr(existing_module, "attribute_data"):
+            declared = module_type["attribute_data"]
+            stored = existing_module.attribute_data
+            if not declared:
+                # NetBox replaces, not merges, the stored attributes with an empty value.
+                if stored:
+                    changes.append(("attribute_data", stored, declared))
+                return changes
+            stored = stored if isinstance(stored, dict) else {}
+            for key, wanted in declared.items():
+                if not _json_equal(stored.get(key, _MISSING), wanted):
+                    changes.append((f"attribute_data.{key}", stored.get(key), wanted))
+        return changes
+
+    def _type_relation_changes(self, module_type, existing_module):
+        """Return (field, current, wanted) for each of the type's own relations that differs.
+
+        A relation is a list, so the scalar comparison loop never sees it.  A field the
+        query did not return is skipped rather than read as empty, which would otherwise
+        report a change on every run.
+        """
+        changes: list[tuple[str, list[str], list[str]]] = []
+        if not self.module_bay_types:
+            return changes
+        for field in MODULE_TYPE_RELATIONS:
+            change = _relation_change(
+                field,
+                module_type,
+                existing_module,
+                self.device_types.module_bay_type_catalog,
+                self.device_types._manufacturer_slug(module_type.get("manufacturer")),
+                self.handle,
+            )
+            if change is not None:
+                changes.append((change.property_name, change.old_value, change.new_value))
+        return changes
+
+    def _resolve_type_relations(self, payload):
+        """Return *payload* with its own relation fields resolved from names to ids.
+
+        Raises ModuleBayTypeError if a name does not resolve, so the caller can report the
+        module type rather than write it with the restriction silently dropped.
+        """
+        names = {field: payload[field] for field in MODULE_TYPE_RELATIONS if field in payload}
+        if not names:
+            return payload
+        if not self.module_bay_types:
+            # The server predates ModuleBayType; sending the field would be rejected.
+            return {k: v for k, v in payload.items() if k not in names}
+        manufacturer = self.device_types._manufacturer_slug(payload.get("manufacturer"))
+        resolved = {
+            field: self.device_types.module_bay_type_catalog.ids_for(manufacturer, value)
+            for field, value in names.items()
+        }
+        return {**payload, **resolved}
+
     def _try_update_module_type(self, curr_mt, module_type_res, src_file):
         """Apply pending field updates to an existing module type in NetBox.
 
@@ -1590,10 +1698,40 @@ class NetBox:
                 continue
             if not values_equal(curr_mt[field], current_value):
                 updates[field] = curr_mt[field]
+        stale_attributes = False
+        for field, _current, _wanted in self._profile_changes(curr_mt, module_type_res):
+            if field == "profile":
+                updates["profile"] = curr_mt["profile"]
+                stored = getattr(module_type_res, "attribute_data", None)
+                declared = curr_mt.get("attribute_data")
+                if "attribute_data" in curr_mt:
+                    updates[_REST_ATTRIBUTES_FIELD] = declared
+                # A non-empty PATCH keeps every stored key; an undeclared set must end as no attributes, as on create.
+                stale_attributes = stored is not None and (
+                    "attribute_data" not in curr_mt
+                    or (bool(declared) and (not isinstance(stored, dict) or bool(stored.keys() - declared)))
+                )
+            else:
+                updates[_REST_ATTRIBUTES_FIELD] = curr_mt["attribute_data"]
+        if self.module_bay_types:
+            from core.module_bay_types import ModuleBayTypeError
+
+            for field, _current, wanted in self._type_relation_changes(curr_mt, module_type_res):
+                try:
+                    updates[field] = self.device_types.module_bay_type_catalog.ids_for(
+                        self.device_types._manufacturer_slug(curr_mt.get("manufacturer")), wanted
+                    )
+                except ModuleBayTypeError as exc:
+                    # Not fatal to the run, but not a success either; the caller records it.
+                    self.handle.log(f"Skipped {field} on {curr_mt.get('model')}: {exc} (Context: {src_file})")
+                    return False, False
         if not updates:
             return True, False
         try:
-            _retry_on_connection_error(self.netbox.dcim.module_types.update, [{"id": module_type_res.id, **updates}])
+            if stale_attributes:
+                self._patch_profile_change(module_type_res, updates)
+            else:
+                call_with_retry(self.netbox.dcim.module_types.update, [{"id": module_type_res.id, **updates}])
             self.handle.verbose_log(
                 f"Module Type Updated: {module_type_res.manufacturer.name} - "
                 f"{module_type_res.model} - {module_type_res.id} "
@@ -1602,12 +1740,37 @@ class NetBox:
         except pynetbox.RequestError as excep:
             self.handle.log(f"Error updating Module Type: {excep.error} (Context: {src_file})")
             return False, False
-        except _RETRYABLE_EXCEPTIONS as e:
+        except RETRYABLE_EXCEPTIONS as e:
             self.handle.log(
-                f"Connection error updating Module Type after {_MAX_RETRIES} retries: {e} (Context: {src_file})"
+                f"Connection error updating Module Type after {MAX_RETRIES} retries: {e} (Context: {src_file})"
             )
             return False, False
         return True, True
+
+    def _patch_profile_change(self, module_type_res, updates):
+        """PATCH *updates* on a cleared module type, and put the old profile and attributes back if it fails.
+
+        NetBox merges PATCHed attributes into the stored ones, so the old profile's attributes must go
+        first. A module type without a profile has no attributes, so dropping the profile clears them.
+        A lost reply can hide a committed write, so the restore clears again before it writes.
+        """
+        update = self.netbox.dcim.module_types.update
+        type_id = module_type_res.id
+        cleared = {"id": type_id, "profile": None, _REST_ATTRIBUTES_FIELD: None}
+        try:
+            call_with_retry(update, [cleared])
+            call_with_retry(update, [{"id": type_id, **updates}])
+        except Exception:  # any failure after the clear leaves an unknown state; restore, then re-raise
+            old_profile = {"name": module_type_res.profile.name} if module_type_res.profile else None
+            restore = {"id": type_id, "profile": old_profile, _REST_ATTRIBUTES_FIELD: module_type_res.attribute_data}
+            for step, payload in (("clear", cleared), ("restore", restore)):
+                try:
+                    call_with_retry(update, [payload])
+                except Exception as step_error:  # noqa: BLE001  # logged; the original error is re-raised
+                    self.handle.log(
+                        f"Could not {step} the profile and attributes of Module Type {type_id}: {step_error}"
+                    )
+            raise
 
     def _create_module_type_components(self, curr_mt, module_type_id, src_file):
         """Create all component templates for a newly created module type.
@@ -1622,7 +1785,12 @@ class NetBox:
                 yaml_key = component.yaml_key
                 if yaml_key in curr_mt:
                     self.device_types.create_components(
-                        yaml_key, curr_mt[yaml_key], module_type_id, parent_type="module", context=src_file
+                        yaml_key,
+                        curr_mt[yaml_key],
+                        module_type_id,
+                        parent_type="module",
+                        context=src_file,
+                        manufacturer=curr_mt.get("manufacturer"),
                     )
         if component_errors:
             # The module type exists but not all of its components do.
@@ -1651,6 +1819,7 @@ class NetBox:
         self.device_types.ensure_components_ready(manufacturer_slug=curr_mt["manufacturer"]["slug"])
         identity = f"{module_type_res.manufacturer.name}/{module_type_res.model}"
         component_changes = self.change_detector._compare_components(curr_mt, module_type_res.id, parent_type="module")
+        component_changes = _without_gated_mapping_clears(component_changes, remove_components, self.handle)
         if component_changes:
             actionable_count = _count_actionable_component_changes(component_changes, remove_components)
             before_updated = self.counter["components_updated"]
@@ -1756,7 +1925,7 @@ class NetBox:
         if module_type_res is not None:
             self.handle.verbose_log(
                 f"Module Type Cached: {module_type_res.manufacturer.name} - "
-                + f"{module_type_res.model} - {module_type_res.id}"
+                f"{module_type_res.model} - {module_type_res.id}"
             )
             # Upload images before the scalar PATCH so attachments are created
             # even if the property update later fails (module already exists in
@@ -1776,14 +1945,29 @@ class NetBox:
                     )
         else:
             try:
-                module_type_res = _retry_on_connection_error(self.netbox.dcim.module_types.create, curr_mt)
+                from core.module_bay_types import ModuleBayTypeError
+
+                try:
+                    payload = self._resolve_type_relations(_with_rest_attributes(curr_mt))
+                except ModuleBayTypeError as exc:
+                    self.handle.log(f"Error creating Module Type: {exc} (Context: {src_file})")
+                    self._record_failure(
+                        EntityKind.MODULE_TYPE,
+                        self._yaml_identity(curr_mt),
+                        str(exc),
+                        src_file,
+                    )
+                    return False
+                module_type_res = create_with_retry(
+                    self.netbox.dcim.module_types, payload, "model", manufacturer=curr_mt["manufacturer"]["slug"]
+                )
                 self.counter["module_added"] += 1
                 is_new = True
                 manufacturer_slug = curr_mt["manufacturer"]["slug"]
                 all_module_types.setdefault(manufacturer_slug, {})[curr_mt["model"]] = module_type_res
                 self.handle.verbose_log(
                     f"Module Type Created: {module_type_res.manufacturer.name} - "
-                    + f"{module_type_res.model} - {module_type_res.id}"
+                    f"{module_type_res.model} - {module_type_res.id}"
                 )
             except pynetbox.RequestError as excep:
                 self.handle.log(f"Error creating Module Type: {excep.error} (Context: {src_file})")
@@ -1794,14 +1978,14 @@ class NetBox:
                     src_file,
                 )
                 return False
-            except _RETRYABLE_EXCEPTIONS as e:
+            except RETRYABLE_EXCEPTIONS as e:
                 self.handle.log(
-                    f"Connection error creating Module Type after {_MAX_RETRIES} retries: {e} (Context: {src_file})"
+                    f"Connection error creating Module Type after {MAX_RETRIES} retries: {e} (Context: {src_file})"
                 )
                 self._record_failure(
                     EntityKind.MODULE_TYPE,
                     self._yaml_identity(curr_mt),
-                    f"Connection error after {_MAX_RETRIES} retries: {e}",
+                    f"Connection error after {MAX_RETRIES} retries: {e}",
                     src_file,
                 )
                 return False
@@ -2000,7 +2184,7 @@ class NetBox:
                 "missing or invalid att_id, skipping upload to avoid duplicates."
             )
             return False
-        if not _delete_image_attachment(self.url, self.token, att_id, self.ignore_ssl, self.handle):
+        if not self.device_types.delete_image_attachment(att_id):
             self.handle.verbose_log(
                 f"Failed to delete stale attachment for "
                 f"'{os.path.basename(img_path)}' on {module_type_res.model}, "
@@ -2101,9 +2285,7 @@ class NetBox:
                         f"Image '{os.path.basename(img_path)}' already exists for {module_type_res.model}, skipping."
                     )
                     continue
-            if self.device_types.upload_image_attachment(
-                self.url, self.token, img_path, "dcim.moduletype", module_type_res.id
-            ):
+            if self.device_types.upload_image_attachment(img_path, "dcim.moduletype", module_type_res.id):
                 existing.add(img_name)
                 _store_image_hashes(self._image_hash_cache, {"image": img_path}, log_fn=self.handle.log)
                 self._persist_hash_cache()
@@ -2126,7 +2308,7 @@ class _FrontPortRecordWithMappings:
     All other attribute accesses are forwarded to the underlying record.
     """
 
-    __slots__ = ("_record", "_mappings_canonical")
+    __slots__ = ("_mappings_canonical", "_mappings_m2m", "_record")
 
     def __init__(self, record):
         """Wrap *record* and pre-compute a canonical mappings list for ChangeDetector compatibility.
@@ -2137,7 +2319,7 @@ class _FrontPortRecordWithMappings:
         """
         object.__setattr__(self, "_record", record)
         mappings_raw = getattr(record, "mappings", None)
-        canonical: Optional[list]
+        canonical: list | None
         if mappings_raw is not None:
             # NetBox >= 4.5: mappings is a list of PortTemplateMapping objects
             canonical = []
@@ -2160,10 +2342,18 @@ class _FrontPortRecordWithMappings:
         else:
             # NetBox < 4.5: rear_port_position is a direct scalar field
             rp_pos = getattr(record, "rear_port_position", None)
+            # The pre-4.5 query asks for rear_port { id name }; keeping the name is what lets
+            # a move to a different rear port be seen at all.
+            legacy_rp = getattr(record, "rear_port", None)
+            legacy_name = (
+                (legacy_rp.get("name") if isinstance(legacy_rp, dict) else getattr(legacy_rp, "name", None))
+                if legacy_rp is not None
+                else None
+            )
             canonical = (
                 [
                     {
-                        "rear_port_name": None,
+                        "rear_port_name": legacy_name,
                         "front_port_position": 1,
                         "rear_port_position": rp_pos,
                     }
@@ -2172,6 +2362,10 @@ class _FrontPortRecordWithMappings:
                 else None  # Both mappings and rear_port_position absent; skip comparison.
             )
         object.__setattr__(self, "_mappings_canonical", canonical)
+        # Which model the record came from, recorded rather than inferred: an empty M2M list
+        # carries no names to infer from, and reading it as pre-4.5 drops the rear port name
+        # the patch needs.
+        object.__setattr__(self, "_mappings_m2m", mappings_raw is not None)
 
     def __getattr__(self, name):
         """Delegate attribute access to the wrapped record."""
@@ -2186,12 +2380,11 @@ class DeviceTypes:
         netbox,
         handle,
         counter,
-        ignore_ssl,
-        new_filters,
         *,
         graphql,
         repo_path,
         m2m_front_ports=False,
+        module_bay_types_supported=False,
         max_threads=8,
     ):
         """Initialize empty DeviceTypes cache structures; no data is fetched at construction time.
@@ -2203,9 +2396,8 @@ class DeviceTypes:
             netbox: Connected pynetbox API instance.
             handle (LogHandler): Sink for creation and error messages.
             counter (Counter): Shared operation counter updated during creation.
-            ignore_ssl (bool): Whether SSL certificate verification is disabled.
-            new_filters (bool): Whether to use updated filter parameter names (NetBox >= 4.1).
             graphql (NetBoxGraphQLClient): GraphQL client for read queries.
+            module_bay_types_supported (bool): True when NetBox supports ModuleBayType (>= 4.7).
             repo_path (str): Local library checkout, used to read the module-type schema.
             m2m_front_ports (bool): Whether NetBox uses the 4.5+ M2M port mapping model.
             max_threads (int): Maximum number of concurrent threads for component preloading.
@@ -2213,21 +2405,20 @@ class DeviceTypes:
         self.netbox = netbox
         self.handle = handle
         self.counter = counter
-        self.ignore_ssl = ignore_ssl
-        self.new_filters = new_filters
         self.graphql = graphql
         self.repo_path = repo_path
         self.m2m_front_ports = m2m_front_ports
+        self.module_bay_types_supported = module_bay_types_supported
         self.max_threads = max_threads
         self.components = ComponentCache(
             netbox,
             graphql,
             handle,
-            new_filters,
             max_threads,
             wrap_record=_FrontPortRecordWithMappings,
         )
         self._image_progress = None
+        self._module_bay_type_catalog = None
         # Component failures for the entity currently inside collect_component_errors().
         self._component_errors: list[str] = []
         self.existing_device_types = {}
@@ -2330,7 +2521,7 @@ class DeviceTypes:
 
         if to_create:
             try:
-                created = _retry_on_connection_error(endpoint.create, to_create)
+                created = create_with_retry(endpoint, to_create, "name", **{f"{parent_key}_id": parent_id})
                 self.handle.log_ports_created(created, parent_type, component_name)
                 self.counter.update({"components_added": len(created)})
 
@@ -2342,7 +2533,7 @@ class DeviceTypes:
                 payload = extract_error_payload(excep.error)
                 per_item = payload if isinstance(payload, list) and len(payload) == len(to_create) else []
                 reported = 0
-                for item, error in zip(to_create, per_item):
+                for item, error in zip(to_create, per_item, strict=False):
                     if error:
                         reported += 1
                         self._log_component_error(
@@ -2353,11 +2544,11 @@ class DeviceTypes:
                     self._log_component_error(
                         f"Error '{excep.error}' creating {component_name}. Items: {failed_items}{context_str}"
                     )
-            except _RETRYABLE_EXCEPTIONS as excep:
+            except RETRYABLE_EXCEPTIONS as excep:
                 context_str = f" (Context: {context})" if context else ""
                 failed_items = [x["name"] for x in to_create]
                 self._log_component_error(
-                    f"Connection error creating {component_name} after {_MAX_RETRIES} retries: {excep}."
+                    f"Connection error creating {component_name} after {MAX_RETRIES} retries: {excep}."
                     f" Items: {failed_items}{context_str}"
                 )
 
@@ -2428,7 +2619,11 @@ class DeviceTypes:
                 update_data["rear_port"] = None
                 update_data["rear_port_position"] = None
                 return
-            first = next(iter(new_mappings))
+            if len(new_mappings) > 1:
+                self._log_component_error(
+                    f'Multiple mappings for front port "{comp_name}" on NetBox < 4.5: only first mapping applied'
+                )
+            first = sorted(new_mappings)[0]
             if len(first) != 3:
                 # Legacy NetBox (<4.5): ChangeDetector emits 2-tuples (fp_pos, rp_pos)
                 # because rear port names are unavailable via the GraphQL API.
@@ -2486,6 +2681,7 @@ class DeviceTypes:
             if change.component_name in existing:
                 comp = existing[change.component_name]
                 update_data = {"id": comp.id}
+                unresolved = False
                 for pc in change.property_changes:
                     if comp_type == "front-ports" and pc.property_name == "_mappings":
                         yaml_front_port = next(
@@ -2501,21 +2697,34 @@ class DeviceTypes:
                             parent_type,
                         )
                         continue
+                    if pc.property_name in component.relations:
+                        # The comparison works in names; NetBox wants ids.
+                        from core.module_bay_types import ModuleBayTypeError
+
+                        try:
+                            update_data[pc.property_name] = self.module_bay_type_catalog.ids_for(
+                                self._manufacturer_slug(yaml_data.get("manufacturer")), pc.new_value
+                            )
+                        except ModuleBayTypeError as exc:
+                            self._log_component_error(f"Skipped {component.label} '{change.component_name}': {exc}")
+                            unresolved = True
+                            break
+                        continue
                     update_data[pc.property_name] = pc.new_value
-                if len(update_data) > 1:  # has fields beyond just "id"
+                if not unresolved and len(update_data) > 1:  # has fields beyond just "id"
                     updates.append(update_data)
 
         success_count = 0
         for update_data in updates:
             try:
-                _retry_on_connection_error(endpoint.update, [update_data])
+                call_with_retry(endpoint.update, [update_data])
                 success_count += 1
                 self.handle.verbose_log(f"Updated {comp_type} (ID: {update_data['id']})")
             except pynetbox.RequestError as e:
                 self._log_component_error(f"Error updating {comp_type} (ID: {update_data['id']}): {e.error}")
-            except _RETRYABLE_EXCEPTIONS as e:
+            except RETRYABLE_EXCEPTIONS as e:
                 self._log_component_error(
-                    f"Connection error updating {comp_type} (ID: {update_data['id']}) after {_MAX_RETRIES} retries: {e}"
+                    f"Connection error updating {comp_type} (ID: {update_data['id']}) after {MAX_RETRIES} retries: {e}"
                 )
 
         if success_count:
@@ -2547,7 +2756,13 @@ class DeviceTypes:
         if not components_to_add:
             return
 
-        self.create_components(comp_type, components_to_add, device_type_id, parent_type=parent_type)
+        self.create_components(
+            comp_type,
+            components_to_add,
+            device_type_id,
+            parent_type=parent_type,
+            manufacturer=yaml_data.get("manufacturer"),
+        )
 
     def update_components(self, yaml_data, device_type_id, component_changes, parent_type="device"):
         """Update existing components and add new components based on detected changes.
@@ -2615,13 +2830,13 @@ class DeviceTypes:
             success_count = 0
             for comp_id in ids_to_delete:
                 try:
-                    _retry_on_connection_error(endpoint.delete, [comp_id])
+                    delete_with_retry(endpoint, comp_id)
                     success_count += 1
                 except pynetbox.RequestError as e:
                     self._log_component_error(f"Error removing {comp_type} (ID: {comp_id}): {e.error}")
-                except _RETRYABLE_EXCEPTIONS as e:
+                except RETRYABLE_EXCEPTIONS as e:
                     self._log_component_error(
-                        f"Connection error removing {comp_type} (ID: {comp_id}) after {_MAX_RETRIES} retries: {e}"
+                        f"Connection error removing {comp_type} (ID: {comp_id}) after {MAX_RETRIES} retries: {e}"
                     )
 
             if success_count:
@@ -2778,7 +2993,7 @@ class DeviceTypes:
                 else:
                     if len(resolved) > 1:
                         ctx = f" (Context: {context})" if context else ""
-                        self.handle.log(
+                        self._log_component_error(
                             f'Multiple mappings for {label} "{port["name"]}" on NetBox < 4.5: '
                             f"only first mapping applied{ctx}"
                         )
@@ -2828,16 +3043,75 @@ class DeviceTypes:
         if not to_update:
             return
         try:
-            _retry_on_connection_error(self.netbox.dcim.interface_templates.update, to_update)
+            call_with_retry(self.netbox.dcim.interface_templates.update, to_update)
             self.handle.verbose_log(f"Bridged {len(to_update)} interfaces.")
         except pynetbox.RequestError as e:
             self._log_component_error(f"Error bridging interfaces: {e} (Context: {context})")
-        except _RETRYABLE_EXCEPTIONS as e:
+        except RETRYABLE_EXCEPTIONS as e:
             self._log_component_error(
-                f"Connection error bridging interfaces after {_MAX_RETRIES} retries: {e} (Context: {context})"
+                f"Connection error bridging interfaces after {MAX_RETRIES} retries: {e} (Context: {context})"
             )
 
-    def create_components(self, yaml_key, items, parent_id, parent_type="device", context=None):
+    @property
+    def module_bay_type_catalog(self):
+        """The module-bay-type catalog, built once per run from the library checkout."""
+        if self._module_bay_type_catalog is None:
+            from core.module_bay_types import ModuleBayTypeCatalog
+
+            self._module_bay_type_catalog = ModuleBayTypeCatalog(self.netbox, self.repo_path, self.handle)
+        return self._module_bay_type_catalog
+
+    @staticmethod
+    def _manufacturer_slug(manufacturer):
+        """Return the manufacturer slug, whatever shape the caller happens to hold.
+
+        ``core.repo`` rewrites every YAML ``manufacturer`` to ``{"slug": ...}`` before the
+        importer sees it, so that is the usual shape; a plain name is slugified here.
+        """
+        from core.module_bay_types import manufacturer_slug
+
+        if isinstance(manufacturer, dict):
+            return manufacturer.get("slug") or manufacturer_slug(manufacturer.get("name"))
+        return manufacturer_slug(getattr(manufacturer, "name", manufacturer))
+
+    def _resolve_relations(self, component, items, manufacturer):
+        """Turn each relation field's names into NetBox ids, dropping items that cannot resolve.
+
+        A component whose restriction cannot be resolved is skipped and logged rather than
+        created without it: creating the bay anyway would silently discard the restriction.
+        """
+        if not component.relations:
+            return items
+        if not self.module_bay_types_supported:
+            # The server predates ModuleBayType; drop the field rather than have it rejected.
+            return [{k: v for k, v in item.items() if k not in component.relations} for item in items]
+        from core.module_bay_types import ModuleBayTypeError
+
+        manufacturer = self._manufacturer_slug(manufacturer)
+        resolved = []
+        for item in items:
+            names = {field: item[field] for field in component.relations if field in item}
+            if not names:
+                resolved.append(item)
+                continue
+            if not manufacturer:
+                # No scope to resolve in, and NetBox wants ids: sending the names would fail.
+                self._log_component_error(
+                    f"Skipped {component.label} '{item.get('name', 'Unknown')}': no manufacturer to "
+                    f"resolve {', '.join(sorted(names))} in"
+                )
+                continue
+            try:
+                replacements = {
+                    field: self.module_bay_type_catalog.ids_for(manufacturer, value) for field, value in names.items()
+                }
+            except ModuleBayTypeError as exc:
+                self._log_component_error(f"Skipped {component.label} '{item.get('name', 'Unknown')}': {exc}")
+                continue
+            resolved.append({**item, **replacements})
+        return resolved
+
+    def create_components(self, yaml_key, items, parent_id, parent_type="device", context=None, manufacturer=None):
         """Create component templates of one kind for one parent, skipping those that exist.
 
         The registry row for *yaml_key* supplies the endpoint, the cache name, the log label
@@ -2850,6 +3124,8 @@ class DeviceTypes:
             parent_id (int): NetBox ID of the parent device or module type.
             parent_type (str): ``"device"`` or ``"module"``.
             context (str | None): Optional context string appended to log messages.
+            manufacturer (dict | str | None): Owning manufacturer, used to resolve any
+                relation fields the registry row declares.
         """
         component = BY_YAML_KEY[yaml_key]
         label = component.create_label(parent_type)
@@ -2869,7 +3145,7 @@ class DeviceTypes:
 
         self._create_generic(
             component,
-            items,
+            self._resolve_relations(component, items, manufacturer),
             parent_id,
             parent_type=parent_type,
             post_process=post_process,
@@ -2879,100 +3155,125 @@ class DeviceTypes:
         if bridged:
             self._link_bridges(bridged, parent_id, parent_type, context)
 
-    def upload_images(self, baseurl, token, images, device_type):
-        """Upload front and/or rear image files to the specified NetBox device type.
+    def upload_images(self, images, device_type_id):
+        """Upload front and/or rear image files to one NetBox device type.
 
-        Sends a PATCH request to the device-type endpoint attaching the provided image files,
-        increments self.counter["images"] by the number of files sent, and ensures all opened
-        file handles are closed. Respects self.ignore_ssl to determine SSL verification behavior.
+        Sends one multipart PATCH to the device type, retried after a transient error, and
+        adds the number of files sent to ``self.counter["images"]``.
 
         Args:
-            baseurl (str): Base URL of the NetBox instance (e.g. "https://netbox.example.com").
-            token (str): API token used for the Authorization header.
             images (dict): Mapping of form field name to local file path (e.g.
                 {"front_image": "/path/front.jpg", "rear_image": "/path/rear.jpg"}).
-            device_type (int | str): Identifier of the device type to update in NetBox (used in the endpoint URL).
+            device_type_id (int): ID of the device type to update.
+
+        Returns:
+            bool: True when NetBox stored the images, False when the upload failed.
         """
-        url = f"{baseurl}/api/dcim/device-types/{device_type}/"
-        headers = {"Authorization": _build_auth_header(token)}
+        # One object's URL: Endpoint.update sends a list, which pynetbox never sends as multipart.
+        request = Request(
+            key=device_type_id,
+            base=self.netbox.dcim.device_types.url,
+            token=self.netbox.token,
+            http_session=self.netbox.http_session,
+        )
+        with ExitStack() as files:
+            try:
+                payload = {
+                    field: (os.path.basename(path), files.enter_context(open(path, "rb")))
+                    for field, path in images.items()
+                }
+            except OSError as e:
+                self.handle.log(f"Error reading image file for device type {device_type_id}: {e}")
+                return False
+            try:
+                call_with_retry(request.patch, payload)
+            except pynetbox.RequestError as e:
+                self.handle.log(f"Error uploading images for device type {device_type_id}: {_format_request_error(e)}")
+                return False
+            except RETRYABLE_EXCEPTIONS as e:
+                self.handle.log(
+                    f"Error uploading images for device type {device_type_id} after {MAX_RETRIES} retries: {e}"
+                )
+                return False
+        self.handle.verbose_log(f"Images {images} updated on device type {device_type_id}")
+        self.counter["images"] += len(images)
+        if self._image_progress:
+            self._image_progress(len(images))
+        return True
 
-        # Open files with proper cleanup to avoid resource leaks
-        file_handles = {}
-        try:
-            for field, path in images.items():
-                file_handles[field] = (os.path.basename(path), open(path, "rb"))
-            response = requests.patch(
-                url,
-                headers=headers,
-                files=file_handles,
-                verify=(not self.ignore_ssl),
-                timeout=60,
-            )
-            response.raise_for_status()
-            self.handle.verbose_log(f"Images {images} updated at {url}: {response.status_code}")
-            self.counter["images"] += len(images)
-            if self._image_progress:
-                self._image_progress(len(images))
-        except requests.RequestException as e:
-            self.handle.log(f"Error uploading images for device type {device_type}: {_format_request_error(e)}")
-        except OSError as e:
-            self.handle.log(f"Error reading image file for device type {device_type}: {e}")
-        finally:
-            for _, (_, fh) in file_handles.items():
-                try:
-                    fh.close()
-                except Exception:
-                    pass
-
-    def upload_image_attachment(self, baseurl, token, image_path, object_type, object_id):
+    def upload_image_attachment(self, image_path, object_type, object_id):
         """Upload an image as an Image Attachment to a NetBox object.
 
-        Uses POST /api/extras/image-attachments/ to attach an image to any
-        NetBox object type (e.g. module types which lack built-in image fields).
+        Attaches an image to any NetBox object type (e.g. module types, which lack built-in
+        image fields).  Record matching attachment IDs before uploading because names are not
+        unique.  After a transient error, accept only a new matching attachment.  Multiple
+        new matches are ambiguous and fail the upload instead of reporting success.
 
         Args:
-            baseurl (str): Base URL of the NetBox instance.
-            token (str): API token for authorization.
             image_path (str): Local file path of the image to upload.
             object_type (str): NetBox content type string (e.g. "dcim.moduletype").
-            object_id (int | str): ID of the object to attach the image to.
+            object_id (int): ID of the object to attach the image to.
 
         Returns:
             bool: True if the upload succeeded, False on any error.
         """
-        url = f"{baseurl}/api/extras/image-attachments/"
-        headers = {"Authorization": _build_auth_header(token)}
-        data = {
-            "object_type": object_type,
-            "object_id": str(object_id),
-            "name": os.path.splitext(os.path.basename(image_path))[0],
-        }
-
+        filename = os.path.basename(image_path)
+        target = f"{object_type} {object_id}"
         try:
-            with open(image_path, "rb") as f:
-                files = {"image": (os.path.basename(image_path), f)}
-                response = requests.post(
-                    url,
-                    headers=headers,
-                    data=data,
-                    files=files,
-                    verify=(not self.ignore_ssl),
-                    timeout=60,
-                )
-                response.raise_for_status()
-                self.handle.verbose_log(
-                    f"Image attachment '{os.path.basename(image_path)}' uploaded"
-                    f" for {object_type} {object_id}: {response.status_code}"
-                )
-                self.counter["images"] += 1
-                if self._image_progress:
-                    self._image_progress(1)
-                return True
-        except requests.RequestException as e:
-            self.handle.log(
-                f"Error uploading image attachment for {object_type} {object_id}: {_format_request_error(e)}"
-            )
-            return False
+            f = open(image_path, "rb")  # noqa: SIM115
         except OSError as e:
             self.handle.log(f"Error reading image file {image_path}: {e}")
             return False
+        payload = {
+            "object_type": object_type,
+            "object_id": object_id,
+            "name": os.path.splitext(filename)[0],
+            "image": (filename, f),
+        }
+        with f:
+            try:
+                endpoint = self.netbox.extras.image_attachments
+                filters = {"object_type": object_type, "object_id": object_id, "name": payload["name"]}
+                existing_ids = call_with_retry(lambda: {attachment.id for attachment in endpoint.filter(**filters)})
+
+                def find_created():
+                    """Return the sole matching attachment created after the initial lookup."""
+                    matches = [
+                        attachment for attachment in endpoint.filter(**filters) if attachment.id not in existing_ids
+                    ]
+                    if len(matches) > 1:
+                        raise ValueError("Multiple new image attachments match the upload")
+                    return matches[0] if matches else None
+
+                call_with_retry(endpoint.create, payload, find_existing=find_created)
+            except pynetbox.RequestError as e:
+                self.handle.log(f"Error uploading image attachment for {target}: {_format_request_error(e)}")
+                return False
+            except RETRYABLE_EXCEPTIONS as e:
+                self.handle.log(f"Error uploading image attachment for {target} after {MAX_RETRIES} retries: {e}")
+                return False
+            except ValueError as e:
+                self.handle.log(f"Cannot tell if the image attachment for {target} was created: {e}")
+                return False
+        self.handle.verbose_log(f"Image attachment '{filename}' uploaded for {target}")
+        self.counter["images"] += 1
+        if self._image_progress:
+            self._image_progress(1)
+        return True
+
+    def delete_image_attachment(self, att_id):
+        """Delete one NetBox image attachment by ID, retried after a transient error.
+
+        Args:
+            att_id (int): ID of the image attachment to delete.
+
+        Returns:
+            bool: True when the attachment is gone, False when NetBox refused or retries ran out.
+        """
+        try:
+            return delete_with_retry(self.netbox.extras.image_attachments, att_id)
+        except pynetbox.RequestError as e:
+            self.handle.log(f"Error deleting image attachment {att_id}: {_format_request_error(e)}")
+        except RETRYABLE_EXCEPTIONS as e:
+            self.handle.log(f"Error deleting image attachment {att_id} after {MAX_RETRIES} retries: {e}")
+        return False
