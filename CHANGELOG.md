@@ -2,6 +2,35 @@
 
 <!-- version list -->
 
+## v1.10.0 (2026-11-17)
+
+### Chores
+
+- **deps-dev**: Bump the python-deps group with 2 updates (#165, [`e819cee`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/e819cee9914e620c0087e38bdb7289f252fc63a6))
+- **deps-dev**: Bump the python-deps group with 4 updates (#163, [`84c5689`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/84c5689ec1b70b298a044017e93d932bf339ac59))
+- **deps**: Bump astral-sh/setup-uv (#162, [`99ae29c`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/99ae29c6baf03893e97ac5ad48d2c7225d5dbb1d))
+- **deps-dev**: Bump ruff (#161, [`90f761d`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/90f761d364a5036107280a3fef7c19a8f07838fb))
+- **deps**: Bump the github-actions group across 1 directory with 3 updates (#159, [`0dce987`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/0dce9879e97e08b27cf3690b714cb51ed8ff23f2))
+- **deps**: Bump filelock from 3.32.7 to 4.2.1 (#157, [`83b7f22`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/83b7f2265418d63f1ba75a1e3e8918fe84b7b25a))
+- **deps**: Bump virtualenv from 21.14.9 to 21.14.13 (#158, [`ca610a1`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/ca610a1f7050c8980713ba2335e40b137fab5fe2))
+- **deps-dev**: Bump the python-deps group with 3 updates (#156, [`746a01e`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/746a01e5114e8f54a89a086cfa99371710640109))
+
+
+### Continuous Integration
+
+- **test-netbox**: Pin the netbox python and update the version matrix (#160, [`3752e4e`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/3752e4e4ad5317998dbc1949fe095d24a68d28ba))
+
+
+### Features
+
+- Module bay types (#136, [`aea2066`](https://github.com/marcinpsk/Device-Type-Library-Import/commit/aea20668abde73a8dde9344d4dddaece19b41947))
+
+
+
+### Contributors
+
+@dependabot[bot], @marcinpsk
+
 ## v1.9.1 (2026-10-23)
 
 ### Bug Fixes
