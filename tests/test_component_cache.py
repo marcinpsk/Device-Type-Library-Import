@@ -7,6 +7,7 @@ test rather than a mock's idea of them.
 
 import threading
 import time
+from typing import ClassVar
 
 import pytest
 
@@ -18,7 +19,6 @@ from core.component_cache import (
 )
 from core.component_registry import COMPONENT_TYPES
 from core.graphql_client import GraphQLCountMismatchError, GraphQLSchemaError
-
 
 # ── Fakes ─────────────────────────────────────────────────────────────────────
 
@@ -187,7 +187,6 @@ def make_cache(netbox=None, graphql=None, handle=None, **kwargs):
         netbox or FakeNetBox(),
         graphql or FakeGraphQL(),
         handle or FakeHandle(),
-        kwargs.pop("new_filters", True),
         kwargs.pop("max_threads", 4),
         **kwargs,
     )
@@ -268,7 +267,8 @@ class TestLookupFallback:
         first = cache.get("interface_templates", "device", 1, endpoint)
         second = cache.get("interface_templates", "device", 1, endpoint)
 
-        assert set(first) == {"eth0"} and first == second
+        assert set(first) == {"eth0"}
+        assert first == second
         assert endpoint.filter_calls == [{"device_type_id": 1}]
 
     def test_a_miss_filters_by_module_type_for_a_module_parent(self):
@@ -278,14 +278,6 @@ class TestLookupFallback:
         cache.get("interface_templates", "module", 5, endpoint)
 
         assert endpoint.filter_calls == [{"module_type_id": 5}]
-
-    def test_old_netbox_filter_names_are_used_when_asked(self):
-        cache = make_cache(new_filters=False)
-        endpoint = FakeEndpoint()
-
-        cache.get("interface_templates", "device", 1, endpoint)
-
-        assert endpoint.filter_calls == [{"devicetype_id": 1}]
 
     def test_an_empty_result_still_becomes_a_hit(self):
         """Otherwise every parent with no components is re-read on each lookup."""
@@ -358,7 +350,7 @@ class TestPrefetch:
         """Concurrent endpoint requests must not share a requests session."""
 
         class WorkerClient:
-            instances = []
+            instances: ClassVar[list] = []
 
             def __init__(self, *args, **kwargs):
                 self.thread_id = None
@@ -386,7 +378,7 @@ class TestPrefetch:
         """Cancelling a prefetch must not leak the sessions of workers already running."""
 
         class WorkerClient:
-            instances = []
+            instances: ClassVar[list] = []
             started = threading.Event()
 
             def __init__(self, *args, **kwargs):
@@ -426,7 +418,7 @@ class TestPrefetch:
         cache = make_cache()
         cache.begin_prefetch(manufacturer_slug="cisco")
 
-        with pytest.raises(ValueError, match="cisco.*juniper"):
+        with pytest.raises(ValueError, match=r"cisco.*juniper"):
             cache.ensure_ready(manufacturer_slug="juniper")
 
         cache.close()

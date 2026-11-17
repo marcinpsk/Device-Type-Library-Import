@@ -2,12 +2,15 @@
 
 from collections import Counter
 from contextlib import contextmanager
+from types import SimpleNamespace
+from typing import ClassVar
 
 import pytest
+from git import Actor
+from git import Repo as GitRepo
+from helpers import recording_handle as _recording_handle
 
 from core.errors import VendorSelectionError
-from types import SimpleNamespace
-
 from core.import_run import (
     ImportRun,
     RunSummary,
@@ -20,7 +23,6 @@ from core.import_run import (
 from core.log_handler import LogHandler
 from core.outcomes import EntityKind, Outcome
 from core.repo import DTLRepo
-from helpers import recording_handle as _recording_handle
 
 
 class _ComponentCache:
@@ -59,7 +61,6 @@ class _NetBoxBoundary:
     """Expose run state and fail if planning starts an import."""
 
     def __init__(self):
-        self.modules = True
         self.rack_types = True
         self.device_types = _DeviceTypes()
         self.outcomes = _Outcomes()
@@ -119,7 +120,7 @@ class _RepositoryBoundary:
     @staticmethod
     def resolve_slug_files(_slugs):
         """Force the pipeline to use its full file scan."""
-        return None
+        return
 
     @staticmethod
     def get_devices(path, vendors):
@@ -240,11 +241,11 @@ def test_discover_raises_a_typed_fatal_error_when_no_vendor_matches(make_config,
 def test_discover_raises_a_typed_fatal_error_when_slug_selection_removes_the_vendor(make_config, tmp_path):
     class SlugResolvedRepository(_RepositoryBoundary):
         def resolve_slug_files(self, _slugs):
-            return {
-                "device_files": {"other-vendor": []},
-                "module_vendors": set(),
-                "rack_vendors": set(),
-            }
+            return {"other-vendor": []}
+
+        @staticmethod
+        def parse_files(_files, slugs=None):
+            return []
 
     repo = SlugResolvedRepository(tmp_path)
     run = ImportRun(
@@ -271,8 +272,6 @@ def test_execute_returns_snapshot_and_owns_console_lifecycle(make_config, tmp_pa
 
     assert isinstance(summary, RunSummary)
     assert summary.counter["added"] == 2
-    assert summary.modules is True
-    assert summary.rack_types is True
     assert progress_factory.entered is True
     assert progress_factory.exited is True
     assert handle.console is None
@@ -325,6 +324,107 @@ class TestPartialLibraryLayouts:
         }
         assert parsed[present] == 1, parsed
         assert sum(parsed.values()) == 1, parsed
+
+
+@pytest.mark.real_git
+class TestSlugSelectionWithAStaleIndex:
+    """The upstream index lags a fork or branch, so --slugs must also find what only the disk holds."""
+
+    INDEX: ClassVar[dict] = {
+        "known-slugs": [["acme-old-box", "device-types/Acme/old-box.yaml"]],
+        "known-modules": [["old-card", "module-types/Acme"]],
+        "known-racks": [["old-rack", "rack-types/Acme"]],
+    }
+
+    @staticmethod
+    def _write(root, relpath, model, slug=None):
+        path = root / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        manufacturer = relpath.split("/")[1]
+        path.write_text(f"manufacturer: {manufacturer}\nmodel: {model}\n" + (f"slug: {slug}\n" if slug else ""))
+
+    def _plan(self, tmp_path, make_config, index, slugs, vendors=(), after_clone=None):
+        """Commit *tmp_path* with *index*, clone it, run *after_clone* on the clone, and return the planned models."""
+        import json
+
+        (tmp_path / "tests").mkdir()
+        for stem, entries in index.items():
+            (tmp_path / "tests" / f"{stem}.json").write_text(json.dumps(entries))
+        git_repo = GitRepo.init(tmp_path, initial_branch="master")
+        git_repo.git.add("-A")
+        git_repo.index.commit("library", author=Actor("t", "t@example.com"), committer=Actor("t", "t@example.com"))
+        clone = tmp_path.parent / f"{tmp_path.name}-clone"
+        config = make_config(
+            repo_url=f"file://{tmp_path}", repo_path=str(clone), repo_branch="master", slugs=slugs, vendors=vendors
+        )
+        repo = DTLRepo(config, LogHandler(False))
+        if after_clone is not None:
+            after_clone(clone)
+        assert repo.resolve_slug_files(slugs) is not None, "the test must reach the device index"
+        run = ImportRun(config, repo, _NetBoxBoundary(), LogHandler(False), _ProgressFactory())
+        selection = run.discover()
+        models = set()
+        for vendor in selection.vendors:
+            plan = run.plan_vendor(selection, vendor)
+            models |= {t["model"] for t in [*plan.device_types, *plan.module_types, *plan.rack_types]}
+        return models
+
+    def test_definitions_missing_from_the_index_are_found(self, tmp_path, make_config):
+        self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")
+        self._write(tmp_path, "device-types/Acme/new-box.yaml", "New Box", "acme-new-box")
+        self._write(tmp_path, "device-types/Acme/other.yaml", "Other", "acme-other")
+        self._write(tmp_path, "module-types/Acme/old-card.yaml", "Old Card")
+        self._write(tmp_path, "module-types/Beta/new-card.yaml", "New Card")
+        self._write(tmp_path, "rack-types/Acme/old-rack.yaml", "Old Rack")
+        self._write(tmp_path, "rack-types/Gamma/new-rack.yaml", "New Rack")
+
+        models = self._plan(tmp_path, make_config, self.INDEX, ("box", "card", "rack"))
+
+        assert models == {"Old Box", "New Box", "Old Card", "New Card", "Old Rack", "New Rack"}
+
+    def test_a_module_is_found_when_its_file_stem_does_not_hold_the_model(self, tmp_path, make_config):
+        self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")
+        self._write(tmp_path, "module-types/Acme/Patch Antenna.yaml", "Patch Antenna")
+        self._write(tmp_path, "module-types/Datto/AP-ANT-1.yaml", "Patch Antenna")
+        index = {
+            **self.INDEX,
+            "known-modules": [["Patch Antenna", "module-types/Acme"], ["AP-ANT-1", "module-types/Datto"]],
+        }
+
+        assert self._plan(tmp_path, make_config, index, ("Patch Antenna",), vendors=("datto",)) == {"Patch Antenna"}
+
+    def test_an_indexed_file_whose_slug_changed_after_the_index_is_found(self, tmp_path, make_config):
+        self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")
+        self._write(tmp_path, "device-types/Acme/other.yaml", "Other", "acme-other")
+
+        def rename(clone):
+            self._write(clone, "device-types/Acme/old-box.yaml", "Renamed Box", "acme-renamed-box")
+
+        models = self._plan(tmp_path, make_config, self.INDEX, ("renamed",), vendors=("acme",), after_clone=rename)
+
+        assert models == {"Renamed Box"}
+
+    def test_an_indexed_file_that_is_gone_from_disk_is_skipped(self, tmp_path, make_config):
+        self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")
+        index = {
+            **self.INDEX,
+            "known-slugs": [*self.INDEX["known-slugs"], ["acme-gone-box", "device-types/Acme/gone.yaml"]],
+        }
+
+        assert self._plan(tmp_path, make_config, index, ("box",)) == {"Old Box"}
+
+    def test_a_yml_file_is_not_taken_for_the_indexed_yaml_file_of_the_same_name(self, tmp_path, make_config):
+        self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")
+        self._write(tmp_path, "device-types/Acme/old-box.yml", "Yml Box", "acme-yml-box")
+        self._write(tmp_path, "device-types/Acme/new-box.yaml", "New Box", "acme-new-box")
+
+        assert self._plan(tmp_path, make_config, self.INDEX, ("yml",)) == {"Yml Box"}
+
+    def test_a_broken_definition_link_is_skipped(self, tmp_path, make_config):
+        self._write(tmp_path, "device-types/Acme/old-box.yaml", "Old Box", "acme-old-box")
+        (tmp_path / "device-types/Acme/dangling.yaml").symlink_to(tmp_path / "device-types/Acme/missing.yaml")
+
+        assert self._plan(tmp_path, make_config, self.INDEX, ("box",)) == {"Old Box"}
 
 
 class _ModuleNetBox:
@@ -434,37 +534,35 @@ def test_banners_omit_the_separator_when_no_vendor_is_given(make_config):
 class _OutcomeNetBox:
     """Run-state stand-in carrying a real OutcomeRegistry."""
 
-    def __init__(self, *, modules=True, rack_types=True, counter=None):
+    def __init__(self, *, counter=None):
         from core.outcomes import OutcomeRegistry
 
-        self.modules = modules
-        self.rack_types = rack_types
         self.outcomes = OutcomeRegistry()
-        base = dict(
-            added=0,
-            properties_updated=0,
-            components_updated=0,
-            components_added=0,
-            components_removed=0,
-            images=0,
-            manufacturer=0,
-            module_added=0,
-            module_updated=0,
-            rack_type_added=0,
-            rack_type_updated=0,
-        )
+        base = {
+            "added": 0,
+            "properties_updated": 0,
+            "components_updated": 0,
+            "components_added": 0,
+            "components_removed": 0,
+            "images": 0,
+            "manufacturer": 0,
+            "module_added": 0,
+            "module_updated": 0,
+            "rack_type_added": 0,
+            "rack_type_updated": 0,
+        }
         base.update(counter or {})
         self.counter = Counter(base)
 
 
 def _summary_lines(netbox):
     """Render a run summary through the real LogHandler and return its lines."""
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     handle, console = _recording_handle()
     handle.verbose = True
     repo = SimpleNamespace(duplicate_definitions=[])
-    summary = RunSummary.capture(netbox, repo, datetime.now())
+    summary = RunSummary.capture(netbox, repo, datetime.now(UTC))
     _log_run_summary(handle, summary)
     return console.lines
 
@@ -539,3 +637,54 @@ def test_headline_partials_match_the_itemised_rows():
     assert "2 device types partially updated" in text
     assert "1 modules partially updated" in text
     assert "Partial updates: 3" in text
+
+
+class TestNaiveStartedAtIsNormalized:
+    """A naive started_at used to survive construction and fail much later, in the summary."""
+
+    def test_a_naive_started_at_is_stored_timezone_aware(self, make_config, tmp_path):
+        from datetime import datetime
+
+        run = ImportRun(
+            make_config(),
+            _RepositoryBoundary(tmp_path),
+            _NetBoxBoundary(),
+            LogHandler(False),
+            _ProgressFactory(),
+            started_at=datetime(2020, 1, 1, 12, 0, 0),  # noqa: DTZ001 - a naive value is the subject of this test
+        )
+
+        assert run.started_at.tzinfo is not None, "a naive value cannot be subtracted from an aware now()"
+
+    def test_a_run_started_naive_still_produces_a_summary(self, make_config, tmp_path):
+        """The real failure: RunSummary.capture subtracts started_at from an aware now()."""
+        from datetime import datetime
+
+        run = ImportRun(
+            make_config(),
+            _RepositoryBoundary(tmp_path),
+            _NetBoxBoundary(),
+            LogHandler(False),
+            _ProgressFactory(),
+            started_at=datetime(2020, 1, 1, 12, 0, 0),  # noqa: DTZ001 - a naive value is the subject of this test
+        )
+
+        summary = RunSummary.capture(_NetBoxBoundary(), SimpleNamespace(duplicate_definitions=[]), run.started_at)
+
+        assert summary.elapsed.total_seconds() > 0
+
+    def test_an_aware_started_at_is_left_alone(self, make_config, tmp_path):
+        from datetime import UTC, datetime
+
+        given = datetime(2020, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+        run = ImportRun(
+            make_config(),
+            _RepositoryBoundary(tmp_path),
+            _NetBoxBoundary(),
+            LogHandler(False),
+            _ProgressFactory(),
+            started_at=given,
+        )
+
+        assert run.started_at == given

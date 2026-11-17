@@ -1,6 +1,11 @@
 """Shared value-normalization helpers for YAML-vs-NetBox comparisons."""
 
 
+def is_explicit_list(value):
+    """Only an explicit YAML list manages a relation; null leaves it unmanaged."""
+    return isinstance(value, list)
+
+
 def normalize_values(yaml_val, nb_val):
     """Normalize a YAML/NetBox value pair for comparison.
 

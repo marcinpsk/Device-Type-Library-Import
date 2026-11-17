@@ -8,6 +8,8 @@ import subprocess
 import sys
 import tomllib
 
+import pytest
+
 _TESTS_DIR = pathlib.Path(__file__).resolve().parent
 _ROOT = _TESTS_DIR.parent
 
@@ -39,9 +41,12 @@ def _orphaned_docstrings(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
         for statement in node.body[1:]:
-            if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Constant):
-                if isinstance(statement.value.value, str):
-                    yield node.name, statement.lineno
+            if (
+                isinstance(statement, ast.Expr)
+                and isinstance(statement.value, ast.Constant)
+                and isinstance(statement.value.value, str)
+            ):
+                yield node.name, statement.lineno
 
 
 def test_the_scan_follows_pytest_discovery(tmp_path):
@@ -82,6 +87,25 @@ def test_integration_collection_reads_credentials_from_a_local_env_file(tmp_path
     assert "1 passed" in result.stdout, result.stdout + result.stderr
 
 
+def test_the_fake_netbox_releases_its_listening_socket():
+    """shutdown() only stops the serve loop. One server per test leaks a descriptor each."""
+    import socket
+
+    from helpers import FakeNetBox
+
+    server = FakeNetBox(manufacturers=[{"id": 1, "name": "Juniper", "slug": "juniper"}])
+    port = server._server.server_port
+    server.close()
+
+    probe = socket.socket()
+    try:
+        probe.bind(("127.0.0.1", port))
+    except OSError as exc:  # pragma: no cover - only reached when close() leaks
+        raise AssertionError(f"FakeNetBox.close() left port {port} bound: {exc}") from exc
+    finally:
+        probe.close()
+
+
 def test_no_test_function_contains_an_orphaned_docstring():
     """A dropped ``def`` header silently merges two tests into one.
 
@@ -98,3 +122,70 @@ def test_no_test_function_contains_an_orphaned_docstring():
     assert not offenders, "Bare string statement inside a test function, likely a lost `def` header:\n" + "\n".join(
         offenders
     )
+
+
+@pytest.mark.real_http
+def test_a_fake_netbox_create_never_reuses_a_stored_id():
+    """The fake must not give a new record the id of a seeded or still-stored one."""
+    import pynetbox
+    from helpers import FakeNetBox
+
+    server = FakeNetBox(
+        manufacturers=[{"id": 1000, "name": "Juniper", "slug": "juniper"}, {"id": 1001, "name": "HP", "slug": "hp"}]
+    )
+    try:
+        api = pynetbox.api(server.url, token="test-token")
+        api.dcim.manufacturers.delete([1001])
+        first = api.dcim.manufacturers.create(name="Cisco", slug="cisco")
+        second = api.dcim.manufacturers.create(name="Nokia", slug="nokia")
+        api.dcim.manufacturers.delete([first.id])
+        third = api.dcim.manufacturers.create(name="Arista", slug="arista")
+    finally:
+        server.close()
+
+    ids = [1000, 1001, first.id, second.id, third.id]
+    assert len(set(ids)) == len(ids), ids
+
+
+def test_the_suite_skips_the_write_retry_backoff():
+    """A test that drives write retries must not wait 2+5+10 s of real backoff."""
+    import time
+
+    import requests
+
+    from core.retry import call_with_retry
+
+    def offline():
+        raise requests.exceptions.ConnectionError("offline")
+
+    started = time.monotonic()
+    with pytest.raises(requests.exceptions.ConnectionError):
+        call_with_retry(offline)
+    assert time.monotonic() - started < 1
+
+
+def _bare_repo_calls(tree):
+    """Yield the line of each ``Repo(...)`` call outside ``open_repo``."""
+    allowed = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == "open_repo":
+            allowed.update(id(inner) for inner in ast.walk(node))
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "Repo"
+            and id(node) not in allowed
+        ):
+            yield node.lineno
+
+
+def test_core_opens_git_repositories_only_through_open_repo():
+    """A bare Repo(path) inherits GIT_DIR and GIT_WORK_TREE, so git can act on another checkout."""
+    offenders = [
+        f"{path.relative_to(_ROOT)}:{lineno}"
+        for path in sorted((_ROOT / "core").rglob("*.py"))
+        for lineno in _bare_repo_calls(ast.parse(path.read_text(encoding="utf-8")))
+    ]
+
+    assert not offenders, "Use core.repo.open_repo instead of Repo():\n" + "\n".join(offenders)

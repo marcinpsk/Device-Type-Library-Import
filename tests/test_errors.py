@@ -23,8 +23,10 @@ from core.repo import (
         ),
         (
             SSLVerificationError(False),
-            "SSL verification failed. IGNORE_SSL_ERRORS is False. "
-            "Set IGNORE_SSL_ERRORS to True if you want to ignore this error. EXITING.",
+            (
+                "SSL verification failed. IGNORE_SSL_ERRORS is False. "
+                "Set IGNORE_SSL_ERRORS to True if you want to ignore this error. EXITING."
+            ),
         ),
         (GitCommandError("my-repo"), 'Git error for repo "my-repo".'),
         (GitInvalidRepositoryError("my-repo"), 'The repo "my-repo" is not a valid git repo.'),
